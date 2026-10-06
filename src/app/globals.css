@@ -1,26 +1,84 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * Design tokens shared by every page. Components use these names (bg-surface, text-muted, border-line,
+ * bg-brand-600, text-danger-700, ...) instead of raw palette colors so the student and teacher UIs stay
+ * consistent. Tailwind's default palette stays available for one-off accents.
+ *
+ * The app is deliberately light-only: it is used on classroom projectors and phones, and a half-themed dark
+ * mode would be worse than none.
+ */
+@theme {
+  /* System font stacks: builds and pages never fetch fonts. */
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Neutral surfaces and text. */
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-subtle: #eef0f3;
+  --color-line: #dde1e7;
+  --color-line-strong: #b9c0ca;
+  --color-ink: #17202b;
+  --color-muted: #525d6c;
+
+  /* Primary accent: buttons, links, focus rings. White text on brand-600 is above 4.5:1. */
+  --color-brand-50: #eef3ff;
+  --color-brand-100: #dbe6ff;
+  --color-brand-600: #2c56c9;
+  --color-brand-700: #2246a8;
+  --color-brand-800: #1b3886;
+
+  /* Status tones: -50 backgrounds, -200 borders, -700/-800 text (all text pairs are above 4.5:1). */
+  --color-info-50: #eef6fc;
+  --color-info-200: #bfdcf2;
+  --color-info-800: #134a72;
+
+  --color-success-50: #edf8f1;
+  --color-success-200: #b7e2c6;
+  --color-success-600: #1f7a45;
+  --color-success-800: #145232;
+
+  --color-warning-50: #fff7e8;
+  --color-warning-200: #f5d48f;
+  --color-warning-800: #6e4504;
+
+  --color-danger-50: #fdf0ef;
+  --color-danger-200: #f3c1bd;
+  --color-danger-600: #c0332b;
+  --color-danger-700: #a32a23;
+  --color-danger-800: #7f211c;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: light;
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* One visible focus style for every interactive element that does not set its own. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  /* Preflight strips link styling; inline links get it back so they are not marked by color alone. */
+  a {
+    color: var(--color-brand-700);
+    text-decoration-line: underline;
+    text-underline-offset: 2px;
+  }
+
+  a:hover {
+    color: var(--color-brand-800);
+  }
 }
