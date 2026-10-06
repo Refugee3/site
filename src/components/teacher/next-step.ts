@@ -1,0 +1,36 @@
+import type { Tone } from "@/components/ui/tone";
+import type { DashboardView } from "@/lib/types";
+import { boardHref } from "./board-helpers";
+import { plural } from "./text";
+
+export interface NextStep {
+  text: string;
+  href: string;
+  tone: Tone;
+}
+
+type DashboardAssignment = DashboardView["assignments"][number];
+
+/** The one thing an assignment card asks the teacher to do next, most urgent first; null when nothing is pending. */
+export function nextStep(a: DashboardAssignment): NextStep | null {
+  const keyHref = `/teacher/assignments/${a.id}/key`;
+  switch (a.keyStatus) {
+    case "empty":
+      return { text: "Add the answer key", href: keyHref, tone: "info" };
+    case "processing":
+      return { text: "Reading the answer key…", href: keyHref, tone: "info" };
+    case "failed":
+      return { text: "The answer key couldn't be read", href: keyHref, tone: "danger" };
+    case "ready":
+      break;
+  }
+  if (!a.keyApproved) return { text: "Check and approve the answer key", href: keyHref, tone: "warning" };
+  if (a.counts.needs_review > 0) {
+    return { text: `${plural(a.counts.needs_review, "paper")} to review`, href: boardHref(a.id, "needs_review"), tone: "warning" };
+  }
+  if (a.counts.failed > 0) {
+    return { text: `${plural(a.counts.failed, "paper")} failed to grade`, href: boardHref(a.id, "failed"), tone: "danger" };
+  }
+  if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
+  return null;
+}
