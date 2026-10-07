@@ -144,12 +144,26 @@ describe("request shape", () => {
   });
 
   it("uses the job's max_tokens and the configured effort, model and cache TTL", () => {
-    const custom = testConfig({ model: "claude-opus-5", effort: "medium", cacheTtl: "5m" });
+    const custom = testConfig({ model: "claude-sonnet-5-5", effort: "medium", cacheTtl: "5m" });
     const { params } = buildGradingParams(gradeInput(), custom, 128000);
-    expect(params.model).toBe("claude-opus-5");
+    expect(params.model).toBe("claude-sonnet-5-5");
     expect(params.max_tokens).toBe(128000);
     expect(params.output_config?.effort).toBe("medium");
     expect(content(params)[1]).toMatchObject({ cache_control: { type: "ephemeral", ttl: "5m" } });
+  });
+
+  it("sends answer keys and papers to the model chosen in Settings, and scans to Sonnet 5.5 whatever the choice", () => {
+    const key = { assignmentTitle: "Q", teacherNotes: "", keyPdf: pdfBytes("k"), pageCount: 1 };
+    const scan = {
+      assignmentTitle: "Q", sections: [], items: [], keyPageCount: null, chunkPdf: pdfBytes("s"), firstPage: 1, chunkPageCount: 1,
+      totalPages: 1, previousPage: null,
+    };
+    for (const model of ["claude-sonnet-5-5", "claude-opus-5-5"] as const) {
+      const chosen = testConfig({ model });
+      expect(buildExtractionParams(key, chosen, 64000).model).toBe(model);
+      expect(buildGradingParams(gradeInput(), chosen, 64000).params.model).toBe(model);
+      expect(buildScanSplitParams(scan, chosen, 32000).model).toBe("claude-sonnet-5-5");
+    }
   });
 
   it("leaves out the fallback beta when AI_FALLBACKS=off", () => {
@@ -252,9 +266,10 @@ describe("scan split request", () => {
     };
   }
 
-  it("asks for page readings at medium effort, whatever the configured effort", () => {
+  it("asks for page readings from Sonnet 5.5 at medium effort, whatever the chosen model and configured effort", () => {
     const params = buildScanSplitParams(scanInput(), testConfig({ effort: "max" }), 32000);
-    expect(params.model).toBe("claude-opus-5-5");
+    expect(params.model).toBe("claude-sonnet-5-5");
+    expect(buildScanSplitParams(scanInput(), testConfig({ model: "claude-sonnet-5-5" }), 32000).model).toBe("claude-sonnet-5-5");
     expect(params.max_tokens).toBe(32000);
     expect(params.thinking).toEqual({ type: "adaptive" });
     expect(params.output_config?.effort).toBe("medium");
@@ -308,7 +323,9 @@ describe("scan split request", () => {
     }, cfg);
     const result = await grader.readScanPages(scanInput({ chunkPageCount: 1 }), { maxTokens: 16000 });
     expect(result.output).toEqual(scanPages);
-    expect(result.meta).toMatchObject({ requestedModel: "claude-opus-5-5", usage: { cacheReadTokens: 7 } });
+    // Requested from Sonnet 5.5 although Opus 5.5 is chosen for grading.
+    expect(result.meta).toMatchObject({ requestedModel: "claude-sonnet-5-5", usage: { cacheReadTokens: 7 } });
+    expect(calls[0].model).toBe("claude-sonnet-5-5");
     expect(calls[0].max_tokens).toBe(16000);
     expect(calls[0].system).toBe(SCAN_SPLIT_SYSTEM_PROMPT);
 
@@ -346,7 +363,7 @@ describe("createSdkKeyChecker", () => {
   ] as const)("maps %s to %s", async (status, expected) => {
     const logs = (["log", "info", "warn", "error", "debug"] as const).map((level) => vi.spyOn(console, level));
     const { fetch, requests } = scriptedFetch(status);
-    const result = await createSdkKeyChecker(cfg, { fetch })(KEY);
+    const result = await createSdkKeyChecker("claude-opus-5-5", { fetch })(KEY);
     const logged = JSON.stringify(logs.map((spy) => spy.mock.calls));
     for (const spy of logs) spy.mockRestore();
     expect(result).toBe(expected);
@@ -358,15 +375,15 @@ describe("createSdkKeyChecker", () => {
   it("retries a server error once and sends no auth token from the environment", async () => {
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "env-token");
     const { fetch, requests } = scriptedFetch(500);
-    await createSdkKeyChecker(cfg, { fetch })(KEY);
+    await createSdkKeyChecker("claude-opus-5-5", { fetch })(KEY);
     expect(requests).toHaveLength(2);
     expect(requests.every((r) => r.headers.get("authorization") === null)).toBe(true);
   });
 
-  it("checks the configured model", async () => {
+  it("checks the model chosen in Settings", async () => {
     const { fetch, requests } = scriptedFetch(200);
-    await createSdkKeyChecker(testConfig({ model: "claude-opus-5" }), { fetch })(KEY);
-    expect(requests[0].url).toBe("https://api.anthropic.com/v1/models/claude-opus-5");
+    await createSdkKeyChecker("claude-sonnet-5-5", { fetch })(KEY);
+    expect(requests[0].url).toBe("https://api.anthropic.com/v1/models/claude-sonnet-5-5");
   });
 });
 

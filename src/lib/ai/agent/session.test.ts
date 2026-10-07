@@ -481,6 +481,17 @@ describe("runAgentTask", () => {
       });
     });
 
+    it("bills a scan task's usage to the scan splitter's model", async () => {
+      const { d } = harness({
+        onCreate: (s) => {
+          s.usage = { input_tokens: 100, output_tokens: 10, list_cost: { amount: "3", currency: "USD" }, active_seconds: 5 };
+          s.emit(events.running(), events.idle("budget_reached"));
+        },
+      });
+      const err = await rejection(runAgentTask(d, taskSpec({ role: "scan" })));
+      expect(err.o.billed?.servedModel).toBe("claude-sonnet-5-5");
+    });
+
     it("falls back to the model-request spans for usage when the session can't be read", async () => {
       const { fake, d } = harness({
         onCreate: (s) => s.emit(events.running(), events.modelRequestEnd({ input: 10, output: 5, cacheRead: 3, cacheWrite: 2 }),

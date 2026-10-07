@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { AiModelCard } from "@/components/teacher/ai-model-card";
 import { ApiKeyForm } from "@/components/teacher/api-key-form";
 import { GraderCard } from "@/components/teacher/grader-card";
 import { PreferencesForm } from "@/components/teacher/preferences-form";
@@ -15,7 +16,7 @@ export const metadata: Metadata = { title: "Settings" };
 const SETUP_POLL_MS = 2000;
 const SETUP_POLL_MAX_MS = 120_000;
 
-/** Server-wide settings (the API key, the grader, student uploads) and the teacher's own grading preferences. */
+/** Server-wide settings (the API key, the AI model, the grader, student uploads) and the teacher's own grading preferences. */
 export default async function TeacherSettingsPage() {
   await connection();
   const teacher = await requireTeacher();
@@ -25,7 +26,10 @@ export default async function TeacherSettingsPage() {
     <div className="flex w-full max-w-3xl flex-col gap-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Card title="Anthropic API key">
-        <ApiKeyForm apiKey={view.apiKey} aiMode={view.aiMode} model={view.model} keyIssue={view.worker?.keyIssue ?? null} />
+        <ApiKeyForm apiKey={view.apiKey} aiMode={view.aiMode} model={view.aiModel} keyIssue={view.worker?.keyIssue ?? null} />
+      </Card>
+      <Card title="AI model">
+        <AiModelCard model={view.aiModel} />
       </Card>
       <Card title="Grader">
         <GraderCard engine={view.grader.engine} aiMode={view.aiMode} agent={view.grader.agent} />

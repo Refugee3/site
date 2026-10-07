@@ -310,6 +310,17 @@ ALTER TABLE app_settings ADD COLUMN agent_checked_at INTEGER;      -- ms; last s
 ALTER TABLE submissions ADD COLUMN ai_engine TEXT CHECK (ai_engine IN ('direct','agent','fake'));
 `,
   },
+  {
+    version: 5,
+    name: "ai_model_choice",
+    sql: `
+-- Settings → AI model: the model that reads answer keys and grades papers (both engines). Existing servers start on
+-- Sonnet 5.5 like new ones; ANTHROPIC_MODEL is no longer read. Splitting scans always uses Sonnet 5.5.
+ALTER TABLE app_settings ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-sonnet-5-5'
+  CHECK (ai_model IN ('claude-sonnet-5-5','claude-opus-5-5'));
+-- grading_engine keeps its values; NULL (never chosen) now means the direct API, which the code resolves.
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

@@ -12,7 +12,8 @@ A small self-hosted web app that grades handwritten student work against a teach
 
 ## What's new
 
-- **Grading with an Anthropic-hosted agent:** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's the new default; the direct API is one click away in Settings.
+- **Choose the AI model** under **Settings → AI model**: **Claude Sonnet 5.5** (the default, about half the cost, good for most homework) or **Claude Opus 5.5** (the most capable, for messy handwriting or tricky answers). Servers upgraded from an earlier version start on Sonnet 5.5 too. `ANTHROPIC_MODEL` is no longer used: if your `.env.local` still sets it, the server ignores it and logs a warning at startup, so delete the line.
+- **Grading with an Anthropic-hosted agent (optional, off by default):** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's slower and more expensive than the direct API, which is the default (also on upgraded servers, unless a teacher chose the hosted agent); switch under **Settings → Grader**.
 - **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. The AI finds where each paper starts (or you split it every N pages), and you check the split before anything is graded.
 - **Student uploads are off by default**, on new and upgraded servers alike. Turn them on in Settings when you want students to hand in work through a code or link.
 - **The grader learns from your corrections:** each correction (with your reason) becomes a lesson that later gradings of the assignment follow, together with your grading preferences.
@@ -38,7 +39,7 @@ npm run build
 npm start
 ```
 
-Sign in and paste your Anthropic API key under **Settings → Anthropic API key**. It is checked with Anthropic, stored encrypted, and used from the next paper on; replacing or removing it takes effect without a restart. Alternatively set `ANTHROPIC_API_KEY` in the environment: a key saved in Settings takes precedence over it. Without either, papers wait in the queue.
+Sign in and paste your Anthropic API key under **Settings → Anthropic API key**. It is checked with Anthropic (against the model chosen under **Settings → AI model**), stored encrypted, and used from the next paper on; replacing or removing it takes effect without a restart. Alternatively set `ANTHROPIC_API_KEY` in the environment: a key saved in Settings takes precedence over it. Without either, papers wait in the queue.
 
 All settings are listed, with defaults, in [`.env.example`](.env.example). The most useful ones:
 
@@ -49,6 +50,7 @@ All settings are listed, with defaults, in [`.env.example`](.env.example). The m
 | `APP_URL` | — | Public origin, e.g. `https://grader.school.org`. Used for share and receipt links, the origin check and secure cookies. |
 | `DATA_DIR` | `./data` | SQLite database and uploaded PDFs. |
 | `ANTHROPIC_EFFORT` | `high` | `low` … `max`. `medium` is cheaper and faster. |
+| `ANTHROPIC_MODEL` | — | **No longer used.** Choose the model under Settings → AI model. If it is still set, it is ignored and the server logs "ANTHROPIC_MODEL is no longer used — choose the model on the Settings page." at startup. |
 | `TEACHER_SIGNUP_CODE` | — | Required to sign up, when set (see below). At least 12 characters. |
 | `MAX_UPLOAD_MB` / `MAX_PAGES` | `20` / `40` | Per-upload limits for students, teacher uploads and keys; also the limit for each paper cut from a scan. |
 | `MAX_SCAN_MB` / `MAX_SCAN_PAGES` | `100` / `200` | Limits for one scan of a whole class's stack (at most 200 MB / 500 pages). The reverse proxy must allow uploads this large. |
@@ -81,16 +83,25 @@ It is not retrained. When you correct the AI on a paper — the points, the feed
 - A lesson shows the answer as the AI read it, so say in the reason when you corrected a misreading ("The student wrote x = -3; the minus is faint."). A correction of an answer the AI saw as blank or couldn't read is sent only once it has a reason, and a ruling without a reason that contradicts the answer key sends the paper to you instead of overriding the key. Points that no judgment gives exactly (3 of 5 on an all-or-nothing question) are passed on too, and matching answers on later papers come to you to set the points.
 - Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the board or the Lessons tab. Papers you already corrected or marked reviewed are left alone (you can still regrade one from its page); your overrides and edits are always kept.
 
+## Choosing the AI model
+
+**Settings → AI model** applies to every teacher on the server, with either engine:
+
+- **Claude Sonnet 5.5** (recommended, the default): about half the cost of Opus. Good for most homework.
+- **Claude Opus 5.5**: the most capable model, best for messy handwriting or tricky answers. About twice the cost of Sonnet.
+
+The model reads the answer keys and grades the papers. Splitting a whole-class scan into papers always uses Sonnet 5.5. A change applies from the next answer key or paper (one already being graded finishes on the model it started with); papers already graded keep their grades and aren't marked for regrading. A key saved after the change is checked against the chosen model. With the hosted agent, its answer-key reader and paper grader are updated to the new model in your Anthropic workspace (new versions of the same agents).
+
 ## Grading with the Anthropic-hosted agent
 
-New servers grade with the **Anthropic-hosted agent** (Claude Managed Agents). Instead of sending each paper to Claude in one request, the app gives Claude a private, temporary workspace on Anthropic's servers for each paper, answer key or batch of scanned pages. Claude reads the PDF there and, where handwriting is hard to read, can render a page larger, crop it or rotate it before deciding. It hands its result back through a strict form the app checks; if anything is missing or malformed, the agent is told what to fix and tries again.
+The **Anthropic-hosted agent** (Claude Managed Agents) is optional and off by default: servers grade with the **direct API**, which sends each paper to Claude in a single request, unless a teacher chooses the hosted agent under **Settings → Grader**. The hosted agent is best for very hard-to-read papers. Instead of sending each paper to Claude in one request, the app gives Claude a private, temporary workspace on Anthropic's servers for each paper, answer key or batch of scanned pages. Claude reads the PDF there and, where handwriting is hard to read, can render a page larger, crop it or rotate it before deciding. It hands its result back through a strict form the app checks; if anything is missing or malformed, the agent is told what to fix and tries again.
 
-- **Same API key, same account.** The agent uses the key under **Settings → Anthropic API key** (or `ANTHROPIC_API_KEY`) and is billed to the same Anthropic account. A Claude Pro or Max subscription can't be used by the app.
-- **Set up automatically.** When a key is saved, or before the first paper, the app creates one environment and three agents (answer-key reader, paper grader, scan splitter) in the key's Anthropic workspace, named "PDF Auto-Grader: …". **Settings → Grader** shows "Ready", or the problem and a **Set up again** button. Don't edit or archive them in the Console; if you did, press Set up again. A key from another workspace gets its own set.
-- **Cost.** Tokens at the usual model prices plus **$0.08 per hour** of agent time. The agent reads in several steps, so a paper usually costs more than with the direct API; each assignment's Settings tab shows the actual cost. Every session has a spending cap — by default $2.00 per paper (`AGENT_BUDGET_GRADE_USD`), $3.00 per answer key (`AGENT_BUDGET_EXTRACT_USD`) and $1.50 per batch of up to 20 scanned pages (`AGENT_BUDGET_SCAN_USD`). A session that reaches its cap is retried once with double the cap; after that the paper waits for you to grade it.
+- **Same API key, same account, same model.** The agent uses the key under **Settings → Anthropic API key** (or `ANTHROPIC_API_KEY`), the model chosen under **Settings → AI model** (the scan splitter always uses Sonnet 5.5), and is billed to the same Anthropic account. A Claude Pro or Max subscription can't be used by the app.
+- **Set up once you choose it.** Nothing is created in your Anthropic workspace while the direct API is chosen. When you choose the hosted agent, the app creates one environment and three agents (answer-key reader, paper grader, scan splitter) in the key's Anthropic workspace, named "PDF Auto-Grader: …", and checks them again before each paper and whenever the key or the model changes. **Settings → Grader** shows "Ready", or the problem and a **Set up again** button. Don't edit or archive them in the Console; if you did, press Set up again. A key from another workspace gets its own set.
+- **Cost.** Tokens at the chosen model's prices plus **$0.08 per hour** of agent time. The agent reads in several steps (more AI turns per paper), so a paper costs more than with the direct API; each assignment's Settings tab shows the actual cost. Every session has a spending cap — by default $2.00 per paper (`AGENT_BUDGET_GRADE_USD`), $3.00 per answer key (`AGENT_BUDGET_EXTRACT_USD`) and $1.50 per batch of up to 20 scanned pages (`AGENT_BUDGET_SCAN_USD`). A session that reaches its cap is retried once with double the cap; after that the paper waits for you to grade it.
 - **Speed.** Expect a few minutes per paper, slower than the direct API. Several papers are graded at once (`GRADING_CONCURRENCY`); each session stops after `AGENT_SESSION_TIMEOUT_MS` (20 minutes by default) and is retried later.
 - **Privacy.** Papers and answer keys are processed on Anthropic's servers. Each upload and each agent session is deleted from Anthropic as soon as its task finishes, successful or not; uploads also expire on their own after an hour, and sessions left behind by a crash are removed automatically by a later grading run. The workspace has no internet access and no web tools. **Claude Managed Agents is not eligible for Zero Data Retention (ZDR) or HIPAA BAA coverage**; if your school requires ZDR, use the direct API under a ZDR agreement. `AGENT_KEEP_SESSIONS=1` keeps sessions and uploads so you can inspect them in the Anthropic Console (the server log prints each session's Console path); never use it with real student work.
-- **Switching engines.** **Settings → Grader → Direct API** goes back to sending each paper in a single request. The switch applies from the next paper; papers already being graded finish as they started. Use the direct API if Managed Agents isn't available to your organization (it's in beta) or you need ZDR.
+- **Switching engines.** **Settings → Grader** switches between the two. The switch applies from the next paper; papers already being graded finish as they started. Stay on the direct API if Managed Agents isn't available to your organization (it's in beta) or you need ZDR; anything already set up for the hosted agent stays in your workspace, unused.
 
 ## Run exactly one instance
 
@@ -160,7 +171,9 @@ Student work — the PDFs and photos, including names written on them — and th
 
 ## Cost
 
-Roughly **$0.10–0.30 per paper** with the default model (`claude-opus-5-5`, $4 / $20 per million input / output tokens). Output and thinking tokens dominate; `ANTHROPIC_EFFORT=medium` is the main lever for lowering cost. The answer key, your lessons and your grading preferences are cached between papers, so their cost is small. Splitting a whole-class scan with the AI costs about **$0.01 per scanned page** on top (splitting every N pages is free). Each assignment's Settings tab shows its token usage and estimated cost, added up over every AI call (regrades, retries, reading the key and splitting scans included). With the hosted agent, add $0.08 per hour of agent time and expect more tokens per paper, because the agent reads in several steps; each assignment's Settings tab shows the actual cost.
+With the direct API, roughly **$0.05–0.15 per paper** with **Claude Sonnet 5.5**, the default ($2 / $10 per million input / output tokens; cached input $0.20), and roughly **$0.10–0.30 per paper** with **Claude Opus 5.5** ($4 / $20; cached input $0.20). Output and thinking tokens dominate; the model is the main lever, and `ANTHROPIC_EFFORT=medium` lowers cost further. The answer key, your lessons and your grading preferences are cached between papers, so their cost is small (writing them to the cache costs 2× the input price with the default `AI_CACHE_TTL=1h`, 1.25× with `5m`). Splitting a whole-class scan with the AI always uses Sonnet 5.5 and costs about **half a cent per scanned page** on top (splitting every N pages is free).
+
+Each assignment's Settings tab shows its token usage and estimated cost, added up over every AI call (regrades, retries, reading the key and splitting scans included), each priced at the rate of the model that answered it, so an assignment graded partly with each model is priced correctly. A request that a model declines can be answered by a fallback model (Claude Sonnet 5 for Sonnet 5.5; Claude Opus 5 or Opus 4.8 for Opus 5.5, both $5 / $25), which is priced at its own rate. With the hosted agent, add $0.08 per hour of agent time and expect more tokens per paper, because the agent reads in several steps; each assignment's Settings tab shows the actual cost.
 
 ## Development
 

@@ -238,6 +238,35 @@ describe("createAgentGrader", () => {
     });
   });
 
+  it("reports keys and papers under the chosen model, and scans under Sonnet 5.5, the models their agents run on", async () => {
+    const { grader } = setup({ extract: [keyExtraction], grade: [gradingOutput(["Q1", "Q2"])], scan: [scanPages(3)] });
+    const key = await grader.extractKey({ assignmentTitle: "Quiz", teacherNotes: "", keyPdf: pdf(1), pageCount: 2 });
+    const paper = await grader.gradeSubmission(gradeInput());
+    const scan = await grader.readScanPages(scanInput());
+    expect([key.meta, paper.meta, scan.meta].map((m) => [m.requestedModel, m.servedModel])).toEqual([
+      ["claude-opus-5-5", "claude-opus-5-5"], ["claude-opus-5-5", "claude-opus-5-5"], ["claude-sonnet-5-5", "claude-sonnet-5-5"],
+    ]);
+  });
+
+  it("reads the chosen model when each task starts, so a grader built before a change uses the new model too", async () => {
+    const { fake, deps } = setup({ grade: [gradingOutput(["Q1", "Q2"])] });
+    let model: "claude-opus-5-5" | "claude-sonnet-5-5" = "claude-opus-5-5";
+    const grader = createAgentGrader({ ...deps, currentModel: () => model });
+
+    expect((await grader.gradeSubmission(gradeInput())).meta.servedModel).toBe("claude-opus-5-5");
+    model = "claude-sonnet-5-5";
+    const { meta } = await grader.gradeSubmission(gradeInput());
+
+    expect(meta).toMatchObject({ requestedModel: "claude-sonnet-5-5", servedModel: "claude-sonnet-5-5" });
+    // The grader agent was updated (same id, next version), and the second session runs on that version.
+    expect(fake.calls.filter((c) => c.method === "updateAgent").map((c) => [c.args[0], (c.args[1] as { model: unknown }).model]))
+      .toEqual([["agent_1", { id: "claude-sonnet-5-5", effort: "high" }], ["agent_2", { id: "claude-sonnet-5-5", effort: "high" }]]);
+    expect(createBodies(fake).map((b) => b.agent)).toEqual([
+      { type: "agent", id: "agent_2", version: 1 }, { type: "agent", id: "agent_2", version: 2 },
+    ]);
+    expect(fake.calls.filter((c) => c.method === "createAgent")).toHaveLength(3);
+  });
+
   it("doubles the spending cap on the retry that asks for more than the configured max tokens", async () => {
     const { fake, grader } = setup({ grade: [gradingOutput(["Q1", "Q2"])] });
     await grader.gradeSubmission(gradeInput(), { maxTokens: 64_000 });

@@ -14,7 +14,7 @@ import type * as z from "zod";
 import { truncateChars } from "@/lib/grading/text";
 import type { AiUsage } from "@/lib/types";
 import { type AgentCallCost, AiError } from "../errors";
-import { type AgentEngineConfig, type AgentRole, SUBMIT_TOOL } from "./definitions";
+import { type AgentEngineConfig, type AgentRole, roleModel, SUBMIT_TOOL } from "./definitions";
 import { apiMessage, sessionCallError, sessionErrorToAiError } from "./errors";
 import type { AgentPort, Body, RemoteSession, SessionStatus } from "./port";
 import { SUBMIT_ACCEPTED, SUBMIT_ALREADY_ACCEPTED, submitNudge, submitRejected, TOOL_ASK_DENIED } from "./prompts";
@@ -572,7 +572,8 @@ class TaskRun<T> {
     const billed = usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens > 0
       || (cost.listCostCents ?? 0) > 0 || cost.activeSeconds > 0;
     if (this.sessionId === null || !billed) return error;
-    return new AiError(error.code, error.message, { ...error.o, billed: { servedModel: this.d.cfg.model, usage, agent: cost } });
+    const servedModel = roleModel(this.d.cfg, this.spec.role);
+    return new AiError(error.code, error.message, { ...error.o, billed: { servedModel, usage, agent: cost } });
   }
 }
 

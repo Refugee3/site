@@ -292,6 +292,8 @@ const FINISHED_JOB_RETENTION_MS = 30 * 24 * HOUR_MS;
 export async function startWorker(): Promise<void> {
   if (slots[WORKER_SLOT]) return;
   const cfg = getConfig();
+  // Once per process: the slot check above keeps a second caller (another module copy) from repeating them.
+  for (const warning of cfg.startupWarnings) console.warn(`[startup] ${warning}`);
   getDb();
   // Taking the slot before the first await makes a concurrent second call return early.
   const worker = withMaintenance(createWorker({ grader: getGrader, concurrency: cfg.concurrency, pollMs: POLL_MS }));

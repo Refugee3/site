@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { getConfig, resetConfigForTests } from "@/lib/config";
+import { ANTHROPIC_MODEL_RETIRED, getConfig, resetConfigForTests } from "@/lib/config";
 
 const CONFIG_VARS = [
   "NODE_ENV", "DATA_DIR", "APP_URL", "AI_MODE", "ALLOW_FAKE_AI", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "ANTHROPIC_EFFORT",
@@ -26,7 +26,6 @@ describe("getConfig", () => {
       aiMode: "claude",
       hasApiKey: false,
       appSecret: null,
-      model: "claude-opus-5-5",
       effort: "high",
       fallbacks: true,
       cacheTtl: "1h",
@@ -47,6 +46,7 @@ describe("getConfig", () => {
       agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
       agentSessionTimeoutMs: 1_200_000,
       agentKeepSessions: false,
+      startupWarnings: [],
     });
   });
 
@@ -57,7 +57,6 @@ describe("getConfig", () => {
       APP_URL: "https://grader.school.org/",
       AI_MODE: "claude",
       ANTHROPIC_API_KEY: "sk-test",
-      ANTHROPIC_MODEL: "claude-other",
       ANTHROPIC_EFFORT: "medium",
       AI_FALLBACKS: "off",
       AI_CACHE_TTL: "5m",
@@ -81,7 +80,6 @@ describe("getConfig", () => {
       dataDir: "/srv/grader",
       appUrl: "https://grader.school.org",
       hasApiKey: true,
-      model: "claude-other",
       effort: "medium",
       fallbacks: false,
       cacheTtl: "5m",
@@ -99,6 +97,18 @@ describe("getConfig", () => {
       agentSessionTimeoutMs: 600_000,
       agentKeepSessions: true,
     });
+  });
+
+  it("ignores a retired ANTHROPIC_MODEL, whatever its value, with one startup warning that points to Settings", () => {
+    expect(ANTHROPIC_MODEL_RETIRED).toBe("ANTHROPIC_MODEL is no longer used — choose the model on the Settings page.");
+    // The value .env.example used to suggest: it must not keep a server on Opus behind the Settings page's back.
+    for (const value of ["claude-opus-5-5", "claude-sonnet-5-5", "not-a-model"]) {
+      const cfg = configWith({ ANTHROPIC_MODEL: value });
+      expect(cfg.startupWarnings, value).toEqual([ANTHROPIC_MODEL_RETIRED]);
+      expect(cfg).not.toHaveProperty("model");
+    }
+    expect(configWith({ ANTHROPIC_MODEL: "  " }).startupWarnings).toEqual([]);
+    expect(configWith().startupWarnings).toEqual([]);
   });
 
   it("treats empty and blank values as unset", () => {

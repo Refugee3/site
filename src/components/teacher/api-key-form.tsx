@@ -18,6 +18,7 @@ import { useActionRunner } from "./use-action-runner";
 export interface ApiKeyFormProps {
   apiKey: TeacherSettingsView["apiKey"];
   aiMode: "claude" | "fake";
+  /** The model chosen under AI model, which the key is checked against when it is saved. */
   model: string;
   keyIssue: WorkerStatus["keyIssue"];
 }
@@ -91,9 +92,6 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
         {notice}
       </p>
       {remove.error && <Alert tone="danger">{remove.error}</Alert>}
-      <p className="text-xs text-muted">
-        Model: <span className="font-mono">{model}</span>
-      </p>
     </div>
   );
 }

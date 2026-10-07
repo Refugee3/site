@@ -59,8 +59,11 @@ export interface HostedAgentStatus {
   checkedAt: number | null;
 }
 
-/** One setup per key fingerprint at a time; `forced` setups re-check every remote object. */
-interface Flight { promise: Promise<ProvisionedAgents>; forced: boolean }
+/**
+ * One setup per key fingerprint at a time; `forced` setups re-check every remote object. `definitions` identifies the
+ * definitions it applies (definitionsId), so a caller that needs others (the model changed meanwhile) doesn't join it.
+ */
+interface Flight { promise: Promise<ProvisionedAgents>; forced: boolean; definitions: string }
 
 export interface AgentProcessSlot {
   flights: Map<string, Flight>;
@@ -88,13 +91,21 @@ interface Definitions { env: EnvironmentDefinition; agents: Record<AgentRole, Ag
 
 let memo: { key: string; defs: Definitions } | null = null;
 
-function definitionsFor(installId: string, cfg: Pick<AgentEngineConfig, "model" | "effort" | "scanEffort">): Definitions {
-  const key = JSON.stringify([installId, cfg.model, cfg.effort, cfg.scanEffort]);
+function definitionsFor(
+  installId: string,
+  cfg: Pick<AgentEngineConfig, "model" | "scanModel" | "effort" | "scanEffort">,
+): Definitions {
+  const key = JSON.stringify([installId, cfg.model, cfg.scanModel, cfg.effort, cfg.scanEffort]);
   if (memo?.key !== key) {
     const agents = Object.fromEntries(AGENT_ROLES.map((role) => [role, agentDefinition(role, cfg, installId)]));
     memo = { key, defs: { env: environmentDefinition(installId), agents: agents as Record<AgentRole, AgentDefinition> } };
   }
   return memo.defs;
+}
+
+/** Identifies a set of definitions: the hashes of the environment and of each agent. */
+function definitionsId(defs: Definitions): string {
+  return JSON.stringify([defs.env.hash, ...AGENT_ROLES.map((role) => defs.agents[role].hash)]);
 }
 
 /** The stored ids when they are current for this key and these definitions, else null. */
@@ -172,17 +183,20 @@ async function acquire(d: ProvisionDeps, force: boolean): Promise<ProvisionedAge
   for (;;) {
     const fp = d.keyFingerprint();
     const state = d.store.load();
-    const current = force ? null : currentAgents(state, fp, definitionsFor(state.installId, d.cfg));
+    const defs = definitionsFor(state.installId, d.cfg);
+    const current = force ? null : currentAgents(state, fp, defs);
     if (current) return current;
     const flights = agentProcessSlot().flights;
     const running = flights.get(fp);
-    if (running && (!force || running.forced)) return running.promise;
+    const sameDefinitions = running?.definitions === definitionsId(defs);
+    if (running && sameDefinitions && (!force || running.forced)) return running.promise;
     if (running) {
-      // A forced setup must not trust a normal one that started before it: wait, then start (or join) a forced one.
+      // A forced setup must not trust a normal one that started before it, and a caller whose definitions differ (the
+      // model was changed in Settings meanwhile) must not run on the agents it sets up: wait, then start (or join) one.
       await running.promise.catch(() => undefined);
       continue;
     }
-    const flight: Flight = { promise: provision(d, fp, force), forced: force };
+    const flight: Flight = { promise: provision(d, fp, force), forced: force, definitions: definitionsId(defs) };
     flights.set(fp, flight);
     const settle = () => {
       if (flights.get(fp) === flight) flights.delete(fp);

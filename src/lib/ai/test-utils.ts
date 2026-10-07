@@ -1,18 +1,21 @@
 import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import type { AppConfig } from "@/lib/config";
-import type { AiUsage, KeyItem, Section } from "@/lib/types";
+import type { AiModel, AiUsage, KeyItem, Section } from "@/lib/types";
 
 // Tests only. makeMessage builds what a MessageRunner would return, so no real client is ever constructed.
 
-/** A complete AppConfig that does not read the environment. */
-export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+/**
+ * A complete AppConfig that does not read the environment, plus the model chosen in Settings (the direct engine's
+ * DirectAiConfig). Opus 5.5 by default, so a test can tell it from the scan splitter's Sonnet 5.5.
+ */
+export function testConfig(overrides: Partial<AppConfig & { model: AiModel }> = {}): AppConfig & { model: AiModel } {
   return {
     nodeEnv: "test", dataDir: "/tmp/pag-test", appUrl: null, aiMode: "claude", hasApiKey: true, model: "claude-opus-5-5",
     effort: "high", fallbacks: true, cacheTtl: "1h", aiTimeoutMs: 600_000, jobTimeoutMs: 2_700_000, maxTokens: 64_000,
     maxTokensCeiling: 128_000, concurrency: 3, jobMaxAttempts: 4, teacherSignupCode: null, cookieSecure: false,
     maxUploadBytes: 20 * 1_048_576, maxPages: 40, maxUploadFiles: 20, maxKeyItems: 200, appSecret: null,
     maxScanBytes: 100 * 1_048_576, maxScanPages: 200, agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
-    agentSessionTimeoutMs: 1_200_000, agentKeepSessions: false, ...overrides,
+    agentSessionTimeoutMs: 1_200_000, agentKeepSessions: false, startupWarnings: [], ...overrides,
   };
 }
 

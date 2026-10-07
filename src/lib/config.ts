@@ -12,7 +12,6 @@ export interface AppConfig {
   hasApiKey: boolean;
   /** Master secret for encrypting the saved API key; null → DATA_DIR/secret.key. Never log the config object. */
   appSecret: string | null;
-  model: string;
   effort: Effort;
   fallbacks: boolean;
   cacheTtl: "5m" | "1h";
@@ -36,7 +35,12 @@ export interface AppConfig {
   agentSessionTimeoutMs: number;
   /** AGENT_KEEP_SESSIONS=1: keep sessions and their uploads for debugging instead of deleting them. */
   agentKeepSessions: boolean;
+  /** Logged once when the server starts: settings it ignores (ANTHROPIC_MODEL). */
+  startupWarnings: string[];
 }
+
+/** ANTHROPIC_MODEL is retired: the model is chosen in Settings → AI model. A value left in .env.local is ignored. */
+export const ANTHROPIC_MODEL_RETIRED = "ANTHROPIC_MODEL is no longer used — choose the model on the Settings page.";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const satisfies readonly Effort[];
 const MIB = 1_048_576;
@@ -83,7 +87,8 @@ const EnvSchema = z.object({
   ALLOW_FAKE_AI: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   APP_SECRET: z.string().min(32, "must be at least 32 characters; generate one with: openssl rand -base64 32").optional(),
-  ANTHROPIC_MODEL: z.string().default("claude-opus-5-5"),
+  // Retired: read only to warn that it is ignored (any value).
+  ANTHROPIC_MODEL: z.string().optional(),
   ANTHROPIC_EFFORT: z.enum(EFFORTS).default("high"),
   AI_FALLBACKS: z.enum(["on", "off"]).default("on"),
   AI_CACHE_TTL: z.enum(["5m", "1h"]).default("1h"),
@@ -137,7 +142,6 @@ function parseConfig(): AppConfig {
     aiMode: env.AI_MODE,
     hasApiKey: env.ANTHROPIC_API_KEY !== undefined,
     appSecret: env.APP_SECRET ?? null,
-    model: env.ANTHROPIC_MODEL,
     effort: env.ANTHROPIC_EFFORT,
     fallbacks: env.AI_FALLBACKS === "on",
     cacheTtl: env.AI_CACHE_TTL,
@@ -153,6 +157,7 @@ function parseConfig(): AppConfig {
     agentBudgetCents: { extract: env.AGENT_BUDGET_EXTRACT_USD, grade: env.AGENT_BUDGET_GRADE_USD, scan: env.AGENT_BUDGET_SCAN_USD },
     agentSessionTimeoutMs: env.AGENT_SESSION_TIMEOUT_MS,
     agentKeepSessions: env.AGENT_KEEP_SESSIONS === "1",
+    startupWarnings: env.ANTHROPIC_MODEL === undefined ? [] : [ANTHROPIC_MODEL_RETIRED],
     ...CONSTANTS,
   };
 }

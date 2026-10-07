@@ -156,7 +156,9 @@ export type ApiKeySource = "app" | "env" | "none";
 export interface TeacherSettingsView {
   apiKey: { source: ApiKeySource; masked: string | null; check: "verified" | "unverified" | null; setAt: number | null;
     setByName: string | null; unreadable: boolean; envKeySet: boolean };
-  aiMode: "claude" | "fake"; model: string; studentsCanUpload: boolean;
+  aiMode: "claude" | "fake";
+  /** Settings → AI model: reads answer keys and grades papers, with either engine. */
+  aiModel: AiModel; studentsCanUpload: boolean;
   /** Assignments (of every teacher) left open: they take student uploads again as soon as the switch is turned on. */
   openAssignmentCount: number; gradingPreferences: string; worker: WorkerStatus | null;
   grader: { engine: GradingEngineChoice; /** null in AI_MODE=fake or without a usable key */ agent: HostedAgentStatusView | null } }
@@ -185,3 +187,8 @@ export interface HostedAgentStatusView {
   /** When setup last succeeded ("ready") or failed ("error"); ms. */
   checkedAt: number | null;
 }
+
+// ---- v5: the AI model ----
+/** The models a teacher can choose in Settings → AI model; the first is the default. */
+export const AI_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5"] as const;
+export type AiModel = (typeof AI_MODELS)[number];

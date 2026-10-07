@@ -4,7 +4,7 @@ import { AiError } from "../errors";
 import type { AiCallMeta, CallOptions, Grader } from "../grader";
 import { itemRefs, renderGradingContext, renderGuidance, renderScanContext } from "../prompts";
 import { type GradingOutput, GradingOutputSchema, KeyExtractionSchema, type ScanPages, ScanPagesSchema } from "../schemas";
-import { AGENT_ROLES, MOUNT } from "./definitions";
+import { AGENT_ROLES, type AgentEngineConfig, MOUNT, roleModel } from "./definitions";
 import { teacherMessageFor } from "./errors";
 import { agentExtractionTask, agentGradingTask, agentScanTask } from "./prompts";
 import { agentProcessSlot, ensureProvisioned, type ProvisionDeps, type ProvisionedAgents } from "./provision";
@@ -24,6 +24,12 @@ import {
 export interface AgentGraderDeps extends ProvisionDeps {
   /** Called once, after the first task that succeeds (confirms a saved key, like confirmKeyOnSuccess). */
   onFirstSuccess?: () => void;
+  /**
+   * The model chosen in Settings now, read when each task starts (default: cfg.model). A task of a job that started
+   * before the model was changed then sets up and uses the same agents as the new jobs, instead of switching the
+   * agents back to the old model and forth again.
+   */
+  currentModel?: () => AgentEngineConfig["model"];
 }
 
 export function createAgentGrader(d: AgentGraderDeps): Grader {
@@ -31,7 +37,9 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
   let confirmed = false;
 
   async function run<T>(spec: Omit<AgentTaskSpec<T>, "budgetCents">, o: CallOptions): Promise<{ output: T; meta: AiCallMeta }> {
-    const provisioned = await ensureProvisioned(d, { signal: o.signal });
+    // Every step of the task (setup, session, the model it is reported under) uses the definitions read here.
+    const task: ProvisionDeps = d.currentModel ? { ...d, cfg: { ...d.cfg, model: d.currentModel() } } : d;
+    const provisioned = await ensureProvisioned(task, { signal: o.signal });
     // A call asking for more than the configured max tokens is the retry after a cap: it gets double the budget.
     const budgetCents = d.cfg.budgetCents[spec.role] * ((o.maxTokens ?? d.cfg.maxTokens) > d.cfg.maxTokens ? 2 : 1);
     sweepIfDue(provisioned);
@@ -39,9 +47,9 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
     try {
       result = await runAgentTask({
         port: d.port,
-        cfg: d.cfg,
+        cfg: task.cfg,
         provisioned,
-        reprovision: () => ensureProvisioned(d, { force: true, signal: o.signal }),
+        reprovision: () => ensureProvisioned(task, { force: true, signal: o.signal }),
         now: d.now,
       }, { ...spec, budgetCents }, { signal: o.signal });
     } catch (e) {
@@ -49,11 +57,12 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
       throw e;
     }
     confirmOnce();
+    const model = roleModel(task.cfg, spec.role);
     return {
       output: result.output,
       meta: {
-        requestedModel: d.cfg.model,
-        servedModel: d.cfg.model,
+        requestedModel: model,
+        servedModel: model,
         fallbackUsed: false,
         stopReason: "end_turn",
         usage: result.usage,

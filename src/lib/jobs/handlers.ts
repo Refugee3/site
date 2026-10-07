@@ -8,6 +8,7 @@ import { addAssignmentUsage, getAssignment, listSections } from "@/lib/db/repos/
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
+import { getAiModel } from "@/lib/db/repos/settings";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
 import { isAppError } from "@/lib/errors";
 import { isKeyApproved, keyFingerprint, normalizeExtractedKey } from "@/lib/grading/key";
@@ -142,7 +143,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
     : buildRefusedResult({ items: ctx.items, current: latest, hasSections: sections.length > 0, category: outcome.category });
   const ai = outcome.kind === "graded"
     ? { aiModel: outcome.meta.servedModel, usage: outcome.meta.usage, aiOutputJson: JSON.stringify(outcome.output) }
-    : { aiModel: outcome.billed?.servedModel ?? getConfig().model, usage: outcome.billed?.usage ?? null, aiOutputJson: null };
+    : { aiModel: outcome.billed?.servedModel ?? getAiModel(), usage: outcome.billed?.usage ?? null, aiOutputJson: null };
 
   const saved = saveGradingResult({
     submissionId: ctx.submissionId,

@@ -2,6 +2,7 @@
 
 import { refresh } from "next/cache";
 import * as z from "zod";
+import { aiModelSavedMessage } from "@/lib/ai-models";
 import { keySavedMessage } from "@/lib/api-key-messages";
 import { requireTeacher } from "@/lib/auth/dal";
 import { getConfig } from "@/lib/config";
@@ -10,9 +11,9 @@ import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
+  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
 } from "@/lib/services/settings";
-import type { ActionResult, GradingEngineChoice } from "@/lib/types";
+import { AI_MODELS, type ActionResult, type AiModel, type GradingEngineChoice } from "@/lib/types";
 
 // Shape only: saveApiKey checks the key's format, and saveGradingPreferences the preferences' length.
 const ApiKeyFormSchema = z.object({
@@ -25,6 +26,7 @@ const PreferencesFormSchema = z.object({
 });
 const EnabledSchema = z.boolean();
 const EngineSchema = z.enum(["agent", "direct"]);
+const AiModelSchema = z.enum(AI_MODELS, "Choose Claude Sonnet 5.5 or Claude Opus 5.5.");
 
 /** Checks the pasted key with Anthropic before saving it; the key itself never comes back to the browser. */
 export async function saveApiKeyAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
@@ -61,6 +63,19 @@ export async function setGradingEngineAction(engine: GradingEngineChoice): Promi
   if (!result.ok) return result;
   refresh();
   return { ok: true, message: engineSavedMessage(engine) };
+}
+
+/** Settings → AI model: the model that reads answer keys and grades papers from the next one on. */
+export async function setAiModelAction(model: AiModel): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attemptWithData(() => {
+    const chosen = parseInput(AiModelSchema, model);
+    setAiModel(chosen);
+    return chosen;
+  });
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: aiModelSavedMessage(result.data) };
 }
 
 /** "Set up now" / "Set up again": sets up the hosted agent for the key in use, waiting at most a minute. */

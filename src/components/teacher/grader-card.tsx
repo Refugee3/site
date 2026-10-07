@@ -17,19 +17,27 @@ export interface GraderCardProps {
   agent: HostedAgentStatusView | null;
 }
 
-const ENGINE_OPTIONS: Array<{ value: GradingEngineChoice; label: string; recommended: boolean; hint: string }> = [
-  {
-    value: "agent",
-    label: "Anthropic-hosted agent",
-    recommended: true,
-    hint: "Claude works through each paper in a private workspace on Anthropic's servers and can enlarge, crop or rotate a page to "
-      + "read difficult handwriting. Takes a few minutes per paper. Billed for tokens plus $0.08 per hour of agent time.",
-  },
+interface EngineOption {
+  value: GradingEngineChoice;
+  label: string;
+  badge: { text: string; tone: "info" | "neutral" };
+  hint: string;
+}
+
+const ENGINE_OPTIONS: EngineOption[] = [
   {
     value: "direct",
     label: "Direct API",
-    recommended: false,
-    hint: "Sends each paper to Claude in a single request. Faster and usually cheaper, without the close-up look at hard-to-read pages.",
+    badge: { text: "Recommended", tone: "info" },
+    hint: "Sends each paper to Claude in a single request. Faster and cheaper, and right for most homework.",
+  },
+  {
+    value: "agent",
+    label: "Anthropic-hosted agent",
+    badge: { text: "Optional", tone: "neutral" },
+    hint: "Best for very hard-to-read papers: Claude works through each paper in a private workspace on Anthropic's servers and "
+      + "can enlarge, crop or rotate a page. Slower (a few minutes per paper) and more expensive: it takes more AI turns per "
+      + "paper, plus $0.08 per hour of agent time.",
   },
 ];
 
@@ -51,8 +59,8 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted">
-        How papers, answer keys and scans are sent to Claude. Both engines use the API key above and are billed to the same
-        Anthropic account.
+        How papers, answer keys and scans are sent to Claude. Direct API is the default; the hosted agent is optional. Both
+        use the API key and the AI model above and are billed to the same Anthropic account.
       </p>
       <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-2">
         <legend className="sr-only">Grading engine</legend>
@@ -72,7 +80,7 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
             <span className="flex flex-col gap-0.5">
               <span className="flex flex-wrap items-center gap-2 font-medium">
                 {option.label}
-                {option.recommended && <Badge tone="info">Recommended</Badge>}
+                <Badge tone={option.badge.tone}>{option.badge.text}</Badge>
                 {runner.pending && shownEngine === option.value && <Spinner className="size-4" />}
               </span>
               <span className="text-sm text-muted">{option.hint}</span>
@@ -89,7 +97,8 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
         <HostedAgentStatus aiMode={aiMode} agent={agent} />
       ) : (
         <p className="text-sm text-muted">
-          The hosted agent isn&apos;t used. Anything already set up for it stays in your Anthropic workspace, unused.
+          The hosted agent isn&apos;t used, and nothing is set up for it until you choose it. Anything set up for it earlier
+          stays in your Anthropic workspace, unused.
         </p>
       )}
 

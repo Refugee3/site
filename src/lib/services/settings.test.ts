@@ -7,13 +7,13 @@ import { createFakeGrader } from "@/lib/ai/fake";
 import { getGrader, setGraderForTests } from "@/lib/ai/index";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig, resetConfigForTests } from "@/lib/config";
-import { getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
+import { getAiModel, getAppSettings, setGradingEngine as storeGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { attemptWithData } from "@/lib/http/action-result";
 import { decryptSecret, encryptSecret } from "@/lib/secrets";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setGradingEngine, setStudentUploads, setUpHostedAgentAgain, studentUploadsEnabled,
-  UPLOADS_OFF_MESSAGE, type KeyChecker,
+  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
+  studentUploadsEnabled, UPLOADS_OFF_MESSAGE, type KeyChecker,
 } from "@/lib/services/settings";
 import type { Teacher } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
@@ -77,12 +77,17 @@ describe("saveApiKey", () => {
     expect(decryptSecret(settings.apiKeyCiphertext!, "anthropic-api-key")).toBe(KEY);
   });
 
-  it("saves a key whose model isn't available, with a warning naming the model, as not confirmed yet", async () => {
+  it("saves a key whose model isn't available, with a warning naming the chosen model, as not confirmed yet", async () => {
     expect(await saveApiKey(teacher, KEY, checker("model_unavailable"))).toEqual({
-      warning: "Key saved. It works, but the model claude-opus-5-5 isn't available to it, so grading will pause until it is.",
+      warning: "Key saved. It works, but the model claude-sonnet-5-5 isn't available to it, so grading will pause until it is.",
     });
     // Settings keeps saying so after a reload, until a call with the key succeeds.
     expect(getAppSettings().apiKeyCheck).toBe("unverified");
+
+    setAiModel("claude-opus-5-5");
+    expect(await saveApiKey(teacher, KEY, checker("model_unavailable"))).toEqual({
+      warning: "Key saved. It works, but the model claude-opus-5-5 isn't available to it, so grading will pause until it is.",
+    });
   });
 
   it("saves a key that couldn't be checked as unverified, with a warning", async () => {
@@ -152,9 +157,11 @@ describe("saveApiKey", () => {
     expect(getGrader()?.mode).toBe("claude");
   });
 
-  it("starts setting up the hosted agent for the new key, after switching grading over to it", async () => {
+  it("asks for the hosted agent's setup for the new key, after switching grading over to it", async () => {
     vi.stubEnv("AI_MODE", "claude");
     resetConfigForTests();
+    // startHostedAgentSetup() itself does nothing unless the hosted agent is chosen (see ai/index.test.ts).
+    storeGradingEngine("agent");
     hostedAgentSetup.mockImplementation(() => {
       // The setup must find the new key in place.
       expect(getAppSettings().apiKeyMasked).toBe("sk-ant-…a1b2");
@@ -177,20 +184,21 @@ describe("setGradingEngine", () => {
     vi.stubEnv("AI_MODE", "claude");
     resetConfigForTests();
     setStoredApiKeyForTest();
-    expect(getGrader()?.engine).toBe("agent");
-    const resume = registerWorker();
-
-    setGradingEngine("direct");
-
-    expect(getAppSettings().gradingEngine).toBe("direct");
+    // The direct API until a teacher chooses.
     expect(getGrader()?.engine).toBe("direct");
-    expect(resume).toHaveBeenCalledTimes(1);
-    expect(hostedAgentSetup).not.toHaveBeenCalled();
+    const resume = registerWorker();
 
     setGradingEngine("agent");
 
     expect(getAppSettings().gradingEngine).toBe("agent");
     expect(getGrader()?.engine).toBe("agent");
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(hostedAgentSetup).toHaveBeenCalledTimes(1);
+
+    setGradingEngine("direct");
+
+    expect(getAppSettings().gradingEngine).toBe("direct");
+    expect(getGrader()?.engine).toBe("direct");
     expect(resume).toHaveBeenCalledTimes(2);
     expect(hostedAgentSetup).toHaveBeenCalledTimes(1);
   });
@@ -200,6 +208,40 @@ describe("setGradingEngine", () => {
     setGraderForTests(forced);
     setGradingEngine("direct");
     expect(getGrader()).not.toBe(forced);
+  });
+});
+
+describe("setAiModel", () => {
+  it("stores the choice, rebuilds the grader with it, resumes the worker and asks for the hosted agent's update", () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    setStoredApiKeyForTest();
+    const before = getGrader();
+    const resume = registerWorker();
+
+    setAiModel("claude-opus-5-5");
+
+    expect(getAiModel()).toBe("claude-opus-5-5");
+    expect(getGrader()).not.toBe(before);
+    expect(getGrader()?.engine).toBe("direct");
+    expect(resume).toHaveBeenCalledTimes(1);
+    // A no-op unless the hosted agent is chosen; then its agents are moved to the model in the background.
+    expect(hostedAgentSetup).toHaveBeenCalledTimes(1);
+
+    setAiModel("claude-sonnet-5-5");
+    expect(getAiModel()).toBe("claude-sonnet-5-5");
+    expect(resume).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the engine, the key and the student switch alone", () => {
+    setStoredApiKeyForTest();
+    setStudentUploads(true);
+    setGradingEngine("agent");
+    const settings = getAppSettings();
+
+    setAiModel("claude-opus-5-5");
+
+    expect(getAppSettings()).toEqual({ ...settings, aiModel: "claude-opus-5-5" });
   });
 });
 

@@ -6,7 +6,7 @@ import type {
 import type { EnvironmentCreateParams } from "@anthropic-ai/sdk/resources/beta/environments/environments";
 import type * as z from "zod";
 import { sha256Hex } from "@/lib/ids";
-import type { Effort } from "@/lib/types";
+import type { AiModel, Effort } from "@/lib/types";
 import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
 import type { Body } from "./port";
 import { AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_TOOL_DESCRIPTION } from "./prompts";
@@ -24,8 +24,10 @@ export const MOUNT = { answerKey: "/answer-key.pdf", student: "/student-submissi
 export const DEFINITIONS_REVISION = 1;
 
 export interface AgentEngineConfig {
-  /** ANTHROPIC_MODEL (default "claude-opus-5-5"). */
-  model: string;
+  /** Settings → AI model, for extract and grade: changing it updates those two agents (a new version, same ids). */
+  model: AiModel;
+  /** SCAN_SPLIT_MODEL (Sonnet 5.5), for the scan splitter whatever the choice. */
+  scanModel: AiModel;
   /** ANTHROPIC_EFFORT, for extract and grade. */
   effort: Effort;
   /** SCAN_SPLIT_EFFORT ("medium"). */
@@ -71,14 +73,19 @@ const SYSTEM_PROMPT: Record<AgentRole, string> = {
 
 const OUTPUT_SCHEMA: Record<AgentRole, z.ZodType> = { extract: KeyExtractionSchema, grade: GradingOutputSchema, scan: ScanPagesSchema };
 
+/** The model a role's agent runs on: the scan splitter's own, else the one chosen in Settings. */
+export function roleModel(cfg: Pick<AgentEngineConfig, "model" | "scanModel">, role: AgentRole): AiModel {
+  return role === "scan" ? cfg.scanModel : cfg.model;
+}
+
 export function agentDefinition(
   role: AgentRole,
-  cfg: Pick<AgentEngineConfig, "model" | "effort" | "scanEffort">,
+  cfg: Pick<AgentEngineConfig, "model" | "scanModel" | "effort" | "scanEffort">,
   installId: string,
 ): AgentDefinition {
   const name = `PDF Auto-Grader: ${ROLE_NAME[role]} [${installId}]`;
   const description = ROLE_DESCRIPTION[role];
-  const model = { id: cfg.model, effort: role === "scan" ? cfg.scanEffort : cfg.effort };
+  const model = { id: roleModel(cfg, role), effort: role === "scan" ? cfg.scanEffort : cfg.effort };
   const system = SYSTEM_PROMPT[role];
   const tools: NonNullable<AgentCreateParams["tools"]> = [
     TOOLSET,

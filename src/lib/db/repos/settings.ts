@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
 import * as z from "zod";
+import { DEFAULT_AI_MODEL, isAiModel } from "@/lib/ai-models";
 import { now } from "@/lib/clock";
 import { one, run, toBit } from "@/lib/db/sql";
 import { truncateChars } from "@/lib/grading/text";
-import type { GradingEngineChoice, HostedAgentRole } from "@/lib/types";
+import type { AiModel, GradingEngineChoice, HostedAgentRole } from "@/lib/types";
 
 export interface AppSettings { studentsCanUpload: boolean; apiKeyCiphertext: string | null; apiKeyMasked: string | null;
   apiKeyCheck: "verified" | "unverified" | null; apiKeySetBy: string | null; apiKeySetAt: number | null; updatedAt: number;
-  gradingEngine: GradingEngineChoice | null }
+  gradingEngine: GradingEngineChoice | null; aiModel: AiModel }
 
 /** A hosted-agent object in the key's Anthropic workspace, with the hash of the definition it was last given. */
 type StoredEnvironment = { id: string; hash: string };
@@ -40,6 +41,7 @@ interface AppSettingsRow {
   agent_status: HostedAgentState["status"];
   agent_error: string | null;
   agent_checked_at: number | null;
+  ai_model: string;
 }
 
 const MAX_AGENT_ERROR_CHARS = 500;
@@ -68,6 +70,8 @@ export function getAppSettings(): AppSettings {
     apiKeySetAt: row.api_key_set_at,
     updatedAt: row.updated_at,
     gradingEngine: row.grading_engine,
+    // The column's CHECK allows only the known models; anything else (never expected) reads as the default.
+    aiModel: isAiModel(row.ai_model) ? row.ai_model : DEFAULT_AI_MODEL,
   };
 }
 
@@ -110,9 +114,19 @@ export function setGradingEngine(engine: GradingEngineChoice): void {
   run("UPDATE app_settings SET grading_engine = ?, updated_at = ? WHERE id = 1", engine, now());
 }
 
-/** The effective choice: the stored one, else the default "agent". */
+/** The effective choice: the stored one, else the default "direct" (NULL = never chosen, also on servers set up before v5). */
 export function getGradingEngine(): GradingEngineChoice {
-  return getAppSettings().gradingEngine ?? "agent";
+  return getAppSettings().gradingEngine ?? "direct";
+}
+
+/** Settings → AI model. */
+export function setAiModel(model: AiModel): void {
+  run("UPDATE app_settings SET ai_model = ?, updated_at = ? WHERE id = 1", model, now());
+}
+
+/** The model that reads answer keys and grades papers (migration 5 defaults it to Sonnet 5.5). */
+export function getAiModel(): AiModel {
+  return getAppSettings().aiModel;
 }
 
 /** A stored JSON column read with `schema`; null when unset, and null (with a warning) when it doesn't parse. */

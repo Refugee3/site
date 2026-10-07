@@ -7,6 +7,7 @@ import {
   definitionHash,
   DEFINITIONS_REVISION,
   environmentDefinition,
+  roleModel,
   SUBMIT_TOOL,
   submitToolSchema,
 } from "./definitions";
@@ -38,11 +39,26 @@ describe("agentDefinition", () => {
       + "Managed by the app: changes made here are overwritten.");
   });
 
-  it("always sets an explicit effort, medium for the scan splitter", () => {
+  it("always sets an explicit effort, medium for the scan splitter, which always runs on Sonnet 5.5", () => {
     expect(agentDefinition("extract", cfg, INSTALL).params.model).toEqual({ id: "claude-opus-5-5", effort: "high" });
     expect(agentDefinition("grade", cfg, INSTALL).params.model).toEqual({ id: "claude-opus-5-5", effort: "high" });
-    expect(agentDefinition("scan", cfg, INSTALL).params.model).toEqual({ id: "claude-opus-5-5", effort: "medium" });
+    expect(agentDefinition("scan", cfg, INSTALL).params.model).toEqual({ id: "claude-sonnet-5-5", effort: "medium" });
     expect(agentDefinition("grade", testAgentConfig({ effort: "max" }), INSTALL).params.model).toEqual({ id: "claude-opus-5-5", effort: "max" });
+  });
+
+  it("gives the answer-key reader and the paper grader the model chosen in Settings, and the scan splitter its own", () => {
+    const sonnet = testAgentConfig({ model: "claude-sonnet-5-5" });
+    expect(agentDefinition("extract", sonnet, INSTALL).params.model).toEqual({ id: "claude-sonnet-5-5", effort: "high" });
+    expect(agentDefinition("grade", sonnet, INSTALL).params.model).toEqual({ id: "claude-sonnet-5-5", effort: "high" });
+    expect(agentDefinition("scan", sonnet, INSTALL).params.model).toEqual({ id: "claude-sonnet-5-5", effort: "medium" });
+    // Choosing another model changes only the two agents that use it, so only they are updated.
+    for (const role of ["extract", "grade"] as const) {
+      expect(agentDefinition(role, sonnet, INSTALL).hash).not.toBe(agentDefinition(role, cfg, INSTALL).hash);
+    }
+    expect(agentDefinition("scan", sonnet, INSTALL).hash).toBe(agentDefinition("scan", cfg, INSTALL).hash);
+    expect(roleModel(cfg, "extract")).toBe("claude-opus-5-5");
+    expect(roleModel(cfg, "grade")).toBe("claude-opus-5-5");
+    expect(roleModel(cfg, "scan")).toBe("claude-sonnet-5-5");
   });
 
   it("disables every toolset tool by default under the auto policy and enables only bash and read", () => {
@@ -89,7 +105,10 @@ describe("agentDefinition", () => {
     // Fields that don't belong to the grader's definition don't change it.
     expect(agentDefinition("grade", testAgentConfig({ scanEffort: "low", budgetCents: { extract: 1, grade: 1, scan: 1 } }), INSTALL).hash)
       .toBe(base.hash);
-    expect(agentDefinition("grade", testAgentConfig({ model: "claude-opus-5" }), INSTALL).hash).not.toBe(base.hash);
+    expect(agentDefinition("grade", testAgentConfig({ model: "claude-sonnet-5-5" }), INSTALL).hash).not.toBe(base.hash);
+    expect(agentDefinition("grade", testAgentConfig({ scanModel: "claude-opus-5-5" }), INSTALL).hash).toBe(base.hash);
+    expect(agentDefinition("scan", testAgentConfig({ scanModel: "claude-opus-5-5" }), INSTALL).hash)
+      .not.toBe(agentDefinition("scan", cfg, INSTALL).hash);
     expect(agentDefinition("grade", testAgentConfig({ effort: "xhigh" }), INSTALL).hash).not.toBe(base.hash);
     expect(agentDefinition("scan", testAgentConfig({ scanEffort: "low" }), INSTALL).hash).not.toBe(agentDefinition("scan", cfg, INSTALL).hash);
     expect(agentDefinition("grade", cfg, "ffffffffffff").hash).not.toBe(base.hash);

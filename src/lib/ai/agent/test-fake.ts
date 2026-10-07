@@ -420,9 +420,11 @@ export function memoryStore(initial: Partial<AgentStateSnapshot> = {}): MemorySt
   return store;
 }
 
+/** Opus 5.5 for extract and grade, so a test can tell it from the scan splitter's Sonnet 5.5. */
 export function testAgentConfig(overrides: Partial<AgentEngineConfig> = {}): AgentEngineConfig {
   return {
-    model: "claude-opus-5-5", effort: "high", scanEffort: "medium", budgetCents: { extract: 300, grade: 200, scan: 150 },
-    sessionTimeoutMs: 1_200_000, keepSessions: false, maxTokens: 64_000, ...overrides,
+    model: "claude-opus-5-5", scanModel: "claude-sonnet-5-5", effort: "high", scanEffort: "medium",
+    budgetCents: { extract: 300, grade: 200, scan: 150 }, sessionTimeoutMs: 1_200_000, keepSessions: false, maxTokens: 64_000,
+    ...overrides,
   };
 }

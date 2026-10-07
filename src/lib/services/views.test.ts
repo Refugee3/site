@@ -17,7 +17,7 @@ import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jo
 import { createWorker } from "@/lib/jobs/worker";
 import { everyNLayout } from "@/lib/scan-layout";
 import { rotateShareCode, setFeedbackReleased } from "@/lib/services/assignments";
-import { removeApiKey, saveApiKey, setStudentUploads } from "@/lib/services/settings";
+import { removeApiKey, saveApiKey, setAiModel, setStudentUploads } from "@/lib/services/settings";
 import {
   deleteSubmission, gradeManually, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride,
 } from "@/lib/services/submissions";
@@ -297,11 +297,35 @@ describe("teacher views", () => {
     });
   });
 
-  it("estimates cost for the known model only", () => {
+  it("estimates cost for the known models only, each at its own price", () => {
     const usage = { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 2_000_000, cacheWriteTokens: 500_000 };
+    // Opus 5.5: $4 / $20 per million, cache reads $0.20, cache writes $8 (1 h) or $5 (5 min).
     expect(estimateCostUsd(usage, "claude-opus-5-5", "1h")).toBeCloseTo(4 + 2 + 0.4 + 4);
     expect(estimateCostUsd(usage, "claude-opus-5-5", "5m")).toBeCloseTo(4 + 2 + 0.4 + 2.5);
+    // Sonnet 5.5: $2 / $10 per million, cache reads $0.20, cache writes $4 (1 h) or $2.50 (5 min).
+    expect(estimateCostUsd(usage, "claude-sonnet-5-5", "1h")).toBeCloseTo(2 + 1 + 0.4 + 2);
+    expect(estimateCostUsd(usage, "claude-sonnet-5-5", "5m")).toBeCloseTo(2 + 1 + 0.4 + 1.25);
+    // The fallback models a declined request may be served by: Sonnet 5 at Sonnet 5.5's prices, Opus 5 and Opus 4.8 at
+    // $5 / $25, cache reads $0.50, cache writes $10 (1 h) or $6.25 (5 min).
+    expect(estimateCostUsd(usage, "claude-sonnet-5", "1h")).toBeCloseTo(2 + 1 + 0.4 + 2);
+    for (const model of ["claude-opus-5", "claude-opus-4-8"]) {
+      expect(estimateCostUsd(usage, model, "1h"), model).toBeCloseTo(5 + 2.5 + 1 + 5);
+      expect(estimateCostUsd(usage, model, "5m"), model).toBeCloseTo(5 + 2.5 + 1 + 3.125);
+    }
     expect(estimateCostUsd(usage, "some-other-model", "1h")).toBeNull();
+  });
+
+  it("prices each model's share of the assignment's usage at that model's own price", () => {
+    const usage: AiUsage = { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    addAssignmentUsage(assignment.id, "claude-sonnet-5-5", usage);
+    addAssignmentUsage(assignment.id, "claude-sonnet-5-5", usage);
+    addAssignmentUsage(assignment.id, "claude-opus-5-5", usage);
+
+    const view = getSettingsView(assignment).usage;
+    expect(view).toMatchObject({ calls: 3, inputTokens: 3_000_000, outputTokens: 300_000 });
+    // Sonnet 5.5: 2 × ($2 + $1); Opus 5.5: $4 + $2. Half the price per token, so about half the cost for the same work.
+    expect(view.estimatedCostUsd).toBeCloseTo(2 * 3 + 6);
+    expect(estimateCostUsd(usage, "claude-sonnet-5-5", "1h")! * 2).toBeCloseTo(estimateCostUsd(usage, "claude-opus-5-5", "1h")!);
   });
 
   it("prices hosted-agent sessions at their list cost, and estimates them from tokens and running time once one has none", () => {
@@ -348,9 +372,25 @@ describe("teacher views", () => {
     resetConfigForTests();
     expect(engine()).toBeNull();
     await saveApiKey(teacher, "sk-ant-api03-abcdefghijklmnopqrstuvwxyz-a1b2", async () => "ok");
+    expect(engine()).toBe("direct");
+    setGradingEngine("agent");
     expect(engine()).toBe("agent");
     setGradingEngine("direct");
     expect(engine()).toBe("direct");
+  });
+
+  it("doesn't mark papers for regrading when the AI model changes", async () => {
+    const paper = await gradedPaper("Maria Lopez");
+    const before = { board: getBoardView(assignment, "all"), review: getReviewView(getSubmission(paper.id)!, assignment, ORIGIN) };
+    expect(before.board).toMatchObject({ staleCount: 0, guidanceStaleCount: 0 });
+
+    setAiModel("claude-opus-5-5");
+    setAiModel("claude-sonnet-5-5");
+
+    expect(getBoardView(assignment, "all")).toMatchObject({ staleCount: 0, guidanceStaleCount: 0 });
+    const review = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    expect(review).toMatchObject({ stale: false, guidanceStale: false });
+    expect(getSubmission(paper.id)).toEqual(before.review.submission);
   });
 });
 
@@ -576,13 +616,20 @@ describe("getTeacherSettingsView", () => {
     setGradingPreferences(teacher.id, "Ignore spelling.");
     expect(getTeacherSettingsView(teacher)).toEqual({
       apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
-      aiMode: "fake", model: "claude-opus-5-5", studentsCanUpload: true, openAssignmentCount: 1, gradingPreferences: "Ignore spelling.",
-      worker: null, grader: { engine: "agent", agent: null },
+      aiMode: "fake", aiModel: "claude-sonnet-5-5", studentsCanUpload: true, openAssignmentCount: 1,
+      gradingPreferences: "Ignore spelling.", worker: null, grader: { engine: "direct", agent: null },
     });
+  });
+
+  it("shows the AI model chosen in Settings", () => {
+    setAiModel("claude-opus-5-5");
+    expect(getTeacherSettingsView(teacher).aiModel).toBe("claude-opus-5-5");
   });
 
   it("shows the grading engine, and the hosted agent's setup for the key in use in claude mode only", async () => {
     await saveApiKey(teacher, KEY, async () => "ok");
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+    setGradingEngine("agent");
     expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
     setGradingEngine("direct");
     expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
@@ -602,6 +649,8 @@ describe("getTeacherSettingsView", () => {
   it("shows no hosted agent in claude mode without a usable key", () => {
     vi.stubEnv("AI_MODE", "claude");
     resetConfigForTests();
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+    setGradingEngine("agent");
     expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
   });
 

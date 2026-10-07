@@ -205,6 +205,56 @@ describe("ensureProvisioned", () => {
     });
   });
 
+  it("moves the answer-key reader and the paper grader to a newly chosen model as new versions, creating nothing", async () => {
+    const { fake, store, d } = await provisioned();
+    const before = structuredClone(store.state.agents);
+    const sonnet = testAgentConfig({ model: "claude-sonnet-5-5" });
+
+    const result = await ensureProvisioned({ ...d, cfg: sonnet });
+
+    expect(fake.methods()).toEqual(["updateAgent", "updateAgent"]);
+    expect(fake.calls.map((c) => [c.args[0], (c.args[1] as { model: unknown }).model])).toEqual([
+      ["agent_1", { id: "claude-sonnet-5-5", effort: "high" }],
+      ["agent_2", { id: "claude-sonnet-5-5", effort: "high" }],
+    ]);
+    expect(store.state.agents).toEqual({
+      extract: { id: before.extract!.id, version: 2, hash: agentDefinition("extract", sonnet, INSTALL).hash },
+      grade: { id: before.grade!.id, version: 2, hash: agentDefinition("grade", sonnet, INSTALL).hash },
+      scan: before.scan,
+    });
+    expect(result.agents).toEqual({ extract: { id: "agent_1", version: 2 }, grade: { id: "agent_2", version: 2 }, scan: { id: "agent_3", version: 1 } });
+
+    // Switching back is another update of the same agents; a setup that is current makes no call at all.
+    fake.calls.length = 0;
+    await ensureProvisioned(d);
+    expect(fake.methods()).toEqual(["updateAgent", "updateAgent"]);
+    expect(store.state.agents).toMatchObject({ extract: { id: "agent_1", version: 3 }, grade: { id: "agent_2", version: 3 } });
+    fake.calls.length = 0;
+    await ensureProvisioned(d);
+    expect(fake.calls).toEqual([]);
+    expect(count(fake, "createAgent")).toBe(0);
+  });
+
+  it("never hands a caller a setup for other definitions (the model changed meanwhile): it waits, then applies its own", async () => {
+    const { fake, store, d } = await provisioned();
+    const sonnet = testAgentConfig({ model: "claude-sonnet-5-5" });
+    const opusMax = testAgentConfig({ effort: "max" });
+    const held = fake.hold("updateAgent");
+
+    const first = ensureProvisioned({ ...d, cfg: sonnet });
+    const second = ensureProvisioned({ ...d, cfg: opusMax });
+    held.release();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(fake.calls.map((c) => [c.method, (c.args[1] as { model: unknown }).model])).toEqual([
+      ["updateAgent", { id: "claude-sonnet-5-5", effort: "high" }], ["updateAgent", { id: "claude-sonnet-5-5", effort: "high" }],
+      ["updateAgent", { id: "claude-opus-5-5", effort: "max" }], ["updateAgent", { id: "claude-opus-5-5", effort: "max" }],
+    ]);
+    // Each caller runs on the versions that carry its own definitions.
+    expect([a.agents.grade, b.agents.grade]).toEqual([{ id: "agent_2", version: 2 }, { id: "agent_2", version: 3 }]);
+    expect(store.state.agents.grade?.hash).toBe(agentDefinition("grade", opusMax, INSTALL).hash);
+  });
+
   it("updates the environment when its definition hash changed", async () => {
     const { fake, store, d } = await provisioned();
     store.state = { ...store.state, environment: { id: "env_1", hash: "old" } };
@@ -372,7 +422,7 @@ describe("hostedAgentStatus", () => {
   it("is ready when the stored setup is current, and not_set_up once the definitions change", async () => {
     const { store, d } = await provisioned();
     expect(hostedAgentStatus(d)).toEqual({ state: "ready", error: null, checkedAt: store.state.checkedAt });
-    expect(hostedAgentStatus({ ...d, cfg: testAgentConfig({ model: "claude-opus-5" }) }).state).toBe("not_set_up");
+    expect(hostedAgentStatus({ ...d, cfg: testAgentConfig({ model: "claude-sonnet-5-5" }) }).state).toBe("not_set_up");
     expect(hostedAgentStatus({ ...d, keyFingerprint: () => FP2 }).state).toBe("not_set_up");
   });
 

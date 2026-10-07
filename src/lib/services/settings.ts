@@ -1,17 +1,18 @@
 import { checkApiKey, resetGrader, setUpHostedAgentNow, startHostedAgentSetup, type KeyCheck } from "@/lib/ai";
 import { maskApiKey, normalizeApiKeyInput } from "@/lib/ai/api-key";
-import { getConfig } from "@/lib/config";
 import {
-  clearStoredApiKey, getAppSettings, setGradingEngine as storeGradingEngine, setStoredApiKey, setStudentsCanUpload,
+  clearStoredApiKey, getAiModel, getAppSettings, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine, setStoredApiKey,
+  setStudentsCanUpload,
 } from "@/lib/db/repos/settings";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
 import { charLength } from "@/lib/grading/text";
 import { resumeWorker } from "@/lib/jobs/queue";
 import { encryptSecret } from "@/lib/secrets";
-import type { GradingEngineChoice, Teacher } from "@/lib/types";
+import type { AiModel, GradingEngineChoice, Teacher } from "@/lib/types";
 
-// App-wide settings (the API key, the grading engine, the student switch) and the teacher's own grading preferences.
+// App-wide settings (the API key, the AI model, the grading engine, the student switch) and the teacher's own grading
+// preferences.
 
 export const UPLOADS_OFF_MESSAGE = "Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.";
 
@@ -31,10 +32,10 @@ export function setStudentUploads(enabled: boolean): void {
 }
 
 /**
- * Checks the pasted key with Anthropic, then stores it encrypted and switches grading over to it at once.
- * A key Anthropic rejects is not saved. One that couldn't be checked, or that can't use the model, is saved as
- * unverified, until a call made with it succeeds (confirmKeyOnSuccess). Returns the warning to show instead of the
- * plain success message, if any.
+ * Checks the pasted key with Anthropic (against the model chosen in Settings), then stores it encrypted and switches
+ * grading over to it at once. A key Anthropic rejects is not saved. One that couldn't be checked, or that can't use
+ * the model, is saved as unverified, until a call made with it succeeds (confirmKeyOnSuccess). Returns the warning to
+ * show instead of the plain success message, if any.
  */
 export async function saveApiKey(teacher: Teacher, raw: string, check: KeyChecker = checkApiKey): Promise<{ warning: string | null }> {
   const input = normalizeApiKeyInput(raw);
@@ -52,6 +53,7 @@ export async function saveApiKey(teacher: Teacher, raw: string, check: KeyChecke
   });
   switchToCurrentKey();
   // In the background, so the hosted agent is usually ready before the first paper; the save doesn't wait for it.
+  // Only once the hosted agent is chosen: with the direct API, nothing is created in the key's workspace.
   startHostedAgentSetup();
   return { warning: saveWarning(result) };
 }
@@ -79,6 +81,20 @@ export function setGradingEngine(engine: GradingEngineChoice): void {
   if (engine === "agent") startHostedAgentSetup();
 }
 
+/**
+ * Settings → AI model. Validated by the action; like the engine, it applies from the next job (answer keys and papers,
+ * either engine), and papers already graded keep their grades: a grading doesn't go stale with the model. With the
+ * hosted agent chosen, its answer-key reader and paper grader are updated to the model in the background (new versions
+ * of the same agents, through their definition hashes).
+ */
+export function setAiModel(model: AiModel): void {
+  storeAiModel(model);
+  resetGrader();
+  // A pause because the old model wasn't available to the key ends.
+  resumeWorker();
+  startHostedAgentSetup();
+}
+
 /** "Set up now" / "Set up again": on success also resumeWorker() (a pause for agent_unavailable ends). */
 export async function setUpHostedAgentAgain(): Promise<{ ok: true } | { ok: false; error: string }> {
   const result = await setUpHostedAgentNow();
@@ -95,7 +111,7 @@ function saveWarning(result: Exclude<KeyCheck, "rejected">): string | null {
     case "ok":
       return null;
     case "model_unavailable":
-      return `Key saved. It works, but the model ${getConfig().model} isn't available to it, so grading will pause until it is.`;
+      return `Key saved. It works, but the model ${getAiModel()} isn't available to it, so grading will pause until it is.`;
     case "unreachable":
       return KEY_UNREACHABLE;
   }

@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import { type AppConfig, getConfig } from "@/lib/config";
 import {
-  getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError, saveHostedAgentReady,
+  getAiModel, getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError, saveHostedAgentReady,
 } from "@/lib/db/repos/settings";
 import type { GraderEngine, HostedAgentStatusView } from "@/lib/types";
 import type { AgentEngineConfig } from "./agent/definitions";
@@ -31,7 +32,7 @@ const slots = globalThis as unknown as Record<symbol, GraderSlot | undefined>;
 
 /**
  * The configured grader, or null in claude mode without any API key (the worker then pauses). Memoized
- * until resetGrader(), which saving or removing the key in Settings calls.
+ * until resetGrader(), which saving or removing the key, or choosing the engine or the model, in Settings calls.
  */
 export function getGrader(): Grader | null {
   slots[SLOT] ??= { grader: graderFromConfig() };
@@ -49,9 +50,9 @@ export function setGraderForTests(g: Grader | null | undefined): void {
   else slots[SLOT] = { grader: g };
 }
 
-/** Checks a candidate API key with Anthropic before it is saved. */
+/** Checks a candidate API key with Anthropic before it is saved, against the model chosen in Settings. */
 export function checkApiKey(key: string): Promise<KeyCheck> {
-  return createSdkKeyChecker(getConfig())(key);
+  return createSdkKeyChecker(getAiModel())(key);
 }
 
 /** "fake" in AI_MODE=fake, null without a usable key, else the Settings choice. Never builds a grader or calls Anthropic. */
@@ -75,14 +76,19 @@ export function startHostedAgentSetup(): void {
   }
 }
 
+/** setUpHostedAgentNow's answer while the direct API is chosen. */
+export const HOSTED_AGENT_NOT_CHOSEN = "Choose the Anthropic-hosted agent under Grader first.";
+
 /**
  * Re-checks and sets up the hosted agent now (≤ 60 s). In AI_MODE=fake → { ok: false, error: "Practice mode (AI_MODE=fake)
- * doesn't use the hosted agent." }; without a key → { ok: false, error: "Add an API key first." }.
+ * doesn't use the hosted agent." }; without a key → { ok: false, error: "Add an API key first." }; with the direct API
+ * chosen → HOSTED_AGENT_NOT_CHOSEN (nothing is created in the key's workspace until the hosted agent is chosen).
  */
 export async function setUpHostedAgentNow(): Promise<{ ok: true } | { ok: false; error: string }> {
   if (getConfig().aiMode === "fake") return { ok: false, error: "Practice mode (AI_MODE=fake) doesn't use the hosted agent." };
   const deps = currentAgentDeps();
   if (deps === null) return { ok: false, error: "Add an API key first." };
+  if (getGradingEngine() !== "agent") return { ok: false, error: HOSTED_AGENT_NOT_CHOSEN };
   return setUpProvisionedNow(deps);
 }
 
@@ -103,8 +109,9 @@ function graderFromConfig(): Grader | null {
   const resolved = resolveApiKey();
   if (resolved === null) return null;
   if (getGradingEngine() === "direct") {
-    if (resolved.source === "env") return createClaudeGrader(createSdkRunner(cfg), cfg);
-    return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), cfg);
+    const direct = { ...cfg, model: getAiModel() };
+    if (resolved.source === "env") return createClaudeGrader(createSdkRunner(cfg), direct);
+    return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), direct);
   }
   const deps = agentDeps(cfg, resolved);
   if (deps === null) return null;
@@ -112,6 +119,7 @@ function graderFromConfig(): Grader | null {
     ...deps,
     // A saved key that couldn't be confirmed when it was saved is confirmed by the first task that succeeds with it.
     onFirstSuccess: resolved.source === "app" ? () => markStoredApiKeyVerified(resolved.ciphertext) : undefined,
+    currentModel: getAiModel,
   });
 }
 
@@ -160,9 +168,11 @@ function agentDeps(cfg: AppConfig, resolved: ResolvedApiKey): ProvisionDeps | nu
   };
 }
 
+/** Read at each use, so the definitions follow the model chosen in Settings (a change updates the agents, by hash). */
 function agentEngineConfig(cfg: AppConfig): AgentEngineConfig {
   return {
-    model: cfg.model,
+    model: getAiModel(),
+    scanModel: SCAN_SPLIT_MODEL,
     effort: cfg.effort,
     scanEffort: SCAN_SPLIT_EFFORT,
     budgetCents: cfg.agentBudgetCents,

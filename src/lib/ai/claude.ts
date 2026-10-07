@@ -8,8 +8,9 @@ import type {
   BetaTextBlockParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import type * as z from "zod";
+import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import type { AppConfig } from "@/lib/config";
-import type { AiUsage, Effort } from "@/lib/types";
+import type { AiModel, AiUsage, Effort } from "@/lib/types";
 import { AiError, classifySdkError } from "./errors";
 import type { AiCallMeta, ExtractKeyInput, GradeInput, Grader, ReadScanInput } from "./grader";
 import {
@@ -27,6 +28,12 @@ import {
 import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "./schemas";
 
 export type MessageRunner = (params: BetaMessageStreamParams, o: { signal?: AbortSignal }) => Promise<BetaMessage>;
+
+/**
+ * What the direct engine's requests are built from: the server's AI settings, plus `model`, the model chosen in
+ * Settings → AI model for reading answer keys and grading papers. Splitting scans uses SCAN_SPLIT_MODEL instead.
+ */
+export type DirectAiConfig = Pick<AppConfig, "effort" | "fallbacks" | "cacheTtl" | "maxTokens"> & { model: AiModel };
 
 /** Raw PDF bytes allowed per request; base64 inflates by 4/3, which keeps the body under the 32 MB API limit. */
 export const PDF_BYTE_BUDGET = 22 * 1024 * 1024;
@@ -47,7 +54,10 @@ export const DOCUMENT_CONTEXT = {
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
-/** Splitting a scan only needs page-level reading, so it runs at medium effort whatever ANTHROPIC_EFFORT says. */
+/**
+ * Splitting a scan only needs page-level reading, so it runs at medium effort whatever ANTHROPIC_EFFORT says, on
+ * SCAN_SPLIT_MODEL (Sonnet 5.5) whatever model is chosen in Settings.
+ */
 export const SCAN_SPLIT_EFFORT = "medium" satisfies Effort;
 
 /**
@@ -65,14 +75,14 @@ export function createSdkRunner(cfg: AppConfig, apiKey?: string): MessageRunner 
 export type KeyCheck = "ok" | "rejected" | "model_unavailable" | "unreachable";
 
 /**
- * Checks a candidate key by looking up the configured model with it. Never throws, and never puts the key
- * in what it returns. A billing problem still proves the key itself is valid, so it counts as ok.
+ * Checks a candidate key by looking up `model` (the one chosen in Settings) with it. Never throws, and never puts the
+ * key in what it returns. A billing problem still proves the key itself is valid, so it counts as ok.
  */
-export function createSdkKeyChecker(cfg: AppConfig, o: { fetch?: typeof fetch } = {}): (key: string) => Promise<KeyCheck> {
+export function createSdkKeyChecker(model: AiModel, o: { fetch?: typeof fetch } = {}): (key: string) => Promise<KeyCheck> {
   return async (key) => {
     try {
       const client = new Anthropic({ apiKey: key, authToken: null, maxRetries: 1, timeout: 15_000, ...(o.fetch ? { fetch: o.fetch } : {}) });
-      await client.models.retrieve(cfg.model);
+      await client.models.retrieve(model);
       return "ok";
     } catch (e) {
       switch (classifySdkError(e).code) {
@@ -89,12 +99,12 @@ export function createSdkKeyChecker(cfg: AppConfig, o: { fetch?: typeof fetch } 
   };
 }
 
-export function buildExtractionParams(i: ExtractKeyInput, cfg: AppConfig, maxTokens: number): BetaMessageStreamParams {
+export function buildExtractionParams(i: ExtractKeyInput, cfg: DirectAiConfig, maxTokens: number): BetaMessageStreamParams {
   if (i.keyPdf.byteLength > PDF_BYTE_BUDGET) {
     throw new AiError("request_too_large", PDF_TOO_LARGE.key, { retryable: false });
   }
   return {
-    ...commonParams(cfg, maxTokens, outputFormat(KeyExtractionSchema), cfg.effort),
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(KeyExtractionSchema), cfg.effort),
     system: KEY_EXTRACTION_SYSTEM_PROMPT,
     messages: [{
       role: "user",
@@ -114,7 +124,7 @@ export function buildExtractionParams(i: ExtractKeyInput, cfg: AppConfig, maxTok
  */
 export function buildGradingParams(
   i: GradeInput,
-  cfg: AppConfig,
+  cfg: DirectAiConfig,
   maxTokens: number,
 ): { params: BetaMessageStreamParams; refs: string[]; keyPdfIncluded: boolean } {
   const studentBytes = i.studentPdf.byteLength;
@@ -136,20 +146,23 @@ export function buildGradingParams(
   ];
 
   const params: BetaMessageStreamParams = {
-    ...commonParams(cfg, maxTokens, outputFormat(GradingOutputSchema), cfg.effort),
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(GradingOutputSchema), cfg.effort),
     system: GRADING_SYSTEM_PROMPT,
     messages: [{ role: "user", content: [...sharedPrefix, ...perStudent] }],
   };
   return { params, refs, keyPdfIncluded: keyPdf !== null };
 }
 
-/** One chunk of a scan. The context block is the same for every chunk, so it is written to the cache once and then read. */
-export function buildScanSplitParams(i: ReadScanInput, cfg: AppConfig, maxTokens: number): BetaMessageStreamParams {
+/**
+ * One chunk of a scan, always on SCAN_SPLIT_MODEL. The context block is the same for every chunk, so it is written to
+ * the cache once and then read.
+ */
+export function buildScanSplitParams(i: ReadScanInput, cfg: DirectAiConfig, maxTokens: number): BetaMessageStreamParams {
   if (i.chunkPdf.byteLength > PDF_BYTE_BUDGET) {
     throw new AiError("request_too_large", PDF_TOO_LARGE.scan, { retryable: false });
   }
   return {
-    ...commonParams(cfg, maxTokens, outputFormat(ScanPagesSchema), SCAN_SPLIT_EFFORT),
+    ...commonParams(cfg, SCAN_SPLIT_MODEL, maxTokens, outputFormat(ScanPagesSchema), SCAN_SPLIT_EFFORT),
     system: SCAN_SPLIT_SYSTEM_PROMPT,
     messages: [{
       role: "user",
@@ -183,7 +196,7 @@ export function interpretMessage<T>(
   };
 }
 
-export function createClaudeGrader(runner: MessageRunner, cfg: AppConfig): Grader {
+export function createClaudeGrader(runner: MessageRunner, cfg: DirectAiConfig): Grader {
   async function call<T>(params: BetaMessageStreamParams, schema: z.ZodType<T>, signal: AbortSignal | undefined) {
     const startedAt = performance.now();
     let msg: BetaMessage;
@@ -194,7 +207,7 @@ export function createClaudeGrader(runner: MessageRunner, cfg: AppConfig): Grade
     }
     let interpreted: ReturnType<typeof interpretMessage<T>>;
     try {
-      interpreted = interpretMessage(msg, schema, cfg.model);
+      interpreted = interpretMessage(msg, schema, params.model);
     } catch (e) {
       // The response was billed even though it is unusable; the job layer records its usage.
       if (e instanceof AiError) throw new AiError(e.code, e.message, { ...e.o, billed: { servedModel: msg.model, usage: toAiUsage(msg.usage) } });
@@ -223,9 +236,15 @@ export function createClaudeGrader(runner: MessageRunner, cfg: AppConfig): Grade
   };
 }
 
-function commonParams(cfg: AppConfig, maxTokens: number, format: ReturnType<typeof outputFormat>, effort: Effort) {
+function commonParams(
+  cfg: DirectAiConfig,
+  model: AiModel,
+  maxTokens: number,
+  format: ReturnType<typeof outputFormat>,
+  effort: Effort,
+) {
   return {
-    model: cfg.model,
+    model,
     max_tokens: maxTokens,
     thinking: { type: "adaptive" },
     output_config: { effort, format },
@@ -234,7 +253,7 @@ function commonParams(cfg: AppConfig, maxTokens: number, format: ReturnType<type
 }
 
 /** A text block that ends a cache breakpoint. */
-function cachedText(text: string, cfg: AppConfig): BetaTextBlockParam {
+function cachedText(text: string, cfg: DirectAiConfig): BetaTextBlockParam {
   return { type: "text", text, cache_control: { type: "ephemeral", ttl: cfg.cacheTtl } };
 }
 

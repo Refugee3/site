@@ -57,7 +57,7 @@ function pauseReason(code: AiErrorCode): string {
     case "auth":
       return "Anthropic rejected the API key. Replace it in Settings.";
     case "model_not_found":
-      return "Model not found — check ANTHROPIC_MODEL";
+      return "The AI model isn't available with this API key. Check Settings → AI model.";
     case "billing":
       return "Billing problem — check the plan and credits in the Anthropic Console";
     case "agent_unavailable":

@@ -96,7 +96,8 @@ describe("decideFailure", () => {
       action: "pause", resumeAt: NOW + 300_000, reason: "Anthropic rejected the API key. Replace it in Settings.", code: "auth",
     });
     expect(decideFailure(makeJob(), aiError("model_not_found", { pauseWorker: true }), LIMITS)).toEqual({
-      action: "pause", resumeAt: NOW + 300_000, reason: "Model not found — check ANTHROPIC_MODEL", code: "model_not_found",
+      action: "pause", resumeAt: NOW + 300_000, reason: "The AI model isn't available with this API key. Check Settings → AI model.",
+      code: "model_not_found",
     });
   });
 

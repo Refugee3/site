@@ -14,6 +14,7 @@ import { getAssignmentUsage, listSections } from "@/lib/db/repos/assignments";
 import * as jobsRepo from "@/lib/db/repos/jobs";
 import { cancelQueuedJobs, claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
+import { getAiModel } from "@/lib/db/repos/settings";
 import { getSubmission, getSubmissionByReceipt, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
@@ -742,6 +743,28 @@ describe("startWorker", () => {
     const first = workerSlot();
     await startWorker();
     expect(workerSlot()).toBe(first);
+  });
+
+  it("warns once that a leftover ANTHROPIC_MODEL is ignored, and grades with the model chosen in Settings", async () => {
+    vi.stubEnv("ANTHROPIC_MODEL", "claude-opus-5-5");
+    resetConfigForTests();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setGraderForTests(null);
+
+    await startWorker();
+    await startWorker();
+
+    expect(warn.mock.calls).toEqual([["[startup] ANTHROPIC_MODEL is no longer used — choose the model on the Settings page."]]);
+    expect(getAiModel()).toBe("claude-sonnet-5-5");
+  });
+
+  it("says nothing about ANTHROPIC_MODEL when it isn't set", async () => {
+    vi.stubEnv("ANTHROPIC_MODEL", "");
+    resetConfigForTests();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setGraderForTests(null);
+    await startWorker();
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("runs queued work in the background", async () => {
