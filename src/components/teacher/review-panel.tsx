@@ -100,7 +100,7 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
               </Card>
             )}
 
-            <ItemList submissionId={s.id} items={view.items} onShowPage={showPage} />
+            <ItemList assignmentId={assignmentId} submissionId={s.id} items={view.items} onShowPage={showPage} />
           </div>
         </div>
 
@@ -182,6 +182,15 @@ function StatusNotices({ view }: { view: ReviewView }) {
       </Alert>
     );
   }
+
+  if (view.guidanceStale) {
+    return (
+      <Alert tone="info" title="Graded before your latest corrections">
+        This paper was graded before your newest lessons or grading preferences. Regrade it to apply them; your
+        overrides are kept.
+      </Alert>
+    );
+  }
   return null;
 }
 
@@ -207,8 +216,15 @@ function TeacherNotes({ view }: { view: ReviewView }) {
   );
 }
 
+interface ItemListProps {
+  assignmentId: string;
+  submissionId: string;
+  items: ReviewItemView[];
+  onShowPage: (page: number) => void;
+}
+
 /** Item cards, with a heading before the parts of each multi-part question. */
-function ItemList({ submissionId, items, onShowPage }: { submissionId: string; items: ReviewItemView[]; onShowPage: (page: number) => void }) {
+function ItemList({ assignmentId, submissionId, items, onShowPage }: ItemListProps) {
   return (
     <section aria-label="Questions" className="flex flex-col gap-3">
       {items.map((entry, index) => {
@@ -217,7 +233,7 @@ function ItemList({ submissionId, items, onShowPage }: { submissionId: string; i
         return (
           <div key={entry.item.id} className="flex flex-col gap-3">
             {startsGroup && <h3 className="pt-2 text-sm font-semibold uppercase tracking-wide text-muted">Question {group}</h3>}
-            <ItemCard submissionId={submissionId} entry={entry} onShowPage={onShowPage} />
+            <ItemCard assignmentId={assignmentId} submissionId={submissionId} entry={entry} onShowPage={onShowPage} />
           </div>
         );
       })}

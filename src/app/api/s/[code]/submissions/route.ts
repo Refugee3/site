@@ -4,6 +4,7 @@ import { AppError } from "@/lib/errors";
 import { checkCodeLookup, checkStudentUpload, countCodeLookupMiss, countStudentSubmission } from "@/lib/http/rate-limit";
 import { assertSameOrigin, clientIp, readUploadedFiles, toErrorResponse } from "@/lib/http/request";
 import { normalizeShareCode } from "@/lib/ids";
+import { studentUploadsEnabled, UPLOADS_OFF_MESSAGE } from "@/lib/services/settings";
 import { ingestStudentUpload } from "@/lib/services/submissions";
 import { getStudentUploadView } from "@/lib/services/views";
 
@@ -20,6 +21,8 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/s/[code]/su
     const code = normalizeShareCode((await ctx.params).code);
     if (!code) throw new AppError("not_found", "This assignment link is not valid.");
     assertSameOrigin(req, { allowMissing: true }); // a missing Origin (scripts, curl) is allowed but rate limited
+    // Before any lookup or counting: while uploads are off, the answer says nothing about which codes exist.
+    if (!studentUploadsEnabled()) throw new AppError("closed", UPLOADS_OFF_MESSAGE);
     const ip = clientIp(req.headers);
     checkCodeLookup(ip);
     const view = getStudentUploadView(code);

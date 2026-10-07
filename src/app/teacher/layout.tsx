@@ -6,6 +6,8 @@ import { SubmitButton } from "@/components/ui/submit-button";
 import { requireTeacher } from "@/lib/auth/dal";
 import { getWorkerStatus } from "@/lib/jobs/queue";
 
+const NAV_LINK = "flex min-h-11 items-center text-sm font-medium text-ink no-underline hover:underline";
+
 // Not an auth boundary (layouts are not re-checked on navigation): every teacher page calls the DAL itself.
 export default async function TeacherLayout({ children }: LayoutProps<"/teacher">) {
   const teacher = await requireTeacher();
@@ -17,9 +19,13 @@ export default async function TeacherLayout({ children }: LayoutProps<"/teacher"
           <Link href="/teacher" className="text-base font-semibold text-ink no-underline">
             {APP_NAME}
           </Link>
-          <nav aria-label="Teacher" className="flex items-center">
-            <Link href="/teacher" className="flex min-h-11 items-center text-sm font-medium text-ink no-underline hover:underline">
+          {/* On phones the links get their own row under the name and "Log out", which don't fit beside them. */}
+          <nav aria-label="Teacher" className="order-last flex w-full items-center gap-5 sm:order-none sm:w-auto">
+            <Link href="/teacher" className={NAV_LINK}>
               Assignments
+            </Link>
+            <Link href="/teacher/settings" className={NAV_LINK}>
+              Settings
             </Link>
           </nav>
           <div className="ml-auto flex items-center gap-3">

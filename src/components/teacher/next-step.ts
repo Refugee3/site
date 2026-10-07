@@ -11,8 +11,11 @@ export interface NextStep {
 
 type DashboardAssignment = DashboardView["assignments"][number];
 
-/** The one thing an assignment card asks the teacher to do next, most urgent first; null when nothing is pending. */
-export function nextStep(a: DashboardAssignment): NextStep | null {
+/**
+ * The one thing an assignment card asks the teacher to do next, most urgent first; null when nothing is pending.
+ * While students can't upload, the teacher uploads the homework, and there is nothing to open or remind about.
+ */
+export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean }): NextStep | null {
   const keyHref = `/teacher/assignments/${a.id}/key`;
   switch (a.keyStatus) {
     case "empty":
@@ -30,6 +33,9 @@ export function nextStep(a: DashboardAssignment): NextStep | null {
   }
   if (a.counts.failed > 0) {
     return { text: `${plural(a.counts.failed, "paper")} failed to grade`, href: boardHref(a.id, "failed"), tone: "danger" };
+  }
+  if (!o.studentsCanUpload) {
+    return a.counts.total === 0 ? { text: "Upload homework", href: `/teacher/assignments/${a.id}/upload`, tone: "info" } : null;
   }
   if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
   // Everything is graded and checked, but students still see only "received": the switch is on the assignment page.

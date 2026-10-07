@@ -9,6 +9,7 @@ import { LifecycleButtons } from "@/components/teacher/lifecycle-buttons";
 import { ShareCard } from "@/components/teacher/share-card";
 import { plural } from "@/components/teacher/text";
 import { Badge } from "@/components/ui/badge";
+import { cx } from "@/components/ui/cx";
 import type { Tone } from "@/components/ui/tone";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { formatPoints, formatShareCode } from "@/lib/format";
@@ -29,6 +30,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
   const { assignment } = await requireOwnedAssignment(id);
   const header = getAssignmentHeader(assignment, getPublicOrigin(await headers()));
   const keyState = describeKey(header);
+  const feedbackReleased = assignment.feedbackReleasedAt !== null;
 
   return (
     <>
@@ -38,7 +40,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="min-w-0 break-words text-2xl font-semibold">{assignment.title}</h1>
-          <StatusBadge status={assignment.status} />
+          {header.studentsCanUpload && <StatusBadge status={assignment.status} />}
         </div>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
           <span>Answer key:</span>
@@ -57,21 +59,28 @@ export default async function AssignmentLayout({ params, children }: Props) {
         <CollapsedOnPhones
           summary={
             <>
-              Code <span className="font-mono font-semibold tracking-wider">{formatShareCode(assignment.shareCode)}</span>
-              {" · "}
-              {assignment.feedbackReleasedAt !== null ? "Feedback released" : "Feedback hidden"}
+              {header.studentsCanUpload && (
+                <>
+                  Code <span className="font-mono font-semibold tracking-wider">{formatShareCode(assignment.shareCode)}</span>
+                  {" · "}
+                </>
+              )}
+              {feedbackReleased ? "Feedback released" : "Feedback hidden"}
             </>
           }
-          className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]"
+          className={cx("grid gap-4", header.studentsCanUpload ? "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" : "lg:grid-cols-2")}
         >
-          <ShareCard shareUrl={header.shareUrl} shareCode={assignment.shareCode} status={assignment.status} />
+          {header.studentsCanUpload && (
+            <ShareCard shareUrl={header.shareUrl} shareCode={assignment.shareCode} status={assignment.status} />
+          )}
           <LifecycleButtons
             assignmentId={assignment.id}
             status={assignment.status}
             canOpen={header.canOpen}
             keyApproved={header.keyApproved}
-            released={assignment.feedbackReleasedAt !== null}
+            released={feedbackReleased}
             needsReviewCount={header.counts.needs_review}
+            studentsCanUpload={header.studentsCanUpload}
           />
         </CollapsedOnPhones>
       </HiddenWhileReviewing>
@@ -80,6 +89,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
         assignmentId={assignment.id}
         needsReviewCount={header.counts.needs_review}
         keyNeedsAttention={!header.keyApproved && header.keyStatus !== "processing"}
+        studentsCanUpload={header.studentsCanUpload}
       />
 
       {children}

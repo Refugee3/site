@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setStudentsCanUpload } from "@/lib/db/repos/settings";
 import * as views from "@/lib/services/views";
 import type { Assignment } from "@/lib/types";
-import { seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
+import { enableStudentUploads, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
 import { GET } from "./route";
 
 let assignment: Assignment;
@@ -10,6 +11,7 @@ let assignment: Assignment;
 beforeEach(() => {
   useTestDb();
   assignment = seedAssignment(seedTeacher().id, { status: "open" });
+  enableStudentUploads();
 });
 
 function lookUp(code: string, ip = "203.0.113.7"): Promise<Response> {
@@ -58,5 +60,27 @@ describe("GET /go", () => {
       spy.mockRestore();
       log.mockRestore();
     }
+  });
+});
+
+describe("GET /go while student uploads are off", () => {
+  beforeEach(() => setStudentsCanUpload(false));
+
+  it("sends every code back to the start page without looking it up", async () => {
+    const spy = vi.spyOn(views, "getStudentUploadView");
+    try {
+      await expectRedirect(lookUp(assignment.shareCode), "/?error=off");
+      await expectRedirect(lookUp("ZZZZZZ"), "/?error=off");
+      await expectRedirect(lookUp("no"), "/?error=off");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("counts nothing, so the address can look up codes once uploads are back on", async () => {
+    for (let i = 0; i < 100; i++) await expectRedirect(lookUp("ZZZZZZ"), "/?error=off");
+    enableStudentUploads();
+    await expectRedirect(lookUp(assignment.shareCode), `/s/${assignment.shareCode}`);
   });
 });

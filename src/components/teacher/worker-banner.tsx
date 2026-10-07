@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Alert } from "@/components/ui/alert";
 import type { WorkerStatus } from "@/lib/types";
 import { plural } from "./text";
@@ -9,7 +10,7 @@ export function WorkerBanner({ worker }: { worker: WorkerStatus | null }) {
   if (worker?.aiMode === "fake") {
     notices.push(
       <Alert key="fake" tone="warning" title="FAKE AI MODE — grades are not real">
-        This server is running the built-in demo grader. Set AI_MODE=claude and ANTHROPIC_API_KEY to grade real work.
+        This server is running the built-in demo grader. Set AI_MODE=claude and add an API key in Settings to grade real work.
       </Alert>,
     );
   }
@@ -26,6 +27,14 @@ export function WorkerBanner({ worker }: { worker: WorkerStatus | null }) {
       <Alert key="paused" tone="warning" title="Grading is paused">
         <span className="whitespace-pre-wrap">{worker.reason ?? "The grader is waiting before trying again."}</span>
         {waiting}
+        {worker.keyIssue !== null && (
+          <>
+            {" "}
+            <Link href="/teacher/settings" className="font-medium">
+              Open Settings
+            </Link>
+          </>
+        )}
       </Alert>,
     );
   }

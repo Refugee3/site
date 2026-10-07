@@ -122,10 +122,14 @@ function Checked({ view, receiptPath }: { view: ReceiptViewModel; receiptPath: s
                 <li key={notice}>{NOTICE_TEXT[notice]}</li>
               ))}
             </ul>
-            <p className="mt-2">If something is wrong, fix your paper and submit it again.</p>
+            <p className="mt-2">
+              {view.canResubmit
+                ? "If something is wrong, fix your paper and submit it again."
+                : "If something looks wrong, tell your teacher."}
+            </p>
           </Alert>
         )}
-        {view.notices.length > 0 && <SubmitAgain receiptPath={receiptPath} />}
+        {view.notices.length > 0 && view.canResubmit && <SubmitAgain receiptPath={receiptPath} />}
         <p className="text-muted">
           Your teacher will share your score and feedback when they are ready. Check this page again later.
         </p>

@@ -5,6 +5,7 @@ import { useOptimistic } from "react";
 import { setAssignmentStatusAction, setFeedbackReleasedAction } from "@/actions/assignments";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { cx } from "@/components/ui/cx";
 import { Spinner } from "@/components/ui/spinner";
 import type { AssignmentStatus } from "@/lib/types";
 import { plural } from "./text";
@@ -17,11 +18,13 @@ export interface LifecycleButtonsProps {
   keyApproved: boolean;
   released: boolean;
   needsReviewCount: number;
+  /** Off: only teachers upload, so there is nothing to open or close; only the feedback switch shows. */
+  studentsCanUpload: boolean;
 }
 
 /** Open, close or reopen submissions, and release (or hide again) the students' feedback. */
 export function LifecycleButtons(props: LifecycleButtonsProps) {
-  const { assignmentId, status, canOpen, keyApproved, released, needsReviewCount } = props;
+  const { assignmentId, status, canOpen, keyApproved, released, needsReviewCount, studentsCanUpload } = props;
   const lifecycle = useActionRunner();
   const release = useActionRunner();
 
@@ -37,30 +40,32 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
   return (
     <section aria-labelledby="lifecycle-heading" className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-4 shadow-sm">
       <h2 id="lifecycle-heading" className="text-sm font-semibold text-muted">
-        Submissions and feedback
+        {studentsCanUpload ? "Submissions and feedback" : "Feedback to students"}
       </h2>
 
-      <div className="flex flex-col gap-2">
-        {status === "open" ? (
-          <Button variant="secondary" disabled={lifecycle.pending} onClick={() => setStatus("closed")}>
-            {lifecycle.pending && <Spinner className="size-4" />}
-            Close submissions
-          </Button>
-        ) : (
-          <Button disabled={!canOpen || lifecycle.pending} onClick={() => setStatus("open")}>
-            {lifecycle.pending && <Spinner className="size-4" />}
-            {status === "draft" ? "Open for students" : "Reopen submissions"}
-          </Button>
-        )}
-        {!keyApproved && status !== "open" && (
-          <p className="text-sm text-muted">
-            Check and save the <Link href={`/teacher/assignments/${assignmentId}/key`}>answer key</Link> before opening.
-          </p>
-        )}
-        {lifecycle.error && <Alert tone="danger">{lifecycle.error}</Alert>}
-      </div>
+      {studentsCanUpload && (
+        <div className="flex flex-col gap-2">
+          {status === "open" ? (
+            <Button variant="secondary" disabled={lifecycle.pending} onClick={() => setStatus("closed")}>
+              {lifecycle.pending && <Spinner className="size-4" />}
+              Close submissions
+            </Button>
+          ) : (
+            <Button disabled={!canOpen || lifecycle.pending} onClick={() => setStatus("open")}>
+              {lifecycle.pending && <Spinner className="size-4" />}
+              {status === "draft" ? "Open for students" : "Reopen submissions"}
+            </Button>
+          )}
+          {!keyApproved && status !== "open" && (
+            <p className="text-sm text-muted">
+              Check and save the <Link href={`/teacher/assignments/${assignmentId}/key`}>answer key</Link> before opening.
+            </p>
+          )}
+          {lifecycle.error && <Alert tone="danger">{lifecycle.error}</Alert>}
+        </div>
+      )}
 
-      <div className="flex flex-col gap-2 border-t border-line pt-4">
+      <div className={cx("flex flex-col gap-2", studentsCanUpload && "border-t border-line pt-4")}>
         <label className="flex min-h-11 cursor-pointer items-center gap-3">
           <input
             type="checkbox"
@@ -78,8 +83,14 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
           {released
             ? "Graded papers show their score and notes on each student's receipt. Untick to hide them again."
             : "Until you release, receipts only confirm that the paper was received and read."}
-          {needsReviewCount > 0 && ` ${plural(needsReviewCount, "paper")} awaiting your review stay hidden either way.`}
+          {needsReviewCount > 0
+            && ` ${plural(needsReviewCount, "paper")} awaiting your review ${needsReviewCount === 1 ? "stays" : "stay"} hidden either way.`}
         </p>
+        {!studentsCanUpload && (
+          <p className="text-sm text-muted">
+            Students see their feedback through receipt links: copy one from a paper&apos;s page or from the upload list.
+          </p>
+        )}
         {release.error && <Alert tone="danger">{release.error}</Alert>}
       </div>
     </section>

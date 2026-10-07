@@ -152,6 +152,7 @@ function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: Key
         version={key.updatedAt}
         approved={isKeyApproved(key, items.length)}
         gradedCount={view.gradedCount}
+        studentsCanUpload={view.studentsCanUpload}
       />
     </div>
   );

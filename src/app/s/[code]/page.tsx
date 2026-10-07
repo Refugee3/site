@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { connection } from "next/server";
 import { RecentSubmissionNotice } from "@/components/student/recent-submission-notice";
 import { UploadForm } from "@/components/student/upload-form";
+import { UploadsOffNotice } from "@/components/student/uploads-off-notice";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { PublicPage } from "@/components/ui/public-page";
@@ -12,6 +13,7 @@ import { formatShareCode } from "@/lib/format";
 import { checkCodeLookup, countCodeLookupMiss } from "@/lib/http/rate-limit";
 import { clientIp } from "@/lib/http/request";
 import { normalizeShareCode } from "@/lib/ids";
+import { studentUploadsEnabled } from "@/lib/services/settings";
 import { getStudentUploadView } from "@/lib/services/views";
 import type { AssignmentStatus } from "@/lib/types";
 
@@ -38,6 +40,16 @@ export default async function StudentUploadPage(props: PageProps<"/s/[code]">) {
   if (code !== requested) redirect(`/s/${code}`);
 
   await connection();
+  // Neither looked up nor counted while uploads are off, so the page reveals nothing about which codes exist.
+  if (!studentUploadsEnabled()) {
+    return (
+      <PublicPage>
+        <h1 className="text-2xl font-semibold">Hand in your work</h1>
+        <UploadsOffNotice />
+        <RecentSubmissionNotice code={code} />
+      </PublicPage>
+    );
+  }
   // Unknown codes count against the same per-IP lookup limit as /go, so this page is no unthrottled oracle.
   const ip = clientIp(await headers());
   if (!mayLookUp(ip)) {

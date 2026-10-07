@@ -23,7 +23,6 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
   const { assignment } = await requireOwnedAssignment(id);
   const filter = parseBoardFilter((await props.searchParams).filter);
   const view = getBoardView(assignment, filter);
-  const uploadHref = `/teacher/assignments/${assignment.id}/upload`;
 
   return (
     <div className="flex flex-col gap-5">
@@ -34,17 +33,14 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
         <BulkActions
           assignmentId={assignment.id}
           staleCount={view.staleCount}
+          guidanceStaleCount={view.guidanceStaleCount}
           failedCount={view.counts.failed}
           hasPapers={view.counts.total > 0}
         />
       </div>
 
       {view.counts.total === 0 ? (
-        <EmptyState
-          title="No papers yet"
-          body={NO_PAPERS_HINT[assignment.status]}
-          action={<LinkButton href={uploadHref} variant="secondary">Upload scanned papers</LinkButton>}
-        />
+        <NoPapers assignmentId={assignment.id} status={assignment.status} studentsCanUpload={view.studentsCanUpload} />
       ) : view.groups.length === 0 ? (
         <EmptyState
           title="No papers match this filter"
@@ -56,6 +52,27 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
 
       <AutoRefresh intervalMs={boardRefreshMs(view)} />
     </div>
+  );
+}
+
+/** While students can't upload, the teacher uploads every paper, so the empty board points there first. */
+function NoPapers(props: { assignmentId: string; status: AssignmentStatus; studentsCanUpload: boolean }) {
+  const uploadHref = `/teacher/assignments/${props.assignmentId}/upload`;
+  if (!props.studentsCanUpload) {
+    return (
+      <EmptyState
+        title="No papers yet"
+        body="Upload the homework on the Upload homework tab: one PDF per student, or one scan of the whole stack. Papers appear here, grouped by section, as they're graded."
+        action={<LinkButton href={uploadHref}>Upload homework</LinkButton>}
+      />
+    );
+  }
+  return (
+    <EmptyState
+      title="No papers yet"
+      body={NO_PAPERS_HINT[props.status]}
+      action={<LinkButton href={uploadHref} variant="secondary">Upload scanned papers</LinkButton>}
+    />
   );
 }
 

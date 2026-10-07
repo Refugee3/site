@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 
 /** Why /go sent the student back to the start page (`?error=`). */
-export type CodeEntryError = "code" | "rate" | "server";
+export type CodeEntryError = "code" | "rate" | "server" | "off";
 
 const ERROR_MESSAGES: Record<CodeEntryError, string> = {
   code: "That code doesn't look right. Check it and try again.",
   rate: "Too many tries from this network. Wait a minute and try again.",
   server: "Something went wrong on our side. Wait a moment and try again.",
+  // Student uploads were off when the code was sent and are back on now that the page has loaded.
+  off: "Your teacher isn't accepting online submissions right now.",
 };
 
 /** The start page's code box. A plain GET to /go, which normalizes the code and redirects to /s/CODE. */

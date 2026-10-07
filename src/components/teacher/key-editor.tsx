@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { LinkButton } from "@/components/ui/link-button";
 import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,6 +35,8 @@ export interface KeyEditorProps {
   approved: boolean;
   /** Papers already graded or awaiting review with the current key. */
   gradedCount: number;
+  /** Off: no "Save & open"; once approved, the next step is uploading the homework. */
+  studentsCanUpload: boolean;
 }
 
 // Dense controls from the sm breakpoint up; phones keep 44 px targets and 16 px text (no zoom on focus).
@@ -44,7 +47,8 @@ function initialRows(items: KeyItem[]): DraftRow[] {
 }
 
 /** The answer-key table: one card per gradable item, with the save bar pinned to the bottom of the screen. */
-export function KeyEditor({ assignmentId, assignmentStatus, items, teacherNotes, version, approved, gradedCount }: KeyEditorProps) {
+export function KeyEditor(props: KeyEditorProps) {
+  const { assignmentId, assignmentStatus, items, teacherNotes, version, approved, gradedCount, studentsCanUpload } = props;
   const router = useRouter();
   const runner = useActionRunner();
   const [rows, setRows] = useState(() => initialRows(items));
@@ -208,14 +212,21 @@ export function KeyEditor({ assignmentId, assignmentStatus, items, teacherNotes,
         <div className="flex flex-wrap items-center gap-3">
           <Button disabled={runner.pending} onClick={() => save(false)}>
             {runner.pending && <Spinner className="size-4" />}
-            Save
+            {studentsCanUpload ? "Save" : "Save answer key"}
           </Button>
-          <Button variant="secondary" disabled={runner.pending} onClick={() => save(true)}>
-            {assignmentStatus === "draft" ? "Save & open submissions" : "Save & view submissions"}
-          </Button>
+          {studentsCanUpload && (
+            <Button variant="secondary" disabled={runner.pending} onClick={() => save(true)}>
+              {assignmentStatus === "draft" ? "Save & open submissions" : "Save & view submissions"}
+            </Button>
+          )}
           <p role="status" className="text-sm text-muted">
             {saveStatus({ pending: runner.pending, dirty, approved, savedMessage })}
           </p>
+          {!studentsCanUpload && approved && !dirty && !runner.pending && (
+            <LinkButton href={`/teacher/assignments/${assignmentId}/upload`} variant="secondary" size="sm">
+              Upload homework →
+            </LinkButton>
+          )}
         </div>
       </div>
     </div>

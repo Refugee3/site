@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { saveItemOverrideAction } from "@/actions/review";
 import { Alert } from "@/components/ui/alert";
@@ -18,6 +19,7 @@ import { useActionRunner } from "./use-action-runner";
 import { useSyncedState } from "./use-synced-state";
 
 export interface ItemCardProps {
+  assignmentId: string;
   submissionId: string;
   entry: ReviewItemView;
   /** Shows a page of the student's PDF next to the cards. */
@@ -56,7 +58,7 @@ function needsAttention(j: ItemJudgment | null): boolean {
 }
 
 /** One key item on the review page: what was expected, what the student wrote, the AI's judgment, and overrides. */
-export function ItemCard({ submissionId, entry, onShowPage }: ItemCardProps) {
+export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: ItemCardProps) {
   const { item, result, score } = entry;
   const judgment = result?.judgment ?? null;
 
@@ -117,7 +119,7 @@ export function ItemCard({ submissionId, entry, onShowPage }: ItemCardProps) {
         </p>
       )}
 
-      <OverrideForm submissionId={submissionId} entry={entry} />
+      <OverrideForm assignmentId={assignmentId} submissionId={submissionId} entry={entry} />
     </article>
   );
 }
@@ -158,41 +160,54 @@ function overrideText(text: string, aiText: string): string | null {
 }
 
 /**
- * Points override and the two notes the student reads ("what you did" and feedback). All are saved
- * together (the action stores them all); "Clear" and the "Use the AI's …" buttons save at once,
- * leaving the other fields as stored.
+ * Points override, the two notes the student reads ("what you did" and feedback), and why the teacher made
+ * the correction (the grader learns from it). All are saved together (the action stores them all); "Clear"
+ * and the "Use the AI's …" buttons save at once, leaving the other fields, the reason included, as stored.
  */
-function OverrideForm({ submissionId, entry }: { submissionId: string; entry: ReviewItemView }) {
-  const { item, result, score } = entry;
+function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: string; submissionId: string; entry: ReviewItemView }) {
+  const { item, result, score, lesson } = entry;
   const aiFeedback = result?.judgment?.feedback ?? "";
   const aiNote = result?.judgment?.whatStudentDid ?? "";
   const storedPoints = pointsInputText(result?.overrideCenti ?? null);
   const storedFeedback = result?.overrideFeedback ?? aiFeedback;
   const storedNote = result?.overrideWhatStudentDid ?? aiNote;
+  const storedReason = lesson?.reason ?? "";
   const hasPointsOverride = result !== null && result.overrideCenti !== null;
   const hasFeedbackOverride = result !== null && result.overrideFeedback !== null;
   const hasNoteOverride = result !== null && result.overrideWhatStudentDid !== null;
   const [points, setPoints, expectSavedPoints] = useSyncedState(storedPoints);
   const [feedback, setFeedback, expectSavedFeedback] = useSyncedState(storedFeedback);
   const [note, setNote, expectSavedNote] = useSyncedState(storedNote);
+  const [reason, setReason, expectSavedReason] = useSyncedState(storedReason);
   const [pointsError, setPointsError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const runner = useActionRunner();
-  const dirty = points !== storedPoints || feedback !== storedFeedback || note !== storedNote;
+  const dirty = points !== storedPoints || feedback !== storedFeedback || note !== storedNote || reason !== storedReason;
   useReportUnsaved(itemFormKey(item.id), `Question ${item.label}`, dirty);
-  const ids = { points: `override-${item.id}-points`, feedback: `override-${item.id}-feedback`, note: `override-${item.id}-note` };
+  // A reason is kept only with a correction, so it can be written once there is one, stored or about to be saved.
+  const correcting = hasPointsOverride || hasFeedbackOverride || hasNoteOverride
+    || points.trim() !== "" || overrideText(feedback, aiFeedback) !== null || overrideText(note, aiNote) !== null;
+  const ids = {
+    points: `override-${item.id}-points`,
+    feedback: `override-${item.id}-feedback`,
+    note: `override-${item.id}-note`,
+    reason: `override-${item.id}-reason`,
+  };
 
-  function save(pointsText: string, feedbackText: string, noteText: string) {
+  function save(pointsText: string, feedbackText: string, noteText: string, reasonText: string) {
     const parsed = parsePointsOverride(pointsText, score.maxCenti);
     if (!parsed.ok) {
       setPointsError(parsed.error);
       return;
     }
     setPointsError(null);
+    setSaved(false);
     // Each field that changes takes the stored version once saved; the others keep any unsaved edit.
     const expect = (on: boolean) => {
       if (pointsText !== storedPoints) expectSavedPoints(on);
       if (feedbackText !== storedFeedback) expectSavedFeedback(on);
       if (noteText !== storedNote) expectSavedNote(on);
+      if (reasonText !== storedReason) expectSavedReason(on);
     };
     expect(true);
     runner.run(
@@ -200,15 +215,17 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
         pointsCenti: parsed.centi,
         feedback: overrideText(feedbackText, aiFeedback),
         whatStudentDid: overrideText(noteText, aiNote),
+        // Omitted when unchanged, so the stored reason stays.
+        ...(reasonText !== storedReason ? { reason: reasonText } : {}),
       }),
-      undefined,
+      () => setSaved(true),
       () => expect(false),
     );
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    save(points, feedback, note);
+    save(points, feedback, note, reason);
   }
 
   return (
@@ -225,7 +242,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
               disabled={runner.pending}
               onClick={() => {
                 setNote(aiNote);
-                save(storedPoints, storedFeedback, aiNote);
+                save(storedPoints, storedFeedback, aiNote, storedReason);
               }}
             >
               Use the AI&apos;s note
@@ -259,7 +276,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
               disabled={runner.pending}
               onClick={() => {
                 setFeedback(aiFeedback);
-                save(storedPoints, aiFeedback, storedNote);
+                save(storedPoints, aiFeedback, storedNote, storedReason);
               }}
             >
               Use the AI&apos;s feedback
@@ -275,6 +292,28 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
         />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={ids.reason} className="text-sm font-medium">
+          Why? The grader learns from this.
+        </label>
+        <Textarea
+          id={ids.reason}
+          rows={2}
+          maxLength={1000}
+          aria-describedby={`${ids.reason}-hint`}
+          className="sm:text-sm"
+          disabled={!correcting}
+          readOnly={runner.pending}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <p id={`${ids.reason}-hint`} className="text-xs text-muted">
+          {correcting
+            ? "Optional. Explain your correction, e.g. “Lowercase co2 is fine.” The grader reads it when it grades the next papers."
+            : "Change the points, feedback or note first."}
+        </p>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -306,7 +345,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
             disabled={runner.pending}
             onClick={() => {
               setPoints("");
-              save("", storedFeedback, storedNote);
+              save("", storedFeedback, storedNote, storedReason);
             }}
           >
             Clear
@@ -321,7 +360,25 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
         Computed from the AI&apos;s judgment: {score.computedCenti === null ? "no judgment" : `${formatPoints(score.computedCenti)} pts`}.
         Leave the override empty to use it.
       </p>
+      <LessonStatus assignmentId={assignmentId} lesson={lesson} saved={saved && !dirty && !runner.pending} />
       {(pointsError || runner.error) && <Alert tone="danger">{pointsError ?? runner.error}</Alert>}
     </form>
+  );
+}
+
+function lessonStatusText(lesson: ReviewItemView["lesson"], saved: boolean): string | null {
+  if (!lesson) return null;
+  if (!lesson.active) return "This lesson is turned off on the Lessons tab.";
+  return saved ? "Saved. The grader learns from this correction." : null;
+}
+
+/** What became of the correction: a lesson the grader learns from, or one turned off on the Lessons tab. */
+function LessonStatus({ assignmentId, lesson, saved }: { assignmentId: string; lesson: ReviewItemView["lesson"]; saved: boolean }) {
+  const text = lessonStatusText(lesson, saved);
+  return (
+    <p role="status" className="flex flex-wrap items-baseline gap-x-2 text-sm text-muted empty:hidden">
+      {text}
+      {text && <Link href={`/teacher/assignments/${assignmentId}/lessons`}>All lessons</Link>}
+    </p>
   );
 }

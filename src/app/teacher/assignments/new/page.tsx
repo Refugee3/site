@@ -6,6 +6,7 @@ import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { Card } from "@/components/ui/card";
 import { requireTeacher } from "@/lib/auth/dal";
 import { defaultSectionsText } from "@/lib/services/assignments";
+import { studentUploadsEnabled } from "@/lib/services/settings";
 import type { AssignmentFormInput } from "@/lib/types";
 
 export const metadata: Metadata = { title: "New assignment" };
@@ -30,7 +31,9 @@ export default async function NewAssignmentPage() {
       </Link>
       <h1 className="text-2xl font-semibold">New assignment</h1>
       <p className="text-muted">
-        After saving you&apos;ll add the answer key. Students can&apos;t submit until you open the assignment.
+        {studentUploadsEnabled()
+          ? "After saving you'll add the answer key. Students can't submit until you open the assignment."
+          : "After saving you'll add the answer key, then upload the homework."}
       </p>
       <Card>
         <AssignmentForm mode="create" action={createAssignmentAction} defaults={defaults} />

@@ -10,9 +10,15 @@ import { nextStep } from "./next-step";
 
 type DashboardAssignment = DashboardView["assignments"][number];
 
+export interface AssignmentCardProps {
+  assignment: DashboardAssignment;
+  /** Without student uploads there is no status or code to show: only teachers upload. */
+  studentsCanUpload: boolean;
+}
+
 /** One assignment on the dashboard: status, paper counts and the next thing it needs from the teacher. */
-export function AssignmentCard({ assignment: a }: { assignment: DashboardAssignment }) {
-  const step = nextStep(a);
+export function AssignmentCard({ assignment: a, studentsCanUpload }: AssignmentCardProps) {
+  const step = nextStep(a, { studentsCanUpload });
   const inProgress = a.counts.queued + a.counts.grading;
 
   return (
@@ -24,7 +30,7 @@ export function AssignmentCard({ assignment: a }: { assignment: DashboardAssignm
           </Link>
         </h2>
         <div className="flex flex-wrap gap-1.5">
-          <StatusBadge status={a.status} />
+          {studentsCanUpload && <StatusBadge status={a.status} />}
           {a.released && <Badge tone="info">Feedback released</Badge>}
         </div>
       </div>
@@ -49,8 +55,12 @@ export function AssignmentCard({ assignment: a }: { assignment: DashboardAssignm
       )}
 
       <p className="text-xs text-muted">
-        Code <span className="font-mono font-semibold tracking-wider text-ink">{formatShareCode(a.shareCode)}</span> · Created{" "}
-        <LocalTime ms={a.createdAt} />
+        {studentsCanUpload && (
+          <>
+            Code <span className="font-mono font-semibold tracking-wider text-ink">{formatShareCode(a.shareCode)}</span> ·{" "}
+          </>
+        )}
+        Created <LocalTime ms={a.createdAt} />
       </p>
     </article>
   );
