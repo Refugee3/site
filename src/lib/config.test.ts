@@ -5,7 +5,8 @@ import { getConfig, resetConfigForTests } from "@/lib/config";
 const CONFIG_VARS = [
   "NODE_ENV", "DATA_DIR", "APP_URL", "AI_MODE", "ALLOW_FAKE_AI", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "ANTHROPIC_EFFORT",
   "AI_FALLBACKS", "AI_CACHE_TTL", "AI_TIMEOUT_MS", "GRADING_CONCURRENCY", "JOB_MAX_ATTEMPTS", "TEACHER_SIGNUP_CODE",
-  "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES",
+  "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES", "AGENT_BUDGET_EXTRACT_USD",
+  "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -43,6 +44,9 @@ describe("getConfig", () => {
       maxScanPages: 200,
       maxUploadFiles: 20,
       maxKeyItems: 200,
+      agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
+      agentSessionTimeoutMs: 1_200_000,
+      agentKeepSessions: false,
     });
   });
 
@@ -66,6 +70,11 @@ describe("getConfig", () => {
       APP_SECRET: " 0123456789abcdefghijklmnopqrstuv ",
       MAX_SCAN_MB: "200",
       MAX_SCAN_PAGES: "500",
+      AGENT_BUDGET_EXTRACT_USD: "5",
+      AGENT_BUDGET_GRADE_USD: " 2.5 ",
+      AGENT_BUDGET_SCAN_USD: "0.75",
+      AGENT_SESSION_TIMEOUT_MS: "600000",
+      AGENT_KEEP_SESSIONS: "1",
     });
     expect(cfg).toMatchObject({
       nodeEnv: "production",
@@ -86,6 +95,9 @@ describe("getConfig", () => {
       appSecret: "0123456789abcdefghijklmnopqrstuv",
       maxScanBytes: 200 * 1_048_576,
       maxScanPages: 500,
+      agentBudgetCents: { extract: 500, grade: 250, scan: 75 },
+      agentSessionTimeoutMs: 600_000,
+      agentKeepSessions: true,
     });
   });
 
@@ -124,6 +136,35 @@ describe("getConfig", () => {
 
   it("parses the scan limits within their ranges", () => {
     expect(configWith({ MAX_SCAN_MB: "1", MAX_SCAN_PAGES: "1" })).toMatchObject({ maxScanBytes: 1_048_576, maxScanPages: 1 });
+  });
+
+  it("reads the hosted agent's spending caps as dollars with up to two decimals, in cents", () => {
+    expect(configWith({ AGENT_BUDGET_GRADE_USD: "1.5" }).agentBudgetCents.grade).toBe(150);
+    expect(configWith({ AGENT_BUDGET_GRADE_USD: "1.15" }).agentBudgetCents.grade).toBe(115);
+    expect(configWith({ AGENT_BUDGET_EXTRACT_USD: "0.10", AGENT_BUDGET_SCAN_USD: "50" }).agentBudgetCents)
+      .toEqual({ extract: 10, grade: 200, scan: 5000 });
+    expect(configWith({ AGENT_BUDGET_SCAN_USD: "  " }).agentBudgetCents.scan).toBe(150);
+  });
+
+  it.each(["0.05", "0.09", "51", "50.01", "abc", "1.555", "-1", ".5", "1e1", "$2"])("rejects a spending cap of %j", (value) => {
+    for (const name of ["AGENT_BUDGET_EXTRACT_USD", "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD"]) {
+      expect(() => configWith({ [name]: value }), name).toThrow(
+        `${name}: must be a dollar amount between 0.10 and 50, such as 2 or 1.50`,
+      );
+    }
+  });
+
+  it("bounds the hosted agent's session timeout and keeps sessions only for AGENT_KEEP_SESSIONS=1", () => {
+    expect(configWith({ AGENT_SESSION_TIMEOUT_MS: "60000" }).agentSessionTimeoutMs).toBe(60_000);
+    expect(configWith({ AGENT_SESSION_TIMEOUT_MS: "2700000" }).agentSessionTimeoutMs).toBe(2_700_000);
+    for (const value of ["59999", "2700001", "90000.5"]) {
+      expect(() => configWith({ AGENT_SESSION_TIMEOUT_MS: value }), value).toThrow(/AGENT_SESSION_TIMEOUT_MS/);
+    }
+    expect(configWith({ AGENT_KEEP_SESSIONS: "1" }).agentKeepSessions).toBe(true);
+    expect(configWith({ AGENT_KEEP_SESSIONS: "0" }).agentKeepSessions).toBe(false);
+    for (const value of ["true", "yes", "2"]) {
+      expect(() => configWith({ AGENT_KEEP_SESSIONS: value }), value).toThrow(/AGENT_KEEP_SESSIONS/);
+    }
   });
 
   it("derives cookieSecure from APP_URL unless set explicitly", () => {

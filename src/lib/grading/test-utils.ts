@@ -90,6 +90,7 @@ export function makeSubmission(o: Partial<Submission> = {}): Submission {
     completionCenti: null,
     accuracyCenti: null,
     aiModel: null,
+    aiEngine: null,
     usage: null,
     errorCode: null,
     errorMessage: null,

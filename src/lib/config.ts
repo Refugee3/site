@@ -30,6 +30,12 @@ export interface AppConfig {
   maxScanPages: number;
   maxUploadFiles: number;
   maxKeyItems: number;
+  /** Hosted agent: spending cap per session in US cents, per task type (doubled on the one retry after a cap is hit). */
+  agentBudgetCents: { extract: number; grade: number; scan: number };
+  /** Hosted agent: wall-clock limit of one session, inside the job's own limit. */
+  agentSessionTimeoutMs: number;
+  /** AGENT_KEEP_SESSIONS=1: keep sessions and their uploads for debugging instead of deleting them. */
+  agentKeepSessions: boolean;
 }
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const satisfies readonly Effort[];
@@ -45,6 +51,17 @@ const CONSTANTS = {
 
 function intVar(min: number, max: number, fallback: number) {
   return z.coerce.number().int().min(min).max(max).default(fallback);
+}
+
+const USD_MESSAGE = "must be a dollar amount between 0.10 and 50, such as 2 or 1.50";
+
+/** US dollars with at most two decimals ("2", "1.50") → integer cents, 10…5000. */
+function usdVar(fallback: string) {
+  return z.string()
+    .regex(/^\d{1,2}(\.\d{1,2})?$/, USD_MESSAGE)
+    .transform((value) => Math.round(Number(value) * 100))
+    .refine((cents) => cents >= 10 && cents <= 5000, USD_MESSAGE)
+    .prefault(fallback);
 }
 
 const appUrlVar = z.string().transform((value, ctx) => {
@@ -80,6 +97,11 @@ const EnvSchema = z.object({
   MAX_PAGES: intVar(1, 200, 40),
   MAX_SCAN_MB: intVar(1, 200, 100),
   MAX_SCAN_PAGES: intVar(1, 500, 200),
+  AGENT_BUDGET_EXTRACT_USD: usdVar("3.00"),
+  AGENT_BUDGET_GRADE_USD: usdVar("2.00"),
+  AGENT_BUDGET_SCAN_USD: usdVar("1.50"),
+  AGENT_SESSION_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
+  AGENT_KEEP_SESSIONS: z.enum(["0", "1"]).default("0"),
 });
 
 type EnvVar = keyof typeof EnvSchema.shape;
@@ -128,6 +150,9 @@ function parseConfig(): AppConfig {
     maxPages: env.MAX_PAGES,
     maxScanBytes: env.MAX_SCAN_MB * MIB,
     maxScanPages: env.MAX_SCAN_PAGES,
+    agentBudgetCents: { extract: env.AGENT_BUDGET_EXTRACT_USD, grade: env.AGENT_BUDGET_GRADE_USD, scan: env.AGENT_BUDGET_SCAN_USD },
+    agentSessionTimeoutMs: env.AGENT_SESSION_TIMEOUT_MS,
+    agentKeepSessions: env.AGENT_KEEP_SESSIONS === "1",
     ...CONSTANTS,
   };
 }

@@ -7,9 +7,9 @@ import { resetConfigForTests } from "@/lib/config";
 import { setDbForTests } from "@/lib/db/connection";
 
 // Only the clock, config and db modules are imported here; the other process-wide singletons (grader,
-// rate limits, worker) are reset by deleting their globalThis slots.
+// rate limits, worker, hosted-agent setup and sessions) are reset by deleting their globalThis slots.
 const WORKER_SLOT = Symbol.for("pag.worker");
-const RESETTABLE_SLOTS = [Symbol.for("pag.grader"), Symbol.for("pag.rate"), WORKER_SLOT];
+const RESETTABLE_SLOTS = [Symbol.for("pag.grader"), Symbol.for("pag.rate"), WORKER_SLOT, Symbol.for("pag.agent")];
 const slots = globalThis as unknown as Record<symbol, unknown>;
 
 vi.stubGlobal("fetch", async () => {

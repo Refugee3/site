@@ -99,7 +99,7 @@ describe("migration 3 on a version-2 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare(`SELECT ${JOB_COLUMNS} FROM jobs ORDER BY id`).all()).toEqual(before);
     expect(db.prepare("SELECT id, paused FROM jobs ORDER BY id").all()).toEqual([
       { id: 3, paused: 0 }, { id: 7, paused: 0 }, { id: 9, paused: 0 },
@@ -118,6 +118,8 @@ describe("migration 3 on a version-2 database", () => {
     expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{
       id: 1, students_can_upload: 0, api_key_ciphertext: null, api_key_masked: null, api_key_check: null,
       api_key_set_by: null, api_key_set_at: null, updated_at: 0,
+      grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
+      agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
     }]);
     expect(db.prepare("SELECT grading_preferences FROM teachers").get()).toEqual({ grading_preferences: "" });
     expect(() => db.prepare("UPDATE teachers SET grading_preferences = ?").run("x".repeat(4001))).toThrow(/constraint/i);
@@ -161,11 +163,104 @@ describe("migration 3 on a version-2 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
     expect(count(db, "app_settings")).toBe(1);
     db.prepare("DELETE FROM assignments WHERE id = 'a1'").run();
     expect(count(db, "jobs")).toBe(0);
+    db.close();
+  });
+});
+
+describe("migration 4 on a version-3 database", () => {
+  /** A v3 database (built with the shipped v1–v3 SQL) with a saved key, uploads on and a graded paper. */
+  function versionThreeDatabase(): DB {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const migration of MIGRATIONS.slice(0, 3)) db.exec(migration.sql);
+    db.pragma("user_version = 3");
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, ai_model, created_at, updated_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 'claude-opus-5-5', 1, 1);
+      UPDATE app_settings SET students_can_upload = 1, api_key_ciphertext = 'v1.iv.tag.ct', api_key_masked = 'sk-ant-…a1b2',
+        api_key_check = 'verified', api_key_set_by = 't1', api_key_set_at = 7, updated_at = 7 WHERE id = 1;
+    `);
+    return db;
+  }
+
+  it("keeps the settings and papers, and adds the hosted-agent columns with their defaults", () => {
+    const db = versionThreeDatabase();
+    const submission = db.prepare("SELECT * FROM submissions").get() as Record<string, unknown>;
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
+    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{
+      id: 1, students_can_upload: 1, api_key_ciphertext: "v1.iv.tag.ct", api_key_masked: "sk-ant-…a1b2", api_key_check: "verified",
+      api_key_set_by: "t1", api_key_set_at: 7, updated_at: 7,
+      grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
+      agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
+    }]);
+    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, ai_engine: null });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+
+  it("gives each install its own id", () => {
+    const ids = [versionThreeDatabase(), versionThreeDatabase()].map((db) => {
+      migrate(db);
+      const { agent_install_id: id } = db.prepare("SELECT agent_install_id FROM app_settings").get() as { agent_install_id: string };
+      db.close();
+      return id;
+    });
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it.each([
+    ["grading engine", "UPDATE app_settings SET grading_engine = 'x'"],
+    ["agent status", "UPDATE app_settings SET agent_status = 'provisioning'"],
+    ["missing agent status", "UPDATE app_settings SET agent_status = NULL"],
+    ["long agent error", `UPDATE app_settings SET agent_error = '${"e".repeat(501)}'`],
+    ["install id length", "UPDATE app_settings SET agent_install_id = 'abc'"],
+    ["key fingerprint length", `UPDATE app_settings SET agent_key_fp = '${"f".repeat(31)}'`],
+    ["paper engine", "UPDATE submissions SET ai_engine = 'x'"],
+  ])("rejects a bad %s", (_name, sql) => {
+    const db = versionThreeDatabase();
+    migrate(db);
+    expect(() => db.prepare(sql).run()).toThrow(/constraint/i);
+    db.close();
+  });
+
+  it("accepts every allowed value", () => {
+    const db = versionThreeDatabase();
+    migrate(db);
+    for (const engine of ["agent", "direct", null]) db.prepare("UPDATE app_settings SET grading_engine = ?").run(engine);
+    for (const status of ["none", "ready", "error"]) db.prepare("UPDATE app_settings SET agent_status = ?").run(status);
+    for (const engine of ["direct", "agent", "fake", null]) db.prepare("UPDATE submissions SET ai_engine = ?").run(engine);
+    db.prepare("UPDATE app_settings SET agent_error = ?, agent_key_fp = ?, agent_install_id = NULL")
+      .run("e".repeat(500), "f".repeat(32));
+
+    expect(db.prepare("SELECT grading_engine, agent_status, length(agent_error) AS error_length, agent_install_id FROM app_settings").get())
+      .toEqual({ grading_engine: null, agent_status: "error", error_length: 500, agent_install_id: null });
+    expect(db.prepare("SELECT ai_engine FROM submissions").get()).toEqual({ ai_engine: null });
+    db.close();
+  });
+
+  it("is a no-op when re-run, keeping the install id", () => {
+    const db = versionThreeDatabase();
+    migrate(db);
+    const schema = db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all();
+    const settings = db.prepare("SELECT * FROM app_settings").all();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
+    expect(db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual(settings);
     db.close();
   });
 });

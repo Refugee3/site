@@ -184,9 +184,20 @@ export function latestSectionsForTeacher(teacherId: string): Section[] {
   return latest ? listSections(latest.id) : [];
 }
 
-/** AI usage of one served model, added up over every call. */
+/** The part of a model's totals that hosted-agent sessions used. */
+export interface AgentUsageTotals {
+  sessions: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+  /** Sum of the reported list costs, in US cents. */
+  listCostCents: number;
+  /** Sessions that reported no list cost (cost tracking unavailable); their cost is estimated from tokens + time. */
+  unpricedSessions: number;
+  activeSeconds: number;
+}
+
+/** AI usage of one served model, added up over every call; `agent` is present once a hosted-agent session was added. */
 export interface ModelUsage extends AiUsage {
   calls: number;
+  agent?: AgentUsageTotals;
 }
 
 /** Every AI call made for the assignment (grading, regrades, retries, key reading), by the model that answered. */
@@ -195,18 +206,50 @@ export function getAssignmentUsage(assignmentId: string): Record<string, ModelUs
   return row ? (JSON.parse(row.ai_usage_json) as Record<string, ModelUsage>) : {};
 }
 
-/** Adds one billed AI call to the assignment's running totals (a no-op when the assignment is gone). */
-export function addAssignmentUsage(assignmentId: string, model: string, usage: AiUsage): void {
+function addTokens(totals: AiUsage, usage: AiUsage): AiUsage {
+  return {
+    inputTokens: totals.inputTokens + usage.inputTokens,
+    outputTokens: totals.outputTokens + usage.outputTokens,
+    cacheReadTokens: totals.cacheReadTokens + usage.cacheReadTokens,
+    cacheWriteTokens: totals.cacheWriteTokens + usage.cacheWriteTokens,
+  };
+}
+
+const NO_USAGE: AiUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+const NO_AGENT_USAGE: AgentUsageTotals = { sessions: 0, ...NO_USAGE, listCostCents: 0, unpricedSessions: 0, activeSeconds: 0 };
+
+function addAgentSession(
+  totals: AgentUsageTotals,
+  usage: AiUsage,
+  agent: { listCostCents: number | null; activeSeconds: number },
+): AgentUsageTotals {
+  return {
+    sessions: totals.sessions + 1,
+    ...addTokens(totals, usage),
+    listCostCents: totals.listCostCents + (agent.listCostCents ?? 0),
+    unpricedSessions: totals.unpricedSessions + (agent.listCostCents === null ? 1 : 0),
+    activeSeconds: totals.activeSeconds + agent.activeSeconds,
+  };
+}
+
+/**
+ * Adds one billed AI call to the assignment's running totals (a no-op when the assignment is gone). `agent` is given for
+ * hosted-agent sessions: the call's tokens are added to the model's totals as before, and also to `agent`, with its list
+ * cost and running time.
+ */
+export function addAssignmentUsage(
+  assignmentId: string,
+  model: string,
+  usage: AiUsage,
+  agent?: { listCostCents: number | null; activeSeconds: number },
+): void {
   tx(() => {
     const ledger = getAssignmentUsage(assignmentId);
-    const totals = ledger[model] ?? { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-    ledger[model] = {
-      calls: totals.calls + 1,
-      inputTokens: totals.inputTokens + usage.inputTokens,
-      outputTokens: totals.outputTokens + usage.outputTokens,
-      cacheReadTokens: totals.cacheReadTokens + usage.cacheReadTokens,
-      cacheWriteTokens: totals.cacheWriteTokens + usage.cacheWriteTokens,
-    };
+    const totals: ModelUsage = ledger[model] ?? { calls: 0, ...NO_USAGE };
+    const entry: ModelUsage = { calls: totals.calls + 1, ...addTokens(totals, usage) };
+    const agentTotals = agent ? addAgentSession(totals.agent ?? NO_AGENT_USAGE, usage, agent) : totals.agent;
+    if (agentTotals) entry.agent = agentTotals;
+    ledger[model] = entry;
     run("UPDATE assignments SET ai_usage_json = ? WHERE id = ?", JSON.stringify(ledger), assignmentId);
   });
 }

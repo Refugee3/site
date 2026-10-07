@@ -56,8 +56,8 @@ export interface Submission { id: string; assignmentId: string; source: "student
   documentMatch: DocumentMatch | null; flags: FlagCode[]; overallFeedback: string; overallFeedbackEdited: boolean; teacherSummary: string;
   integrityNote: string; unmatchedWork: string; totalOverrideCenti: number | null; scoreEarnedCenti: number | null;
   scoreMaxCenti: number | null; completionCenti: number | null; accuracyCenti: number | null; aiModel: string | null;
-  usage: AiUsage | null; errorCode: string | null; errorMessage: string | null; gradedAt: number | null; reviewedAt: number | null;
-  createdAt: number; updatedAt: number }
+  aiEngine: GraderEngine | null; usage: AiUsage | null; errorCode: string | null; errorMessage: string | null; gradedAt: number | null;
+  reviewedAt: number | null; createdAt: number; updatedAt: number }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
   finishedAt: number | null; paused: boolean }
@@ -74,8 +74,11 @@ export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boo
 
 // ---- view models (produced by src/lib/services/views.ts) ----
 export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number;
-  /** Grading can't run because there is no key at all, or Anthropic rejected the key in use. */
-  keyIssue: "missing" | "rejected" | null }
+  /**
+   * Grading can't run because there is no key at all, or Anthropic rejected the key in use; `agent`: paused because the
+   * hosted agent isn't available with the key in use.
+   */
+  keyIssue: "missing" | "rejected" | "agent" | null }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
 /** Scans still waiting: being split by the AI, split and waiting for the teacher's check, or failed to split. */
 export interface PendingScans { splitting: number; review: number; failed: number; firstReviewId: string | null }
@@ -98,9 +101,11 @@ export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; 
   lesson: { id: string; reason: string; active: boolean; sent: boolean; notSent: LessonNotSentReason | null } | null }
 export interface ReviewView { submission: Submission; sections: Section[]; sectionLabel: string | null; items: ReviewItemView[];
   score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
-  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean }
+  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean;
+  /** The engine that would grade this paper now; null without a usable key. */
+  gradingEngine: GraderEngine | null }
 export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
-  cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null } }
+  cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null; agentSessions: number; agentActiveSeconds: number } }
 export interface StudentUploadView { code: string; title: string; instructions: string; teacherName: string; status: AssignmentStatus;
   accepting: boolean; maxUploadMb: number; maxPages: number; maxFiles: number }
 export type ReceiptPhase = "processing" | "checked" | "released" | "problem";
@@ -153,7 +158,8 @@ export interface TeacherSettingsView {
     setByName: string | null; unreadable: boolean; envKeySet: boolean };
   aiMode: "claude" | "fake"; model: string; studentsCanUpload: boolean;
   /** Assignments (of every teacher) left open: they take student uploads again as soon as the switch is turned on. */
-  openAssignmentCount: number; gradingPreferences: string; worker: WorkerStatus | null }
+  openAssignmentCount: number; gradingPreferences: string; worker: WorkerStatus | null;
+  grader: { engine: GradingEngineChoice; /** null in AI_MODE=fake or without a usable key */ agent: HostedAgentStatusView | null } }
 /** `paperDeleted`: the paper the correction was made on was deleted (`paperHref` is then null); the lesson can be deleted. */
 export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: number; itemMaxCenti: number; sent: boolean;
   notSent: LessonNotSentReason | null; paperHref: string | null; paperDeleted: boolean }
@@ -164,3 +170,18 @@ export interface UploadPageView { keyApproved: boolean; keyPageCount: number | n
   maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean }
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage">; pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
   keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number }
+
+// ---- v3: grading engines and the hosted agent ----
+/** Which engine produced an AI call or a stored grading. */
+export type GraderEngine = "direct" | "agent" | "fake";
+/** The teacher's choice in Settings → Grader; the practice grader is chosen by AI_MODE, not here. */
+export type GradingEngineChoice = "agent" | "direct";
+export type HostedAgentRole = "extract" | "grade" | "scan";
+/** What Settings shows about the hosted agent for the API key in use. */
+export interface HostedAgentStatusView {
+  state: "not_set_up" | "setting_up" | "ready" | "error";
+  /** Teacher-readable, only for "error". */
+  error: string | null;
+  /** When setup last succeeded ("ready") or failed ("error"); ms. */
+  checkedAt: number | null;
+}

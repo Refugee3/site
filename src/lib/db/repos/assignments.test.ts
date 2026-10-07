@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import {
-  deleteAssignmentRow, getAssignment, getAssignmentByShareCode, getAssignmentForTeacher, insertAssignment,
-  latestSectionsForTeacher, listAssignmentsForTeacher, listSections, replaceSections, shareCodeExists, updateAssignment,
+  addAssignmentUsage, deleteAssignmentRow, getAssignment, getAssignmentByShareCode, getAssignmentForTeacher, getAssignmentUsage,
+  insertAssignment, latestSectionsForTeacher, listAssignmentsForTeacher, listSections, replaceSections, shareCodeExists,
+  updateAssignment,
 } from "@/lib/db/repos/assignments";
 import { getSubmission, updateSubmission } from "@/lib/db/repos/submissions";
 import { newId } from "@/lib/ids";
@@ -115,5 +116,63 @@ describe("sections", () => {
 
     expect(latestSectionsForTeacher(teacher.id)).toEqual(listSections(latest.id));
     expect(latestSectionsForTeacher(teacher.id).map((s) => s.aliases)).toEqual([["P5"]]);
+  });
+});
+
+describe("AI usage ledger", () => {
+  const MODEL = "claude-opus-5-5";
+  const usage = (n: number) => ({ inputTokens: n, outputTokens: 2 * n, cacheReadTokens: 3 * n, cacheWriteTokens: 4 * n });
+
+  it("adds up direct calls per served model, without agent totals", () => {
+    const a = seedAssignment(teacher.id);
+    expect(getAssignmentUsage(a.id)).toEqual({});
+
+    addAssignmentUsage(a.id, MODEL, usage(10));
+    addAssignmentUsage(a.id, MODEL, usage(1));
+    addAssignmentUsage(a.id, "claude-other", usage(5));
+
+    expect(getAssignmentUsage(a.id)).toEqual({
+      [MODEL]: { calls: 2, ...usage(11) },
+      "claude-other": { calls: 1, ...usage(5) },
+    });
+  });
+
+  it("also adds hosted-agent sessions to the model's agent totals, with list cost and running time", () => {
+    const a = seedAssignment(teacher.id);
+
+    addAssignmentUsage(a.id, MODEL, usage(100), { listCostCents: 42, activeSeconds: 90 });
+    addAssignmentUsage(a.id, MODEL, usage(10));
+    addAssignmentUsage(a.id, MODEL, usage(200), { listCostCents: null, activeSeconds: 30 });
+    addAssignmentUsage(a.id, MODEL, usage(300), { listCostCents: 8, activeSeconds: 0 });
+
+    expect(getAssignmentUsage(a.id)).toEqual({
+      [MODEL]: {
+        calls: 4, ...usage(610),
+        agent: { sessions: 3, ...usage(600), listCostCents: 50, unpricedSessions: 1, activeSeconds: 120 },
+      },
+    });
+  });
+
+  it("keeps agent totals per model", () => {
+    const a = seedAssignment(teacher.id);
+
+    addAssignmentUsage(a.id, MODEL, usage(1), { listCostCents: null, activeSeconds: 5 });
+    addAssignmentUsage(a.id, "claude-other", usage(2));
+
+    expect(getAssignmentUsage(a.id)).toEqual({
+      [MODEL]: {
+        calls: 1, ...usage(1), agent: { sessions: 1, ...usage(1), listCostCents: 0, unpricedSessions: 1, activeSeconds: 5 },
+      },
+      "claude-other": { calls: 1, ...usage(2) },
+    });
+  });
+
+  it("is a no-op for a deleted assignment", () => {
+    const a = seedAssignment(teacher.id);
+    deleteAssignmentRow(a.id);
+
+    addAssignmentUsage(a.id, MODEL, usage(1), { listCostCents: 1, activeSeconds: 1 });
+
+    expect(getAssignmentUsage(a.id)).toEqual({});
   });
 });

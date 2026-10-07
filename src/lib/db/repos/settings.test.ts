@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
-  clearStoredApiKey, getAppSettings, markStoredApiKeyVerified, setStoredApiKey, setStudentsCanUpload,
+  clearStoredApiKey, getAppSettings, getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError,
+  saveHostedAgentReady, setGradingEngine, setStoredApiKey, setStudentsCanUpload,
 } from "@/lib/db/repos/settings";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 
@@ -20,7 +21,7 @@ describe("app settings", () => {
   it("start with student uploads off and no saved key", () => {
     expect(getAppSettings()).toEqual({
       studentsCanUpload: false, apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
-      apiKeySetAt: null, updatedAt: 0,
+      apiKeySetAt: null, updatedAt: 0, gradingEngine: null,
     });
   });
 
@@ -39,7 +40,7 @@ describe("app settings", () => {
     setStoredApiKey({ ...STORED, setBy: teacher.id });
     expect(getAppSettings()).toEqual({
       studentsCanUpload: true, apiKeyCiphertext: STORED.ciphertext, apiKeyMasked: STORED.masked, apiKeyCheck: "verified",
-      apiKeySetBy: teacher.id, apiKeySetAt: T0, updatedAt: T0,
+      apiKeySetBy: teacher.id, apiKeySetAt: T0, updatedAt: T0, gradingEngine: null,
     });
 
     setClockForTests(() => T0 + 5);
@@ -52,7 +53,7 @@ describe("app settings", () => {
     clearStoredApiKey();
     expect(getAppSettings()).toEqual({
       studentsCanUpload: true, apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
-      apiKeySetAt: null, updatedAt: T0 + 9,
+      apiKeySetAt: null, updatedAt: T0 + 9, gradingEngine: null,
     });
   });
 
@@ -83,5 +84,134 @@ describe("app settings", () => {
   it("refuse a key saved by an unknown teacher", () => {
     expect(() => setStoredApiKey({ ...STORED, setBy: "missing" })).toThrow(/FOREIGN KEY/);
     expect(getAppSettings().apiKeyCiphertext).toBeNull();
+  });
+});
+
+describe("grading engine", () => {
+  it("is the hosted agent until a teacher chooses, then follows the choice", () => {
+    expect(getGradingEngine()).toBe("agent");
+
+    setClockForTests(() => T0 + 5);
+    setGradingEngine("direct");
+    expect(getGradingEngine()).toBe("direct");
+    expect(getAppSettings()).toMatchObject({ gradingEngine: "direct", updatedAt: T0 + 5 });
+
+    setGradingEngine("agent");
+    expect(getGradingEngine()).toBe("agent");
+    expect(getAppSettings().gradingEngine).toBe("agent");
+  });
+
+  it("is kept when the key or the upload switch changes", () => {
+    setGradingEngine("direct");
+    setStoredApiKey({ ...STORED, setBy: seedTeacher().id });
+    clearStoredApiKey();
+    setStudentsCanUpload(true);
+    expect(getGradingEngine()).toBe("direct");
+  });
+});
+
+describe("hosted agent state", () => {
+  const FP = "a".repeat(32);
+  const ENVIRONMENT = { id: "env_1", hash: "env-hash" };
+  const AGENTS = {
+    extract: { id: "agent_x", version: 1, hash: "hx" },
+    grade: { id: "agent_g", version: 3, hash: "hg" },
+    scan: { id: "agent_s", version: 2, hash: "hs" },
+  };
+
+  function installId(): string {
+    return (db.prepare("SELECT agent_install_id FROM app_settings").get() as { agent_install_id: string }).agent_install_id;
+  }
+
+  it("starts with an install id and nothing set up", () => {
+    expect(getHostedAgentState()).toEqual({
+      installId: expect.stringMatching(/^[0-9a-f]{12}$/), keyFp: null, environment: null, agents: {}, status: "none", error: null,
+      checkedAt: null,
+    });
+    expect(getHostedAgentState().installId).toBe(installId());
+  });
+
+  it("saves a completed setup and reads it back", () => {
+    const id = installId();
+    setClockForTests(() => T0 + 7);
+
+    saveHostedAgentReady({ keyFp: FP, environment: ENVIRONMENT, agents: AGENTS });
+
+    expect(getHostedAgentState()).toEqual({
+      installId: id, keyFp: FP, environment: ENVIRONMENT, agents: AGENTS, status: "ready", error: null, checkedAt: T0 + 7,
+    });
+    expect(getAppSettings().updatedAt).toBe(T0 + 7);
+  });
+
+  it("records an error without progress, keeping the stored ids", () => {
+    saveHostedAgentReady({ keyFp: FP, environment: ENVIRONMENT, agents: AGENTS });
+    setClockForTests(() => T0 + 9);
+
+    saveHostedAgentError("  Anthropic rejected the API key. Replace it above.\n");
+
+    expect(getHostedAgentState()).toMatchObject({
+      keyFp: FP, environment: ENVIRONMENT, agents: AGENTS, status: "error", error: "Anthropic rejected the API key. Replace it above.",
+      checkedAt: T0 + 9,
+    });
+  });
+
+  it("records an error with progress, replacing the key fingerprint, environment and agents", () => {
+    saveHostedAgentReady({ keyFp: FP, environment: ENVIRONMENT, agents: AGENTS });
+    const otherFp = "b".repeat(32);
+
+    saveHostedAgentError("Setup failed.", { keyFp: otherFp, environment: { id: "env_2", hash: "h2" }, agents: { extract: AGENTS.extract } });
+    expect(getHostedAgentState()).toMatchObject({
+      keyFp: otherFp, environment: { id: "env_2", hash: "h2" }, agents: { extract: AGENTS.extract }, status: "error", error: "Setup failed.",
+    });
+
+    saveHostedAgentError("Setup failed again.", { keyFp: otherFp, environment: null, agents: {} });
+    expect(getHostedAgentState()).toMatchObject({ keyFp: otherFp, environment: null, agents: {}, error: "Setup failed again." });
+
+    setClockForTests(() => T0 + 11);
+    saveHostedAgentReady({ keyFp: FP, environment: ENVIRONMENT, agents: AGENTS });
+    expect(getHostedAgentState()).toMatchObject({ status: "ready", error: null, checkedAt: T0 + 11, agents: AGENTS });
+  });
+
+  it("cuts a long error message to 500 characters, without splitting a character", () => {
+    saveHostedAgentError(`  ${"x".repeat(600)}  `);
+    expect(getHostedAgentState().error).toBe("x".repeat(500));
+
+    saveHostedAgentError(`${"y".repeat(499)}😀😀`);
+    expect(getHostedAgentState().error).toBe(`${"y".repeat(499)}😀`);
+  });
+
+  it.each([
+    ["not JSON", "{", "{"],
+    ["a wrong shape", JSON.stringify({ id: 1 }), JSON.stringify({ grade: { id: "agent_g", version: 0, hash: "h" } })],
+    ["a non-object", "null", JSON.stringify(["agent_g"])],
+  ])("reads %s in the JSON columns as nothing stored, with a warning", (_name, environmentJson, agentsJson) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    db.prepare("UPDATE app_settings SET agent_environment_json = ?, agent_agents_json = ?").run(environmentJson, agentsJson);
+
+    expect(getHostedAgentState()).toMatchObject({ environment: null, agents: {} });
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "[settings] app_settings.agent_environment_json is unreadable; treating it as empty",
+      "[settings] app_settings.agent_agents_json is unreadable; treating it as empty",
+    ]);
+    warn.mockRestore();
+  });
+
+  it("reads only the roles it knows, and only the fields it stores", () => {
+    db.prepare("UPDATE app_settings SET agent_environment_json = ?, agent_agents_json = ?").run(
+      JSON.stringify({ ...ENVIRONMENT, extra: true }),
+      JSON.stringify({ grade: { ...AGENTS.grade, note: "x" }, review: AGENTS.extract }),
+    );
+    expect(getHostedAgentState()).toMatchObject({ environment: ENVIRONMENT, agents: { grade: AGENTS.grade } });
+    expect(Object.keys(getHostedAgentState().agents)).toEqual(["grade"]);
+  });
+
+  it("generates and stores an install id when the row has none", () => {
+    db.prepare("UPDATE app_settings SET agent_install_id = NULL").run();
+
+    const id = getHostedAgentState().installId;
+
+    expect(id).toMatch(/^[0-9a-f]{12}$/);
+    expect(installId()).toBe(id);
+    expect(getHostedAgentState().installId).toBe(id);
   });
 });

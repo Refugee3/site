@@ -7,7 +7,7 @@ import { statusFromFlags } from "@/lib/flags";
 import {
   FLAG_CODES,
   SUBMISSION_STATUSES,
-  type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode,
+  type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode, type GraderEngine,
   type ItemJudgment, type ItemReviewReason, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
   type SubmissionStatus,
 } from "@/lib/types";
@@ -24,7 +24,9 @@ export interface GradingWrite {
   items: Array<{ itemId: string; judgment: ItemJudgment | null }>;
   fields: Pick<Submission, "aiName" | "aiNameConfidence" | "aiSectionRaw" | "aiSectionMatch" | "studentName" | "nameSource" | "nameKey"
     | "nameSortKey" | "sectionId" | "sectionKey" | "sectionSource" | "documentMatch" | "flags" | "status" | "teacherSummary"
-    | "integrityNote" | "unmatchedWork" | "aiModel" | "usage"> & { overallFeedback: string; aiOutputJson: string | null };
+    | "integrityNote" | "unmatchedWork" | "aiModel" | "usage"> & { overallFeedback: string; aiOutputJson: string | null;
+    /** The engine that produced this grading; omitted = unknown (NULL). */
+    aiEngine?: GraderEngine | null };
 }
 
 interface SubmissionRow {
@@ -67,6 +69,7 @@ interface SubmissionRow {
   completion_centi: number | null;
   accuracy_centi: number | null;
   ai_model: string | null;
+  ai_engine: GraderEngine | null;
   usage_json: string | null;
   ai_output_json: string | null;
   error_code: string | null;
@@ -141,6 +144,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     completionCenti: row.completion_centi,
     accuracyCenti: row.accuracy_centi,
     aiModel: row.ai_model,
+    aiEngine: row.ai_engine,
     usage: row.usage_json === null ? null : (JSON.parse(row.usage_json) as AiUsage),
     errorCode: row.error_code,
     errorMessage: row.error_message,
@@ -336,7 +340,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          name_key = @name_key, name_sort_key = @name_sort_key, section_id = @section_id, section_key = @section_key,
          section_source = @section_source, document_match = @document_match, flags_json = @flags_json, status = @status,
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
-         ai_model = @ai_model, usage_json = @usage_json, ai_output_json = @ai_output_json,
+         ai_model = @ai_model, ai_engine = @ai_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
          graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp, graded_at = @at, updated_at = @at,
          status_note = NULL, error_code = NULL, error_message = NULL, reviewed_at = NULL
@@ -363,6 +367,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
         integrity_note: f.integrityNote,
         unmatched_work: f.unmatchedWork,
         ai_model: f.aiModel,
+        ai_engine: f.aiEngine ?? null,
         usage_json: usageToJson(f.usage),
         ai_output_json: f.aiOutputJson,
         overall_feedback: f.overallFeedback,

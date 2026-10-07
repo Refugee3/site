@@ -290,6 +290,26 @@ CREATE UNIQUE INDEX jobs_one_queued ON jobs(kind, target_id) WHERE status = 'que
 CREATE INDEX jobs_claim ON jobs(status, priority, run_after, id);
 `,
   },
+  {
+    version: 4,
+    name: "grading_engine_hosted_agent",
+    sql: `
+-- Grading engine: NULL = the default (the Anthropic-hosted agent); 'direct' = the Messages API path.
+ALTER TABLE app_settings ADD COLUMN grading_engine TEXT CHECK (grading_engine IN ('agent','direct'));
+-- Names this install's environment ("pdf-autograder-<id>"); environment names are unique per workspace.
+ALTER TABLE app_settings ADD COLUMN agent_install_id TEXT CHECK (agent_install_id IS NULL OR length(agent_install_id) = 12);
+UPDATE app_settings SET agent_install_id = lower(hex(randomblob(6))) WHERE id = 1;
+-- The hosted agent's remote objects, all owned by the API key with this fingerprint (apiKeyFingerprint()).
+ALTER TABLE app_settings ADD COLUMN agent_key_fp TEXT CHECK (agent_key_fp IS NULL OR length(agent_key_fp) = 32);
+ALTER TABLE app_settings ADD COLUMN agent_environment_json TEXT;   -- {"id": "env_…", "hash": "<sha256 hex>"}
+ALTER TABLE app_settings ADD COLUMN agent_agents_json TEXT;        -- {"extract"|"grade"|"scan": {"id", "version", "hash"}}
+ALTER TABLE app_settings ADD COLUMN agent_status TEXT NOT NULL DEFAULT 'none' CHECK (agent_status IN ('none','ready','error'));
+ALTER TABLE app_settings ADD COLUMN agent_error TEXT CHECK (agent_error IS NULL OR length(agent_error) <= 500);
+ALTER TABLE app_settings ADD COLUMN agent_checked_at INTEGER;      -- ms; last setup that succeeded or failed
+-- Which engine produced the stored grading (review page note); NULL = graded before v4 or never.
+ALTER TABLE submissions ADD COLUMN ai_engine TEXT CHECK (ai_engine IN ('direct','agent','fake'));
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

@@ -98,7 +98,8 @@ describe("insertSubmission", () => {
     const s = seedSubmission(assignment.id, { originalFilename: "quiz.pdf", pageCount: 3 });
     expect(s).toMatchObject({
       assignmentId: assignment.id, status: "queued", gradingGeneration: 1, originalFilename: "quiz.pdf", pageCount: 3,
-      flags: [], nameSortKey: "~", overallFeedbackEdited: false, usage: null, gradedGuidanceFp: null, createdAt: T0, updatedAt: T0,
+      flags: [], nameSortKey: "~", overallFeedbackEdited: false, usage: null, gradedGuidanceFp: null, aiEngine: null, createdAt: T0,
+      updatedAt: T0,
     });
     expect(getSubmission(s.id)).toEqual(s);
     expect(getSubmissionByReceipt(s.receiptToken)).toEqual(s);
@@ -190,6 +191,40 @@ describe("saveGradingResult", () => {
 
     expect(getSubmission(withGuidance.id)!.gradedGuidanceFp).toBe("fp-1");
     expect(getSubmission(without.id)!.gradedGuidanceFp).toBe("");
+  });
+
+  it("records the engine that produced the grading, NULL when the caller doesn't say", () => {
+    const byAgent = gradingSubmission();
+    const unknown = gradingSubmission();
+
+    saveGradingResult(gradingWrite(byAgent, { fields: { aiEngine: "agent" } }));
+    saveGradingResult(gradingWrite(unknown));
+
+    expect(getSubmission(byAgent.id)!.aiEngine).toBe("agent");
+    expect(getSubmission(unknown.id)!.aiEngine).toBeNull();
+    expect(db.prepare("SELECT ai_engine FROM submissions WHERE id = ?").get(byAgent.id)).toEqual({ ai_engine: "agent" });
+    expect(listSubmissions(assignment.id).map((s) => s.aiEngine)).toEqual(["agent", null]);
+  });
+
+  it("replaces the engine on a regrade, also with NULL", () => {
+    const s = gradingSubmission();
+    saveGradingResult(gradingWrite(s, { fields: { aiEngine: "agent" } }));
+
+    saveGradingResult(gradingWrite(s, { fields: { aiEngine: "direct" } }));
+    expect(getSubmission(s.id)!.aiEngine).toBe("direct");
+    saveGradingResult(gradingWrite(s, { fields: { aiEngine: null } }));
+    expect(getSubmission(s.id)!.aiEngine).toBeNull();
+  });
+
+  it("keeps the engine of the last grading when the paper is queued again or fails", () => {
+    const s = gradingSubmission();
+    saveGradingResult(gradingWrite(s, { fields: { aiEngine: "fake" } }));
+
+    const generation = requeueForRegrade(s.id);
+    expect(startGrading(s.id, generation)).toBe(true);
+    markFailed(s.id, generation, "server_error", "Try again.");
+
+    expect(getSubmission(s.id)!.aiEngine).toBe("fake");
   });
 
   it("writes nothing when the generation moved on", () => {
