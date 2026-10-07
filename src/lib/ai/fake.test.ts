@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { normalizeScanReadings, proposeLayout } from "@/lib/grading/split";
+import type { GuidanceLesson } from "@/lib/types";
 import { AiError } from "./errors";
 import { createFakeGrader } from "./fake";
-import type { GradeInput } from "./grader";
-import { GradingOutputSchema, KeyExtractionSchema } from "./schemas";
+import type { GradeInput, ReadScanInput } from "./grader";
+import { GradingOutputSchema, KeyExtractionSchema, ScanPagesSchema } from "./schemas";
 import { makeKeyItem, makeSection } from "./test-utils";
 
 const grader = createFakeGrader({ delayMs: 0 });
@@ -114,5 +116,101 @@ describe("fake grader", () => {
     );
     controller.abort();
     await expect(pending).rejects.toBeInstanceOf(AiError);
+  });
+});
+
+describe("fake grader rulings", () => {
+  function ruling(o: Partial<GuidanceLesson>): GuidanceLesson {
+    return {
+      itemId: "item-0", studentAnswer: "", aiAttempt: "complete", aiCorrectness: "correct", teacherAttempt: "complete",
+      teacherCorrectness: "minor_error", reason: "", feedback: null, whatStudentDid: null, ...o,
+    };
+  }
+
+  it("follows the teacher's newest ruling on the same answer to the same item, and nothing else", async () => {
+    const input = gradeInput(pdf("ruled paper"), 30);
+    const plain = (await grader.gradeSubmission(input)).output.items;
+    const target = plain.findIndex((i) => i.correctness === "correct");
+    const answer = plain[target].student_answer;
+    const itemId = input.items[target].id;
+
+    const guidance = {
+      preferences: "",
+      lessons: [ // newest first
+        ruling({ itemId: "another-item", studentAnswer: answer, teacherCorrectness: "incorrect" }),
+        ruling({ itemId, studentAnswer: answer, teacherAttempt: null, teacherCorrectness: null }),
+        ruling({ itemId, studentAnswer: answer, teacherAttempt: "partial", teacherCorrectness: "major_error" }),
+        ruling({ itemId, studentAnswer: answer, teacherAttempt: "none", teacherCorrectness: "no_answer" }),
+        ruling({ itemId, studentAnswer: "another answer", teacherCorrectness: "incorrect" }),
+      ],
+    };
+    const ruled = (await grader.gradeSubmission({ ...input, guidance })).output.items;
+    expect(ruled[target]).toEqual({
+      ...plain[target], attempt: "partial", correctness: "major_error", legibility: "clear", confidence: "high",
+      teacher_note: "Practice grader: followed your ruling on this answer.",
+    });
+    expect(ruled.filter((_, n) => n !== target)).toEqual(plain.filter((_, n) => n !== target));
+  });
+
+  it("reports no writing when the teacher ruled the answer not attempted", async () => {
+    const input = gradeInput(pdf("ruled not attempted"), 1);
+    const [item] = (await grader.gradeSubmission({
+      ...input,
+      guidance: { preferences: "", lessons: [ruling({ studentAnswer: (await grader.gradeSubmission(input)).output.items[0].student_answer,
+        teacherAttempt: "none", teacherCorrectness: "no_answer" })] },
+    })).output.items;
+    expect(item).toMatchObject({ attempt: "none", correctness: "no_answer", legibility: "no_writing" });
+  });
+});
+
+describe("fake scan reading", () => {
+  function scanInput(o: Partial<ReadScanInput> = {}): ReadScanInput {
+    return {
+      assignmentTitle: "Quiz", sections: [makeSection({ label: "Period 1" }), makeSection({ id: "s2", label: "Period 2" })], items: [],
+      keyPageCount: 3, chunkPdf: pdf("scan chunk"), firstPage: 1, chunkPageCount: 9, totalPages: 12, ...o,
+    };
+  }
+
+  it("describes papers of the key's page count, each starting with a name and a section", async () => {
+    const { output, meta } = await grader.readScanPages(scanInput());
+    expect(ScanPagesSchema.parse(output)).toEqual(output);
+    expect(meta.servedModel).toBe("fake");
+    expect(output.pages.map((p) => p.chunk_page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(output.pages.map((p) => p.starts_new_paper)).toEqual([true, false, false, true, false, false, true, false, false]);
+    expect(output.pages.map((p) => p.page_marker)).toEqual(["1 of 3", "2 of 3", "3 of 3", "1 of 3", "2 of 3", "3 of 3", "1 of 3", "2 of 3", "3 of 3"]);
+    expect(output.pages.map((p) => p.worksheet_page)).toEqual([1, 2, 3, 1, 2, 3, 1, 2, 3]);
+    expect(output.pages.map((p) => p.section_raw)).toEqual(["Period 1", null, null, "Period 2", null, null, "Period 1", null, null]);
+    const names = output.pages.flatMap((p) => (p.student_name === null ? [] : [p.student_name]));
+    expect(names).toHaveLength(3);
+    expect(new Set(names).size).toBe(3);
+    expect(names.every((name) => /^Test Student [A-P][a-p]{3}$/.test(name))).toBe(true);
+    expect(proposeLayout(normalizeScanReadings(output, { chunkPageCount: 9 }), { keyPageCount: 3 }).map((p) => p.startsPaper))
+      .toEqual([true, false, false, true, false, false, true, false, false]);
+  });
+
+  it("is deterministic and continues the numbering across chunks", async () => {
+    const first = await grader.readScanPages(scanInput());
+    expect((await createFakeGrader({ delayMs: 0 }).readScanPages(scanInput())).output).toEqual(first.output);
+    const next = await grader.readScanPages(scanInput({ firstPage: 10, chunkPageCount: 3, chunkPdf: pdf("next chunk") }));
+    expect(next.output.pages.map((p) => [p.chunk_page, p.page_marker, p.starts_new_paper])).toEqual([[1, "1 of 3", true], [2, "2 of 3", false], [3, "3 of 3", false]]);
+    expect(next.output.pages[0].student_name).not.toBeNull();
+    expect(first.output.pages.map((p) => p.student_name)).not.toContain(next.output.pages[0].student_name);
+  });
+
+  it("assumes two-page papers without a key page count, and no sections when none are configured", async () => {
+    const { output } = await grader.readScanPages(scanInput({ keyPageCount: null, sections: [], chunkPageCount: 4 }));
+    expect(output.pages.map((p) => p.page_marker)).toEqual(["1 of 2", "2 of 2", "1 of 2", "2 of 2"]);
+    expect(output.pages.every((p) => p.section_raw === null)).toBe(true);
+  });
+
+  it("marks some pages low confidence", async () => {
+    const pages = (await grader.readScanPages(scanInput({ chunkPageCount: 120, totalPages: 120 }))).output.pages;
+    const low = pages.filter((p) => p.confidence === "low").length;
+    expect(low).toBeGreaterThan(0);
+    expect(low).toBeLessThan(30);
+  });
+
+  it("rejects with a retryable abort when the signal fires", async () => {
+    await expect(grader.readScanPages(scanInput(), { signal: AbortSignal.abort() })).rejects.toMatchObject({ code: "aborted" });
   });
 });

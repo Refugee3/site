@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ANSWER_TYPES, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES } from "@/lib/types";
-import { GradingOutputSchema, KeyExtractionSchema, outputFormat } from "./schemas";
+import { ANSWER_TYPES, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES, SCAN_PAGE_KINDS } from "@/lib/types";
+import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "./schemas";
 
 type Json = Record<string, unknown>;
 
@@ -24,6 +24,7 @@ const UNSUPPORTED = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum
 describe.each([
   ["KeyExtractionSchema", KeyExtractionSchema],
   ["GradingOutputSchema", GradingOutputSchema],
+  ["ScanPagesSchema", ScanPagesSchema],
 ])("outputFormat(%s)", (_name, schema) => {
   const format = outputFormat(schema);
 
@@ -72,11 +73,23 @@ describe("enums survive the conversion", () => {
     expect(at(root, ["properties", "document_check", "properties", "match", "enum"])).toEqual([...DOCUMENT_MATCHES]);
   });
 
+  it("in the scan pages schema", () => {
+    const page = at(outputFormat(ScanPagesSchema).schema, ["properties", "pages", "items", "properties"]);
+    expect(at(page, ["kind", "enum"])).toEqual([...SCAN_PAGE_KINDS]);
+    expect(at(page, ["confidence", "enum"])).toEqual([...CONFIDENCE]);
+    expect(Object.keys(page)).toEqual(["chunk_page", "kind", "starts_new_paper", "student_name", "section_raw", "page_marker",
+      "worksheet_page", "confidence", "note"]);
+  });
+
   it("renders nullable fields as a type union", () => {
     const root = outputFormat(GradingOutputSchema).schema;
     expect(at(root, ["properties", "student", "properties", "name", "type"])).toEqual(["string", "null"]);
     const item = at(outputFormat(KeyExtractionSchema).schema, ["properties", "items", "items", "properties"]);
     expect(at(item, ["points", "type"])).toEqual(["number", "null"]);
     expect(at(item, ["group_points", "type"])).toEqual(["number", "null"]);
+    const page = at(outputFormat(ScanPagesSchema).schema, ["properties", "pages", "items", "properties"]);
+    for (const field of ["student_name", "section_raw", "page_marker"]) expect(at(page, [field, "type"])).toEqual(["string", "null"]);
+    expect(at(page, ["worksheet_page", "type"])).toEqual(["number", "null"]);
+    expect(at(page, ["chunk_page", "type"])).toBe("number");
   });
 });

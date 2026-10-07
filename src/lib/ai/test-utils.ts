@@ -10,7 +10,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     nodeEnv: "test", dataDir: "/tmp/pag-test", appUrl: null, aiMode: "claude", hasApiKey: true, model: "claude-opus-5-5",
     effort: "high", fallbacks: true, cacheTtl: "1h", aiTimeoutMs: 600_000, jobTimeoutMs: 2_700_000, maxTokens: 64_000,
     maxTokensCeiling: 128_000, concurrency: 3, jobMaxAttempts: 4, teacherSignupCode: null, cookieSecure: false,
-    maxUploadBytes: 20 * 1_048_576, maxPages: 40, maxUploadFiles: 20, maxKeyItems: 200, ...overrides,
+    maxUploadBytes: 20 * 1_048_576, maxPages: 40, maxUploadFiles: 20, maxKeyItems: 200, appSecret: null,
+    maxScanBytes: 100 * 1_048_576, maxScanPages: 200, ...overrides,
   };
 }
 

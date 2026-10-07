@@ -1,5 +1,14 @@
 import * as z from "zod";
-import { ANSWER_TYPES, ATTEMPTS, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES, ITEM_REVIEW_REASONS, LEGIBILITY } from "@/lib/types";
+import {
+  ANSWER_TYPES,
+  ATTEMPTS,
+  CONFIDENCE,
+  CORRECTNESS,
+  DOCUMENT_MATCHES,
+  ITEM_REVIEW_REASONS,
+  LEGIBILITY,
+  SCAN_PAGE_KINDS,
+} from "@/lib/types";
 
 // Structured-output schemas. They deliberately use no .int(), .min(), .max(), .optional() or
 // string formats: the API rejects or ignores those keywords, so every limit is enforced in code.
@@ -34,6 +43,21 @@ export const GradingOutputSchema = z.object({ // field order = generation order:
   teacher_summary: z.string(),
 });
 export type GradingOutput = z.infer<typeof GradingOutputSchema>;
+
+export const ScanPagesSchema = z.object({
+  pages: z.array(z.object({
+    chunk_page: z.number(),
+    kind: z.enum(SCAN_PAGE_KINDS),
+    starts_new_paper: z.boolean(),
+    student_name: z.string().nullable(),
+    section_raw: z.string().nullable(),
+    page_marker: z.string().nullable(),
+    worksheet_page: z.number().nullable(),
+    confidence: conf,
+    note: z.string(),
+  })),
+});
+export type ScanPages = z.infer<typeof ScanPagesSchema>;
 
 export interface JsonSchemaOutputFormat {
   type: "json_schema";

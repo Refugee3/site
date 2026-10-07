@@ -1,14 +1,15 @@
 import { sha256Hex } from "@/lib/ids";
-import type { Attempt, Correctness, Legibility } from "@/lib/types";
+import type { Attempt, Correctness, GradingGuidance, Legibility } from "@/lib/types";
 import { AiError } from "./errors";
-import type { AiCallMeta, CallOptions, Grader } from "./grader";
+import type { AiCallMeta, CallOptions, Grader, ReadScanInput } from "./grader";
 import { itemRefs } from "./prompts";
-import type { GradingOutput, KeyExtraction } from "./schemas";
+import type { GradingOutput, KeyExtraction, ScanPages } from "./schemas";
 
 // AI_MODE=fake: a deterministic stand-in so the whole flow runs without an API key. Every "random"
 // choice is derived from the PDF's bytes and a named purpose, so the same paper always grades the same.
 
 type Seed = (purpose: string) => Buffer;
+type OutputItem = GradingOutput["items"][number];
 
 function seedFor(pdf: Uint8Array): Seed {
   const pdfHash = sha256Hex(pdf);
@@ -47,7 +48,7 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
       const output: GradingOutput = {
         student: fakeStudent(seed, input.sections.map((s) => s.label)),
         document_check: fakeDocumentCheck(seed),
-        items: refs.map((ref) => fakeItem(seed, ref, input.studentPageCount)),
+        items: refs.map((ref, i) => followRuling(fakeItem(seed, ref, input.studentPageCount), input.items[i].id, input.guidance)),
         integrity: { grader_directed_text_found: false, excerpt: "" },
         unmatched_work: "",
         overall_feedback: "This is sample feedback from the practice grader. Keep showing your steps, "
@@ -55,6 +56,11 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
         teacher_summary: "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.",
       };
       return { output, refs, keyPdfIncluded: false, meta };
+    },
+    async readScanPages(input, options = {}) {
+      const seed = seedFor(input.chunkPdf);
+      const meta = await simulateCall(seed, options);
+      return { output: fakeScanPages(seed, input), meta };
     },
   };
 }
@@ -153,7 +159,7 @@ function pickOutcome(r: number): Outcome {
   return OUTCOMES[OUTCOMES.length - 1];
 }
 
-function fakeItem(seed: Seed, ref: string, pageCount: number): GradingOutput["items"][number] {
+function fakeItem(seed: Seed, ref: string, pageCount: number): OutputItem {
   const bytes = seed(ref);
   const outcome = pickOutcome(fraction(bytes));
   const lowConfidence = bytes[2] % 8 === 0;
@@ -169,6 +175,46 @@ function fakeItem(seed: Seed, ref: string, pageCount: number): GradingOutput["it
     what_student_did: outcome.did(ref),
     feedback: outcome.feedback(ref),
     teacher_note: lowConfidence ? "Practice grader: marked low confidence to exercise the review flow." : "",
+  };
+}
+
+/**
+ * Applies the teacher's newest ruling on the same answer to the same item. The fake's answers repeat
+ * across papers ("Sample answer for Q2"), so a correction visibly changes other papers in the demo.
+ */
+function followRuling(item: OutputItem, itemId: string, guidance: GradingGuidance | undefined): OutputItem {
+  const ruling = guidance?.lessons.find((l) => l.itemId === itemId && l.studentAnswer === item.student_answer && l.teacherAttempt !== null);
+  if (!ruling || ruling.teacherAttempt === null || ruling.teacherCorrectness === null) return item;
+  return {
+    ...item,
+    attempt: ruling.teacherAttempt,
+    correctness: ruling.teacherCorrectness,
+    legibility: ruling.teacherAttempt === "none" ? "no_writing" : "clear",
+    confidence: "high",
+    teacher_note: "Practice grader: followed your ruling on this answer.",
+  };
+}
+
+/** A scan of identical worksheets, `keyPageCount` pages each (2 without a key page count), every paper named. */
+function fakeScanPages(seed: Seed, input: ReadScanInput): ScanPages {
+  const k = Math.max(1, input.keyPageCount ?? 2);
+  return {
+    pages: Array.from({ length: input.chunkPageCount }, (_, idx) => {
+      const abs = input.firstPage + idx;
+      const pos = (abs - 1) % k;
+      const paper = Math.floor((abs - 1) / k);
+      return {
+        chunk_page: idx + 1,
+        kind: "student_work",
+        starts_new_paper: pos === 0,
+        student_name: pos === 0 ? `Test Student ${letterTag(sha256Hex(String(paper)).slice(0, 4))}` : null,
+        section_raw: pos === 0 && input.sections.length > 0 ? input.sections[paper % input.sections.length].label : null,
+        page_marker: `${pos + 1} of ${k}`,
+        worksheet_page: pos + 1,
+        confidence: seed(`page:${idx}`)[0] % 15 === 0 ? "low" : "high",
+        note: "",
+      };
+    }),
   };
 }
 
