@@ -44,6 +44,31 @@ describe("classifySdkError", () => {
     expect(ai.o.retryable).toBe(false);
   });
 
+  describe("billing problems pause the worker instead of failing every paper", () => {
+    it.each([
+      ["402 billing_error", Anthropic.APIError.generate(402, { type: "error", error: { type: "billing_error", message: "Payment required" } },
+        undefined, headers())],
+      ["402 without a body", Anthropic.APIError.generate(402, undefined, "payment required", headers())],
+      ["billing_error after the stream started (no status)",
+        new Anthropic.APIError(undefined, { error: { type: "billing_error" } }, undefined, headers(), "billing_error")],
+      ["400 credit balance too low", Anthropic.APIError.generate(400, { type: "error", error: { type: "invalid_request_error",
+        message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } },
+      undefined, headers())],
+    ] as const)("%s → billing", (_name, error) => {
+      const ai = classifySdkError(error);
+      expect(ai.code).toBe("billing");
+      expect(ai.o.pauseWorker).toBe(true);
+      expect(ai.o.retryable).toBe(false);
+    });
+
+    it("keeps other 400s per-request", () => {
+      const ai = classifySdkError(Anthropic.APIError.generate(400, { type: "error", error: { type: "invalid_request_error",
+        message: "The PDF specified was not valid." } }, undefined, headers()));
+      expect(ai.code).toBe("bad_request");
+      expect(ai.o.pauseWorker ?? false).toBe(false);
+    });
+  });
+
   describe("rate limits", () => {
     it("reads retry-after in seconds", () => {
       const ai = classifySdkError(new Anthropic.RateLimitError(429, {}, "x", headers({ "retry-after": "7" })));

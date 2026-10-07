@@ -11,7 +11,7 @@ export const KeyExtractionSchema = z.object({
   items: z.array(z.object({
     label: z.string(), group_label: z.string(), prompt: z.string(), answer_type: z.enum(ANSWER_TYPES),
     expected_answer: z.string(), acceptable_answers: z.array(z.string()), grading_criteria: z.string(),
-    points: z.number().nullable(), page: z.number().nullable(),
+    points: z.number().nullable(), group_points: z.number().nullable(), page: z.number().nullable(),
     answer_source: z.enum(["key", "ai_proposed"]), confidence: conf, note: z.string(),
   })),
   stated_total_points: z.number().nullable(),
@@ -44,7 +44,7 @@ const formatCache = new WeakMap<z.ZodType, JsonSchemaOutputFormat>();
 
 /**
  * The `output_config.format` for a schema. Built with zod's own converter rather than the SDK's
- * helper, because the helper moves `enum` into `description` and the enums would go unenforced (§0 fact 1).
+ * helper, because the helper moves `enum` into `description` and the enums would go unenforced.
  */
 export function outputFormat(schema: z.ZodType): JsonSchemaOutputFormat {
   let format = formatCache.get(schema);

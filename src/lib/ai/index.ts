@@ -3,7 +3,8 @@ import { createClaudeGrader, createSdkRunner } from "./claude";
 import { createFakeGrader } from "./fake";
 import type { Grader } from "./grader";
 
-// Process-wide slot (§4): instrumentation and route handlers may load separate module instances.
+// Process-wide globalThis slot so separate module copies share it: instrumentation and route handlers
+// may load separate module instances.
 const SLOT = Symbol.for("pag.grader");
 
 interface GraderSlot {

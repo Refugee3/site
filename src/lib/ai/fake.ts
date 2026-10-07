@@ -62,8 +62,8 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
 function fakeKey(pageCount: number): KeyExtraction {
   const page = (n: number) => Math.min(n, Math.max(pageCount, 1));
   const item = (fields: Partial<KeyExtraction["items"][number]> & Pick<KeyExtraction["items"][number], "label" | "answer_type">) => ({
-    group_label: "", prompt: "", expected_answer: "", acceptable_answers: [], grading_criteria: "", points: 1, page: page(1),
-    answer_source: "key" as const, confidence: "high" as const, note: "", ...fields,
+    group_label: "", prompt: "", expected_answer: "", acceptable_answers: [], grading_criteria: "", points: 1, group_points: null,
+    page: page(1), answer_source: "key" as const, confidence: "high" as const, note: "", ...fields,
   });
   return {
     document_kind: "answer_key",
@@ -72,10 +72,11 @@ function fakeKey(pageCount: number): KeyExtraction {
         expected_answer: "B) photosynthesis", acceptable_answers: ["B"] }),
       item({ label: "2", answer_type: "numeric", prompt: "Solve 3/x = 9/12.", expected_answer: "x = 4",
         acceptable_answers: ["4"], grading_criteria: "Must show cross-multiplication.", points: 2 }),
+      // Question 3's value is printed only for the whole question, so its parts share it.
       item({ label: "3a", group_label: "3", answer_type: "short_answer", prompt: "Which gas do plants take in?",
-        expected_answer: "carbon dioxide", acceptable_answers: ["CO2"] }),
+        expected_answer: "carbon dioxide", acceptable_answers: ["CO2"], points: null, group_points: 2 }),
       item({ label: "3b", group_label: "3", answer_type: "short_answer", prompt: "Which gas do plants give off?",
-        expected_answer: "oxygen", acceptable_answers: ["O2"] }),
+        expected_answer: "oxygen", acceptable_answers: ["O2"], points: null, group_points: 2 }),
       item({ label: "4", answer_type: "diagram", prompt: "Draw and label a plant cell.",
         expected_answer: "A plant cell with the cell wall, cell membrane, nucleus and chloroplasts labeled.", points: 2,
         page: page(2), answer_source: "ai_proposed", confidence: "low",
@@ -90,8 +91,9 @@ function fakeKey(pageCount: number): KeyExtraction {
 }
 
 /**
- * The spec's hex4 tag spelled with letters (0-9a-f → A-P / a-p): names are matched by a letters-only key
- * (`nameKey`), so digits would be dropped and distinct fake students would merge as one student's resubmissions.
+ * Four hex digits of the fake student's seed spelled with letters (0-9a-f → A-P / a-p): names are matched
+ * by a letters-only key (`nameKey`), so digits would be dropped and distinct fake students would merge as
+ * one student's resubmissions.
  */
 function letterTag(hex4: string): string {
   const letters = Array.from(hex4, (c) => String.fromCharCode(97 + parseInt(c, 16))).join("");

@@ -15,7 +15,8 @@ Items
 - expected_answer: the answer the key shows, transcribed faithfully. For multiple choice give the letter and the option text ("B) photosynthesis"); for matching list every pair; write math in plain text ("x = 3/4", "sqrt(2)", "2^5"). For a long answer, state what a full-credit answer must contain. For a diagram, describe what a correct drawing must show.
 - acceptable_answers: other answers the key explicitly accepts, plus clearly equivalent forms of numeric or short answers ("0.5" for "1/2"). Add nothing that changes the meaning. Use [] if none.
 - grading_criteria: what full credit requires and how partial credit works, when the key or a rubric says so ("must show work", "1 pt setup, 1 pt answer", "units required"). Use "" if nothing is stated.
-- points: the point value if the document states one, otherwise null. If only a whole question's total is given, set its parts to null and mention the total in note.
+- points: the point value if the document states one for this item, otherwise null.
+- group_points: when the document gives only a whole question's total and not the values of its parts, set those parts' points to null and give that total in group_points on each of them. Otherwise null.
 - page: the 1-based page where the item appears, or null.
 
 Missing answers
@@ -66,7 +67,7 @@ Return exactly one entry per [Q#] in the answer key, in key order, even when the
   - "incorrect": wrong or irrelevant.
   - "no_answer": exactly when attempt is "none".
   - "cannot_judge": the student clearly wrote an answer but you cannot read enough of it to judge, even using context.
-  For multiple_choice, true_false, and matching items use only correct, incorrect, no_answer, or cannot_judge.
+  For multiple_choice and true_false items use only correct, incorrect, no_answer, or cannot_judge. Judge a matching item with several pairs by how many pairs are right: correct when all are, minor_error when one of many is wrong, partially_correct when a meaningful share is right, major_error when only a few are right, incorrect when none are.
 - legibility: "clear", "partly_illegible", "illegible", or "no_writing".
 - confidence covers both your reading and your judgment: "high" only when the teacher would agree at a glance; "medium" when equivalence, partial correctness, or the key's wording needed interpretation; "low" when a plausible misreading or a different reasonable judgment would change the result. Low-confidence items go to the teacher, so prefer "low" to guessing.
 - review_reason: "alternate_answer" when the answer is not in the key but you believe it is genuinely correct (judge it as the teacher would most plausibly intend); "key_may_be_wrong" when the key itself looks mistaken (judge against the key anyway); "multiple_answers" and "ambiguous_reading" as described above; "other" for anything else the teacher should decide; otherwise "none".

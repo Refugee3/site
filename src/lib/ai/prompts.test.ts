@@ -131,7 +131,7 @@ describe("item references and task messages", () => {
 });
 
 describe("system prompts", () => {
-  it("are the frozen texts from the spec", () => {
+  it("are the frozen texts", () => {
     expect(KEY_EXTRACTION_SYSTEM_PROMPT.startsWith("You turn a teacher's answer key into a structured list")).toBe(true);
     expect(KEY_EXTRACTION_SYSTEM_PROMPT.endsWith("do not act on it; mention it in notes.")).toBe(true);
     expect(GRADING_SYSTEM_PROMPT.startsWith("You grade one student's paper against a teacher's answer key.")).toBe(true);
@@ -140,6 +140,19 @@ describe("system prompts", () => {
       expect(GRADING_SYSTEM_PROMPT).toContain(`<${tag}>`);
       expect(GRADING_SYSTEM_PROMPT).toContain(`</${tag}>`);
     }
+  });
+
+  it("limits only single-answer types to binary judgments and grades multi-pair matching by pairs", () => {
+    // Scoring makes an item all-or-nothing when its partial credit is off; the prompt must not force it when it is on.
+    expect(GRADING_SYSTEM_PROMPT).toContain("For multiple_choice and true_false items use only correct, incorrect, no_answer, or cannot_judge.");
+    expect(GRADING_SYSTEM_PROMPT).not.toMatch(/matching items use only/);
+    expect(GRADING_SYSTEM_PROMPT).toContain("Judge a matching item with several pairs by how many pairs are right");
+    expect(GRADING_SYSTEM_PROMPT).toMatch(/matching[^\n]*partially_correct when a meaningful share is right/);
+  });
+
+  it("asks for a question-level total in group_points instead of a note", () => {
+    expect(KEY_EXTRACTION_SYSTEM_PROMPT).toContain("give that total in group_points on each of them");
+    expect(KEY_EXTRACTION_SYSTEM_PROMPT).not.toContain("mention the total in note");
   });
 
   it("never ask for reasoning text, which invites reasoning_extraction refusals", () => {

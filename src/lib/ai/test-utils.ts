@@ -37,6 +37,8 @@ export function makeMessage(o: {
   content?: unknown[];
   usage?: Partial<AiUsage>;
   category?: string | null;
+  /** Set on a refusal whose fallback attempt was skipped (the fallback model was rate-limited or overloaded). */
+  recommendedModel?: string | null;
 } = {}): BetaMessage {
   const content = o.content ?? (o.text === undefined ? [] : [{ type: "text", text: o.text, citations: null }]);
   return {
@@ -50,13 +52,13 @@ export function makeMessage(o: {
     content: content as BetaMessage["content"],
     stop_reason: (o.stopReason ?? "end_turn") as BetaMessage["stop_reason"],
     stop_sequence: null,
-    stop_details: o.category === undefined ? null : {
+    stop_details: o.category === undefined && o.recommendedModel === undefined ? null : {
       type: "refusal",
-      category: o.category as NonNullable<BetaMessage["stop_details"]>["category"],
+      category: (o.category ?? null) as NonNullable<BetaMessage["stop_details"]>["category"],
       explanation: null,
       fallback_credit_token: null,
       fallback_has_prefill_claim: null,
-      recommended_model: null,
+      recommended_model: o.recommendedModel ?? null,
     },
     usage: {
       input_tokens: o.usage?.inputTokens ?? 0,

@@ -75,5 +75,8 @@ describe("enums survive the conversion", () => {
   it("renders nullable fields as a type union", () => {
     const root = outputFormat(GradingOutputSchema).schema;
     expect(at(root, ["properties", "student", "properties", "name", "type"])).toEqual(["string", "null"]);
+    const item = at(outputFormat(KeyExtractionSchema).schema, ["properties", "items", "items", "properties"]);
+    expect(at(item, ["points", "type"])).toEqual(["number", "null"]);
+    expect(at(item, ["group_points", "type"])).toEqual(["number", "null"]);
   });
 });

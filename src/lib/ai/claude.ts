@@ -30,7 +30,7 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /**
  * The production runner. The SDK `timeout` only bounds the wait for response headers on a stream
- * (§0 fact 6); the caller's `signal` is the wall-clock limit.
+ * request; the caller's `signal` is the wall-clock limit.
  */
 export function createSdkRunner(cfg: AppConfig): MessageRunner {
   const client = new Anthropic({ maxRetries: 2, timeout: cfg.aiTimeoutMs });
@@ -93,7 +93,7 @@ export function buildGradingParams(
   return { params, refs, keyPdfIncluded: keyPdf !== null };
 }
 
-/** Turns a finished message into validated output (§5.5). The stop reason is checked before any content is read. */
+/** Turns a finished message into validated output. The stop reason is checked before any content is read. */
 export function interpretMessage<T>(
   msg: BetaMessage,
   schema: z.ZodType<T>,
@@ -123,7 +123,15 @@ export function createClaudeGrader(runner: MessageRunner, cfg: AppConfig): Grade
     } catch (e) {
       throw classifySdkError(e);
     }
-    const { output, meta } = interpretMessage(msg, schema, cfg.model);
+    let interpreted: ReturnType<typeof interpretMessage<T>>;
+    try {
+      interpreted = interpretMessage(msg, schema, cfg.model);
+    } catch (e) {
+      // The response was billed even though it is unusable; the job layer records its usage.
+      if (e instanceof AiError) throw new AiError(e.code, e.message, { ...e.o, billed: { servedModel: msg.model, usage: toAiUsage(msg.usage) } });
+      throw e;
+    }
+    const { output, meta } = interpreted;
     return { output, meta: { ...meta, durationMs: Math.round(performance.now() - startedAt) } };
   }
 
@@ -164,11 +172,18 @@ function usableStopReason(msg: BetaMessage): "end_turn" | "stop_sequence" {
     case "end_turn":
     case "stop_sequence":
       return msg.stop_reason;
-    case "refusal": // with fallbacks on, every model in the chain declined
-      throw new AiError("refusal", "The AI declined to answer.", {
-        retryable: false,
+    case "refusal": {
+      // With fallbacks on, every model in the chain that ran declined. `recommended_model` is set only
+      // when the fallback attempt was skipped (its rate limit was exhausted or it was overloaded): that
+      // refusal is not final, so the job retries with backoff instead of going to manual grading.
+      const fallbackSkipped = (msg.stop_details?.recommended_model ?? null) !== null;
+      throw new AiError("refusal", fallbackSkipped
+        ? "The AI declined to answer and its fallback model was unavailable."
+        : "The AI declined to answer.", {
+        retryable: fallbackSkipped,
         refusalCategory: msg.stop_details?.category ?? null,
       });
+    }
     case "max_tokens":
       throw new AiError("max_tokens", "The AI's answer hit the output token limit.", { retryable: true });
     case "model_context_window_exceeded":

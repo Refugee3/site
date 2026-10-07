@@ -61,7 +61,7 @@ const keyExtraction: KeyExtraction = {
   document_kind: "answer_key",
   items: [{
     label: "1", group_label: "", prompt: "Solve.", answer_type: "numeric", expected_answer: "4", acceptable_answers: [],
-    grading_criteria: "", points: null, page: 1, answer_source: "key", confidence: "high", note: "",
+    grading_criteria: "", points: null, group_points: null, page: 1, answer_source: "key", confidence: "high", note: "",
   }],
   stated_total_points: null,
   notes: "",
@@ -241,6 +241,19 @@ describe("interpretMessage", () => {
     expect(err.o.refusalCategory).toBe("cyber");
   });
 
+  it("raises a retryable refusal when the fallback attempt was skipped (recommended_model set)", async () => {
+    const msg = makeMessage({ stopReason: "refusal", category: "bio", recommendedModel: "claude-opus-5" });
+    const err = await rejection(() => interpretMessage(msg, GradingOutputSchema, "m"));
+    expect(err.code).toBe("refusal");
+    expect(err.o.retryable).toBe(true);
+    expect(err.o.refusalCategory).toBe("bio");
+  });
+
+  it("keeps a refusal final when recommended_model is null", async () => {
+    const msg = makeMessage({ stopReason: "refusal", category: "bio", recommendedModel: null });
+    expect((await rejection(() => interpretMessage(msg, GradingOutputSchema, "m"))).o.retryable).toBe(false);
+  });
+
   it("reports a refusal without a category as null", async () => {
     const err = await rejection(() => interpretMessage(makeMessage({ stopReason: "refusal" }), GradingOutputSchema, "m"));
     expect(err.o.refusalCategory).toBeNull();
@@ -363,5 +376,22 @@ describe("createClaudeGrader", () => {
     const err = await rejection(createClaudeGrader(runner, cfg).gradeSubmission(gradeInput()));
     expect(err.code).toBe("refusal");
     expect(err.o.refusalCategory).toBe("general_harms");
+  });
+
+  it("attaches the billed usage and served model to errors raised after a response", async () => {
+    const usage = { inputTokens: 1200, outputTokens: 300, cacheReadTokens: 40, cacheWriteTokens: 5 };
+    const replies = [
+      makeMessage({ stopReason: "refusal", model: "claude-opus-5", usage }),
+      makeMessage({ stopReason: "max_tokens", text: "{", usage }),
+      makeMessage({ text: "not json", usage }),
+    ];
+    for (const reply of replies) {
+      const err = await rejection(createClaudeGrader(async () => reply, cfg).gradeSubmission(gradeInput()));
+      expect(err.o.billed).toEqual({ servedModel: reply.model, usage });
+    }
+    const unbilled = await rejection(createClaudeGrader(async () => {
+      throw new Anthropic.RateLimitError(429, {}, "slow down", new Headers());
+    }, cfg).gradeSubmission(gradeInput()));
+    expect(unbilled.o.billed).toBeUndefined();
   });
 });
