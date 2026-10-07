@@ -1,15 +1,17 @@
-import { checkApiKey, resetGrader, type KeyCheck } from "@/lib/ai";
+import { checkApiKey, resetGrader, setUpHostedAgentNow, startHostedAgentSetup, type KeyCheck } from "@/lib/ai";
 import { maskApiKey, normalizeApiKeyInput } from "@/lib/ai/api-key";
 import { getConfig } from "@/lib/config";
-import { clearStoredApiKey, getAppSettings, setStoredApiKey, setStudentsCanUpload } from "@/lib/db/repos/settings";
+import {
+  clearStoredApiKey, getAppSettings, setGradingEngine as storeGradingEngine, setStoredApiKey, setStudentsCanUpload,
+} from "@/lib/db/repos/settings";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
 import { charLength } from "@/lib/grading/text";
 import { resumeWorker } from "@/lib/jobs/queue";
 import { encryptSecret } from "@/lib/secrets";
-import type { Teacher } from "@/lib/types";
+import type { GradingEngineChoice, Teacher } from "@/lib/types";
 
-// App-wide settings (the API key, the student switch) and the teacher's own grading preferences.
+// App-wide settings (the API key, the grading engine, the student switch) and the teacher's own grading preferences.
 
 export const UPLOADS_OFF_MESSAGE = "Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.";
 
@@ -49,6 +51,8 @@ export async function saveApiKey(teacher: Teacher, raw: string, check: KeyChecke
     setBy: teacher.id,
   });
   switchToCurrentKey();
+  // In the background, so the hosted agent is usually ready before the first paper; the save doesn't wait for it.
+  startHostedAgentSetup();
   return { warning: saveWarning(result) };
 }
 
@@ -62,6 +66,24 @@ export function removeApiKey(): void {
 function switchToCurrentKey(): void {
   resetGrader();
   resumeWorker();
+}
+
+/**
+ * Settings → Grader. Validated by the action; switches grading at once: the next job is built with the chosen engine,
+ * jobs already running finish on the one they started with, and jobs a pause held back run again.
+ */
+export function setGradingEngine(engine: GradingEngineChoice): void {
+  storeGradingEngine(engine);
+  resetGrader();
+  resumeWorker();
+  if (engine === "agent") startHostedAgentSetup();
+}
+
+/** "Set up now" / "Set up again": on success also resumeWorker() (a pause for agent_unavailable ends). */
+export async function setUpHostedAgentAgain(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const result = await setUpHostedAgentNow();
+  if (result.ok) resumeWorker();
+  return result;
 }
 
 function apiKeyError(message: string): AppError {

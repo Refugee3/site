@@ -8,10 +8,11 @@ import { setGraderForTests } from "@/lib/ai/index";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/connection";
+import { getAssignmentUsage } from "@/lib/db/repos/assignments";
 import { getScan } from "@/lib/db/repos/scans";
 import { SCAN_CHUNK_MAX_PAGES } from "@/lib/grading/split";
 import { enqueueSplitScan, PRIORITY } from "@/lib/jobs/queue";
-import { deferred, drainQueue, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
+import { deferred, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
 import { createWorker, startWorker } from "@/lib/jobs/worker";
 import { papersFromLayout } from "@/lib/scan-layout";
 import { deleteScan, splitScanEvery } from "@/lib/services/scans";
@@ -239,6 +240,60 @@ describe("failures and resuming", () => {
     expect(jobRows(scan.id)).toMatchObject([{ status: "queued", attempts: 0, paused: 1, run_after: T0 + 300_000 }]);
     expect(getScan(scan.id)).toMatchObject({
       status: "splitting", pagesRead: 20, statusNote: "Paused: Anthropic rejected the API key. Replace it in Settings.",
+    });
+  });
+});
+
+describe("splitting with the hosted agent", () => {
+  const usage = { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+  function capped(agent: { listCostCents: number | null; activeSeconds: number } | null = null): AiError {
+    return new AiError("budget_reached", "The hosted agent reached its spending cap for this task.", {
+      retryable: true, billed: agent ? { servedModel: "claude-opus-5-5", usage, agent } : null,
+    });
+  }
+
+  it("adds every session to the usage, and reads a chunk that reached the spending cap again with double the cap", async () => {
+    const scan = await queuedScan(25);
+    const budgets: Array<number | undefined> = [];
+    const grader = scriptedGrader({
+      engine: "agent",
+      async readScanPages(input, options) {
+        budgets.push(options?.maxTokens);
+        if (budgets.length === 2) throw capped({ listCostCents: 150, activeSeconds: 90 });
+        const { output } = await instantFake.readScanPages(input, options);
+        return { output, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage, agent: { listCostCents: 40, activeSeconds: 30 } } };
+      },
+    });
+
+    await runOnce(grader);
+    expect(jobRows(scan.id)).toMatchObject([{ status: "queued", max_tokens: 128_000, run_after: clock }]);
+    expect(getScan(scan.id)).toMatchObject({
+      status: "splitting", pagesRead: 20, statusNote: "Retrying with a larger spending cap for the hosted agent",
+    });
+
+    await runOnce(grader);
+    expect(budgets).toEqual([64_000, 64_000, 128_000]);
+    expect(getScan(scan.id)).toMatchObject({ status: "review", pagesRead: 25 });
+    expect(getAssignmentUsage(assignment.id)).toEqual({
+      "claude-opus-5-5": {
+        calls: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agent: {
+          sessions: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, listCostCents: 230, unpricedSessions: 0,
+          activeSeconds: 150,
+        },
+      },
+    });
+  });
+
+  it("fails a scan that reached the spending cap even at double the cap, pointing to every N pages", async () => {
+    const scan = await queuedScan(9);
+
+    await drainQueue(recordingReader([], () => capped()));
+
+    expect(getScan(scan.id)).toMatchObject({
+      status: "failed",
+      errorMessage: "The hosted agent reached its spending cap. Split the scan every N pages instead, or raise AGENT_BUDGET_SCAN_USD on the server.",
     });
   });
 });

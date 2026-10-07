@@ -18,10 +18,11 @@ export const FAKE_META: AiCallMeta = {
   durationMs: 0,
 };
 
-/** A grader whose methods default to the instant fake grader; override one to script a test. */
-export function scriptedGrader(o: Partial<Pick<Grader, "extractKey" | "gradeSubmission" | "readScanPages">> = {}): Grader {
+/** A grader whose methods default to the instant fake grader; override one (or the engine) to script a test. */
+export function scriptedGrader(o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages">> = {}): Grader {
   return {
     mode: "fake",
+    engine: o.engine ?? "fake",
     extractKey: o.extractKey ?? instantFake.extractKey,
     gradeSubmission: o.gradeSubmission ?? instantFake.gradeSubmission,
     readScanPages: o.readScanPages ?? instantFake.readScanPages,

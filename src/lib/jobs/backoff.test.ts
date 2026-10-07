@@ -59,6 +59,38 @@ describe("decideFailure", () => {
     });
   });
 
+  it("row 1: retries a session that reached the hosted agent's spending cap once, at the ceiling (double the cap)", () => {
+    expect(decideFailure(makeJob(), aiError("budget_reached", { retryable: true }), LIMITS)).toEqual({
+      action: "requeue", runAfter: NOW, maxTokens: 128_000, refundAttempt: true, note: "Retrying with a larger spending cap for the hosted agent",
+    });
+  });
+
+  it("row 1: a session that reached the spending cap at double the cap fails with a message per job kind", () => {
+    const capped = (kind: Job["kind"]) =>
+      decideFailure(makeJob({ kind, maxTokens: 128_000 }), aiError("budget_reached", { retryable: true }), LIMITS);
+    expect(capped("grade_submission")).toEqual({
+      action: "fail",
+      message: "The hosted agent reached its spending cap for this paper, even at double the cap. Grade it yourself, or raise "
+        + "AGENT_BUDGET_GRADE_USD on the server.",
+    });
+    expect(capped("extract_key")).toEqual({
+      action: "fail",
+      message: "The hosted agent reached its spending cap reading this key, even at double the cap. Build the key yourself, or raise "
+        + "AGENT_BUDGET_EXTRACT_USD on the server.",
+    });
+    expect(capped("split_scan")).toEqual({
+      action: "fail",
+      message: "The hosted agent reached its spending cap. Split the scan every N pages instead, or raise AGENT_BUDGET_SCAN_USD on the server.",
+    });
+  });
+
+  it("row 2: pauses the worker when the hosted agent isn't available with the key, pointing to Settings", () => {
+    expect(decideFailure(makeJob(), aiError("agent_unavailable", { pauseWorker: true }), LIMITS)).toEqual({
+      action: "pause", resumeAt: NOW + 300_000, code: "agent_unavailable",
+      reason: "The hosted agent isn't available with this API key. Open Settings to set it up again or switch to Direct API.",
+    });
+  });
+
   it("row 2: pauses the worker for 5 minutes on a rejected key or an unknown model, with the error code", () => {
     expect(decideFailure(makeJob(), aiError("auth", { pauseWorker: true }), LIMITS)).toEqual({
       action: "pause", resumeAt: NOW + 300_000, reason: "Anthropic rejected the API key. Replace it in Settings.", code: "auth",

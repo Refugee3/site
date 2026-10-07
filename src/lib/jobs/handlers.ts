@@ -1,4 +1,4 @@
-import { AiError, classifySdkError, type AiErrorCode } from "@/lib/ai/errors";
+import { type AgentCallCost, AiError, classifySdkError, type AiErrorCode } from "@/lib/ai/errors";
 import type { AiCallMeta, Grader, ScanPreviousPage } from "@/lib/ai/grader";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
@@ -50,6 +50,8 @@ interface GradingContext {
   sections: Section[];
   /** The teacher's preferences and lessons as they were when the job started; the grading records their fingerprint. */
   guidance: AssignmentGuidance;
+  /** The engine of the grader the job runs on, stored with the grading. */
+  engine: Grader["engine"];
 }
 
 type Billed = NonNullable<AiError["o"]["billed"]>;
@@ -74,7 +76,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
   const items = listKeyItems(assignment.id);
   const ctx: GradingContext = {
     job, submissionId: submission.id, generation, assignment, key, items, sections: listSections(assignment.id),
-    guidance: loadGuidance(assignment, items),
+    guidance: loadGuidance(assignment, items), engine: grader.engine,
   };
 
   if (!isKeyApproved(key, ctx.items.length)) {
@@ -105,10 +107,10 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
     outcome = { kind: "graded", output: result.output, refs: result.refs, meta: result.meta };
-    recordUsage(assignment.id, result.meta.servedModel, result.meta.usage);
+    recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
   } catch (e) {
     const err = classifySdkError(e);
-    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
     if (!isFinalRefusal(job, err)) return gradingFailure(ctx, err);
     outcome = { kind: "refused", category: err.o.refusalCategory ?? null, billed: err.o.billed ?? null };
   }
@@ -148,7 +150,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
     keyRevision: ctx.key.revision,
     guidanceFingerprint: ctx.guidance.fingerprint,
     items: reconciled.items,
-    fields: { ...reconciled.fields, status: reconciled.status, ...ai },
+    fields: { ...reconciled.fields, status: reconciled.status, ...ai, aiEngine: ctx.engine },
   });
   if (saved) rescoreSubmission(ctx.submissionId);
 }
@@ -198,12 +200,12 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
     );
   } catch (e) {
     const err = classifySdkError(e);
-    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
     return extractionFailure(job, sourceSha, err);
   }
 
   const { output, meta } = extraction;
-  recordUsage(assignment.id, meta.servedModel, meta.usage);
+  recordUsage(assignment.id, meta.servedModel, meta.usage, meta.agent);
   const normalized = normalizeExtractedKey(output, { pageCount: key.sourcePageCount, maxItems: cfg.maxKeyItems });
   const notAKeyPdf = tx((): string | null => {
     const current = getKey(job.targetId);
@@ -308,11 +310,11 @@ export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSig
         },
         { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
       );
-      recordUsage(assignment.id, result.meta.servedModel, result.meta.usage);
+      recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
       read = { meta: result.meta, readings: normalizeScanReadings(result.output, { chunkPageCount: chunk.pages.length }) };
     } catch (e) {
       const err = classifySdkError(e);
-      if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+      if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
       return splitFailure(run, err, progress);
     }
     chunk.pages.forEach((page, i) => {
@@ -447,12 +449,12 @@ export function failTarget(job: Job, message: string): void {
 }
 
 /**
- * Adds a billed AI call to the assignment's usage totals (Settings). Accounting never fails the job:
- * a failed write is logged, since retrying would only bill the call again.
+ * Adds a billed AI call to the assignment's usage totals (Settings); `agent` is a hosted-agent session's cost beside its
+ * tokens. Accounting never fails the job: a failed write is logged, since retrying would only bill the call again.
  */
-function recordUsage(assignmentId: string, model: string, usage: AiUsage): void {
+function recordUsage(assignmentId: string, model: string, usage: AiUsage, agent?: AgentCallCost | null): void {
   try {
-    addAssignmentUsage(assignmentId, model, usage);
+    addAssignmentUsage(assignmentId, model, usage, agent ?? undefined);
   } catch (e) {
     console.error(`[jobs] could not record AI usage for assignment ${assignmentId}`, e);
   }

@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
+import * as ai from "@/lib/ai";
 import type { KeyCheck } from "@/lib/ai";
 import { createFakeGrader } from "@/lib/ai/fake";
 import { getGrader, setGraderForTests } from "@/lib/ai/index";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig, resetConfigForTests } from "@/lib/config";
-import { getAppSettings } from "@/lib/db/repos/settings";
+import { getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { attemptWithData } from "@/lib/http/action-result";
-import { decryptSecret } from "@/lib/secrets";
+import { decryptSecret, encryptSecret } from "@/lib/secrets";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setStudentUploads, studentUploadsEnabled, UPLOADS_OFF_MESSAGE, type KeyChecker,
+  removeApiKey, saveApiKey, saveGradingPreferences, setGradingEngine, setStudentUploads, setUpHostedAgentAgain, studentUploadsEnabled,
+  UPLOADS_OFF_MESSAGE, type KeyChecker,
 } from "@/lib/services/settings";
 import type { Teacher } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
@@ -19,15 +21,24 @@ import { seedTeacher, useTestDb } from "@/test/helpers";
 const T0 = 1_700_000_000_000;
 const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789-a1b2";
 let teacher: Teacher;
+/** Setting up the hosted agent would call Anthropic: the tests only see that it was started. */
+let hostedAgentSetup: MockInstance<typeof ai.startHostedAgentSetup>;
 
 beforeEach(() => {
   setClockForTests(() => T0);
+  hostedAgentSetup = vi.spyOn(ai, "startHostedAgentSetup").mockImplementation(() => undefined);
+  hostedAgentSetup.mockClear();
   useTestDb();
   teacher = seedTeacher();
 });
 
 function checker(result: KeyCheck) {
   return vi.fn<KeyChecker>(async () => result);
+}
+
+/** A saved key, as saveApiKey would store it (without asking Anthropic). */
+function setStoredApiKeyForTest() {
+  setStoredApiKey({ ciphertext: encryptSecret(KEY, "anthropic-api-key"), masked: "sk-ant-…a1b2", check: "verified", setBy: teacher.id });
 }
 
 /** A stand-in worker in the process-wide slot, so the service's resumeWorker() reaches it. */
@@ -139,6 +150,86 @@ describe("saveApiKey", () => {
 
     // Built, never called: nothing touches the network.
     expect(getGrader()?.mode).toBe("claude");
+  });
+
+  it("starts setting up the hosted agent for the new key, after switching grading over to it", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    hostedAgentSetup.mockImplementation(() => {
+      // The setup must find the new key in place.
+      expect(getAppSettings().apiKeyMasked).toBe("sk-ant-…a1b2");
+      expect(getGrader()?.engine).toBe("agent");
+    });
+
+    await saveApiKey(teacher, KEY, checker("unreachable"));
+
+    expect(hostedAgentSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts no setup for a key Anthropic rejects", async () => {
+    await expect(saveApiKey(teacher, KEY, checker("rejected"))).rejects.toMatchObject({ code: "validation" });
+    expect(hostedAgentSetup).not.toHaveBeenCalled();
+  });
+});
+
+describe("setGradingEngine", () => {
+  it("stores the choice, rebuilds the grader with it and resumes the worker", () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    setStoredApiKeyForTest();
+    expect(getGrader()?.engine).toBe("agent");
+    const resume = registerWorker();
+
+    setGradingEngine("direct");
+
+    expect(getAppSettings().gradingEngine).toBe("direct");
+    expect(getGrader()?.engine).toBe("direct");
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(hostedAgentSetup).not.toHaveBeenCalled();
+
+    setGradingEngine("agent");
+
+    expect(getAppSettings().gradingEngine).toBe("agent");
+    expect(getGrader()?.engine).toBe("agent");
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(hostedAgentSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a grader forced by a test, so the next job is built with the choice", () => {
+    const forced = createFakeGrader({ delayMs: 0 });
+    setGraderForTests(forced);
+    setGradingEngine("direct");
+    expect(getGrader()).not.toBe(forced);
+  });
+});
+
+describe("setUpHostedAgentAgain", () => {
+  it("says the practice grader doesn't use the hosted agent, and resumes nothing", async () => {
+    const resume = registerWorker();
+    expect(await setUpHostedAgentAgain()).toEqual({ ok: false, error: "Practice mode (AI_MODE=fake) doesn't use the hosted agent." });
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("asks for a key first in claude mode without one", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(await setUpHostedAgentAgain()).toEqual({ ok: false, error: "Add an API key first." });
+  });
+
+  it("resumes the worker once the hosted agent is set up, so a pause for it ends", async () => {
+    const resume = registerWorker();
+    const setUp = vi.spyOn(ai, "setUpHostedAgentNow");
+    try {
+      setUp.mockResolvedValueOnce({ ok: false, error: "This API key isn't allowed to use Claude Managed Agents." });
+      expect(await setUpHostedAgentAgain()).toEqual({ ok: false, error: "This API key isn't allowed to use Claude Managed Agents." });
+      expect(resume).not.toHaveBeenCalled();
+
+      setUp.mockResolvedValueOnce({ ok: true });
+      expect(await setUpHostedAgentAgain()).toEqual({ ok: true });
+      expect(resume).toHaveBeenCalledTimes(1);
+    } finally {
+      setUp.mockRestore();
+    }
   });
 });
 

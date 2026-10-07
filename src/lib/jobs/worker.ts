@@ -78,6 +78,13 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     return now() < pausedUntil;
   }
 
+  /** Why grading can't run that Settings can fix: no key, a rejected key, or a hosted agent the key can't use. */
+  function keyIssue(grader: Grader | null): WorkerStatus["keyIssue"] {
+    if (grader === null) return "missing";
+    if (!isPaused()) return null;
+    return pauseCode === "auth" ? "rejected" : pauseCode === "agent_unavailable" ? "agent" : null;
+  }
+
   function claim(): Job | null {
     return pauseState(currentGrader()) === null ? claimNextJob(now()) : null;
   }
@@ -243,7 +250,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         reason,
         // getGrader() only returns null in claude mode without an API key.
         aiMode: grader?.mode ?? "claude",
-        keyIssue: grader === null ? "missing" : isPaused() && pauseCode === "auth" ? "rejected" : null,
+        keyIssue: keyIssue(grader),
         ...queueStats(),
       };
     },

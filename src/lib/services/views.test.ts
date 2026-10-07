@@ -1,13 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as ai from "@/lib/ai";
 import { AiError } from "@/lib/ai/errors";
 import { getGrader, resetGrader } from "@/lib/ai/index";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig, resetConfigForTests } from "@/lib/config";
+import { addAssignmentUsage } from "@/lib/db/repos/assignments";
 import { updateLesson } from "@/lib/db/repos/lessons";
-import { setStoredApiKey } from "@/lib/db/repos/settings";
+import { saveHostedAgentError, setGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
 import { getSubmission, getSubmissionByReceipt, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
@@ -20,8 +22,9 @@ import {
   deleteSubmission, gradeManually, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride,
 } from "@/lib/services/submissions";
 import {
-  buildGradesCsv, estimateCostUsd, getAssignmentHeader, getBoardView, getDashboardView, getKeyEditorView, getLessonsView,
-  getReceiptView, getReviewView, getScanReviewView, getSettingsView, getStudentUploadView, getTeacherSettingsView, getUploadPageView,
+  AGENT_RUNTIME_USD_PER_HOUR, buildGradesCsv, estimateCostUsd, estimateLedgerCostUsd, getAssignmentHeader, getBoardView,
+  getDashboardView, getKeyEditorView, getLessonsView, getReceiptView, getReviewView, getScanReviewView, getSettingsView,
+  getStudentUploadView, getTeacherSettingsView, getUploadPageView,
 } from "@/lib/services/views";
 import type { AiUsage, Assignment, KeyItem, Submission, SubmissionStatus, Teacher } from "@/lib/types";
 import {
@@ -38,6 +41,8 @@ let items: KeyItem[];
 beforeEach(() => {
   clock = T0;
   setClockForTests(() => clock);
+  // Saving a key in claude mode starts setting up the hosted agent; nothing here may reach for Anthropic.
+  vi.spyOn(ai, "startHostedAgentSetup").mockImplementation(() => undefined);
   useTestDb();
   enableStudentUploads();
   teacher = seedTeacher({ displayName: "Ms. Rivera" });
@@ -285,7 +290,10 @@ describe("teacher views", () => {
     await gradedPaper("Maria Lopez");
     expect(getSettingsView(assignment)).toEqual({
       sectionsText: "",
-      usage: { calls: 1, papers: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0 },
+      usage: {
+        calls: 1, papers: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0,
+        agentSessions: 0, agentActiveSeconds: 0,
+      },
     });
   });
 
@@ -294,6 +302,55 @@ describe("teacher views", () => {
     expect(estimateCostUsd(usage, "claude-opus-5-5", "1h")).toBeCloseTo(4 + 2 + 0.4 + 4);
     expect(estimateCostUsd(usage, "claude-opus-5-5", "5m")).toBeCloseTo(4 + 2 + 0.4 + 2.5);
     expect(estimateCostUsd(usage, "some-other-model", "1h")).toBeNull();
+  });
+
+  it("prices hosted-agent sessions at their list cost, and estimates them from tokens and running time once one has none", () => {
+    const direct: AiUsage = { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const session: AiUsage = { inputTokens: 200_000, outputTokens: 50_000, cacheReadTokens: 1_000_000, cacheWriteTokens: 0 };
+    addAssignmentUsage(assignment.id, "claude-opus-5-5", direct);
+    addAssignmentUsage(assignment.id, "claude-opus-5-5", session, { listCostCents: 175, activeSeconds: 600 });
+    addAssignmentUsage(assignment.id, "claude-opus-5-5", session, { listCostCents: 125, activeSeconds: 300 });
+
+    const { usage } = getSettingsView(assignment);
+    expect(usage).toMatchObject({
+      calls: 3, inputTokens: 1_400_000, outputTokens: 200_000, cacheReadTokens: 2_000_000, agentSessions: 2, agentActiveSeconds: 900,
+    });
+    // The direct call by its tokens ($4 + $2), the sessions at the list cost Anthropic reported ($1.75 + $1.25).
+    expect(usage.estimatedCostUsd).toBeCloseTo(6 + 3);
+
+    addAssignmentUsage(assignment.id, "claude-opus-5-5", session, { listCostCents: null, activeSeconds: 1800 });
+    // A session without a reported cost: every session is estimated, $2 of tokens each plus $0.08 per hour of running time.
+    expect(estimateCostUsd(session, "claude-opus-5-5", "1h")).toBeCloseTo(2);
+    expect(getSettingsView(assignment).usage).toMatchObject({ agentSessions: 3, agentActiveSeconds: 2700 });
+    expect(getSettingsView(assignment).usage.estimatedCostUsd).toBeCloseTo(6 + 3 * 2 + 0.75 * AGENT_RUNTIME_USD_PER_HOUR);
+  });
+
+  it("prices a model without a known price only by the list cost its hosted-agent sessions reported", () => {
+    const none: AiUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const tokens: AiUsage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const agent = { sessions: 1, ...tokens, listCostCents: 250, unpricedSessions: 0, activeSeconds: 60 };
+
+    expect(AGENT_RUNTIME_USD_PER_HOUR).toBe(0.08);
+    expect(estimateLedgerCostUsd("some-other-model", { calls: 1, ...tokens, agent }, "1h")).toBe(2.5);
+    expect(estimateLedgerCostUsd("some-other-model", { calls: 1, ...tokens, agent: { ...agent, unpricedSessions: 1 } }, "1h")).toBeNull();
+    // A direct call of that model besides the session can't be priced.
+    expect(estimateLedgerCostUsd("some-other-model", { calls: 2, ...tokens, inputTokens: 2000, agent }, "1h")).toBeNull();
+    // The fake grader's calls use no tokens and cost nothing.
+    expect(estimateLedgerCostUsd("fake", { calls: 3, ...none }, "1h")).toBe(0);
+  });
+
+  it("tells the review page which engine would grade the paper now", async () => {
+    const paper = await gradedPaper("Maria Lopez");
+    const engine = () => getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).gradingEngine;
+    expect(engine()).toBe("fake");
+
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(engine()).toBeNull();
+    await saveApiKey(teacher, "sk-ant-api03-abcdefghijklmnopqrstuvwxyz-a1b2", async () => "ok");
+    expect(engine()).toBe("agent");
+    setGradingEngine("direct");
+    expect(engine()).toBe("direct");
   });
 });
 
@@ -520,8 +577,32 @@ describe("getTeacherSettingsView", () => {
     expect(getTeacherSettingsView(teacher)).toEqual({
       apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
       aiMode: "fake", model: "claude-opus-5-5", studentsCanUpload: true, openAssignmentCount: 1, gradingPreferences: "Ignore spelling.",
-      worker: null,
+      worker: null, grader: { engine: "agent", agent: null },
     });
+  });
+
+  it("shows the grading engine, and the hosted agent's setup for the key in use in claude mode only", async () => {
+    await saveApiKey(teacher, KEY, async () => "ok");
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
+    setGradingEngine("direct");
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(getTeacherSettingsView(teacher).grader).toEqual({
+      engine: "direct", agent: { state: "not_set_up", error: null, checkedAt: null },
+    });
+    clock += 1000;
+    saveHostedAgentError("Anthropic rejected the API key. Replace it above.");
+    expect(getTeacherSettingsView(teacher).grader.agent).toEqual({
+      state: "error", error: "Anthropic rejected the API key. Replace it above.", checkedAt: T0 + 1000,
+    });
+  });
+
+  it("shows no hosted agent in claude mode without a usable key", () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
   });
 
   it("counts the open assignments of every teacher, which take student uploads as soon as the switch is on", () => {

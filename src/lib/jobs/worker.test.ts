@@ -169,6 +169,70 @@ describe("grading with the fake grader", () => {
   });
 });
 
+describe("grading with the hosted agent", () => {
+  const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0 };
+
+  function agentGrader(gradeSubmission: Grader["gradeSubmission"]): Grader {
+    return scriptedGrader({ engine: "agent", gradeSubmission });
+  }
+
+  it("stores which engine graded the paper, also a refused one, and adds each session's cost to the usage", async () => {
+    const id = await uploadPaper();
+    await drainQueue(agentGrader(async (input) => {
+      const refs = itemRefs(input.items.length);
+      return {
+        output: makeGradingOutput(refs), refs, keyPdfIncluded: false,
+        meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage, agent: { listCostCents: 85, activeSeconds: 240 } },
+      };
+    }));
+    expect(getSubmission(id)).toMatchObject({ status: "graded", aiEngine: "agent" });
+
+    regradeSubmission(getSubmission(id)!);
+    // A refusal was billed all the same; this session reported no list cost.
+    await drainQueue(agentGrader(() => Promise.reject(new AiError("refusal", "The hosted agent declined to answer.", {
+      retryable: false, refusalCategory: null, billed: { servedModel: "claude-opus-5-5", usage, agent: { listCostCents: null, activeSeconds: 60 } },
+    }))));
+
+    expect(getSubmission(id)).toMatchObject({ status: "needs_review", flags: ["ai_refused"], aiEngine: "agent" });
+    expect(getAssignmentUsage(assignment.id)).toEqual({
+      "claude-opus-5-5": {
+        calls: 2, inputTokens: 2000, outputTokens: 200, cacheReadTokens: 1000, cacheWriteTokens: 0,
+        agent: {
+          sessions: 2, inputTokens: 2000, outputTokens: 200, cacheReadTokens: 1000, cacheWriteTokens: 0, listCostCents: 85,
+          unpricedSessions: 1, activeSeconds: 300,
+        },
+      },
+    });
+  });
+
+  it("stores the engine of the grader the paper was graded on", async () => {
+    const id = await uploadPaper();
+    await drainQueue(scriptedGrader());
+    expect(getSubmission(id)!.aiEngine).toBe("fake");
+  });
+
+  it("retries a session that reached its spending cap once with double the cap, then fails the paper", async () => {
+    const id = await uploadPaper();
+    const budgets: Array<number | undefined> = [];
+    const worker = workerWith(agentGrader(async (_input, options) => {
+      budgets.push(options?.maxTokens);
+      throw new AiError("budget_reached", "The hosted agent reached its spending cap for this task.", { retryable: true });
+    }));
+
+    await worker.runOnce();
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, max_tokens: 128_000, run_after: T0 }]);
+    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Retrying with a larger spending cap for the hosted agent" });
+
+    await worker.runOnce();
+    expect(budgets).toEqual([64_000, 128_000]);
+    expect(getSubmission(id)).toMatchObject({
+      status: "failed", errorCode: "budget_reached",
+      errorMessage: "The hosted agent reached its spending cap for this paper, even at double the cap. Grade it yourself, or raise "
+        + "AGENT_BUDGET_GRADE_USD on the server.",
+    });
+  });
+});
+
 describe("grading with the teacher's guidance", () => {
   it("sends the preferences and lessons, and records the guidance's fingerprint with the grading", async () => {
     setGradingPreferences(assignment.teacherId, "Ignore spelling.");
@@ -783,6 +847,26 @@ describe("API key changes", () => {
     worker.start();
 
     expect(worker.status()).toMatchObject({ state: "paused", reason: "No Anthropic API key. Add one in Settings.", aiMode: "claude", keyIssue: "missing" });
+    await worker.stop();
+  });
+
+  it("reports a hosted agent the key can't use, and resume() ends the pause", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reason = "The hosted agent isn't available with this API key. Open Settings to set it up again or switch to Direct API.";
+    const id = await uploadPaper();
+    const worker = workerWith(rejectingGrader(new AiError("agent_unavailable", "This API key isn't allowed to use Claude Managed Agents.", {
+      retryable: false, pauseWorker: true,
+    })));
+
+    await worker.runOnce();
+    worker.start();
+
+    expect(worker.status()).toMatchObject({ state: "paused", reason, keyIssue: "agent" });
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000, paused: 1 }]);
+    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: `Paused: ${reason}` });
+
+    worker.resume();
+    expect(worker.status()).toMatchObject({ state: "running", reason: null, keyIssue: null });
     await worker.stop();
   });
 

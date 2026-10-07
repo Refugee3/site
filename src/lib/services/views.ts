@@ -1,11 +1,13 @@
+import { currentGraderEngine, getHostedAgentStatus } from "@/lib/ai";
 import { getConfig } from "@/lib/config";
 import {
   countOpenAssignments, getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
+  type ModelUsage,
 } from "@/lib/db/repos/assignments";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
 import { countPendingScans, listScans } from "@/lib/db/repos/scans";
-import { getAppSettings } from "@/lib/db/repos/settings";
+import { getAppSettings, getGradingEngine } from "@/lib/db/repos/settings";
 import {
   countByStatus, countSubmissions, getSubmissionByReceipt, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
   listSubmissions,
@@ -188,6 +190,7 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     // Attempts are newest first, so the ones after this paper are older.
     earlierAttempts: attempts.slice(attempts.findIndex((attempt) => attempt.id === s.id) + 1).map(attemptSummary),
     released: a.feedbackReleasedAt !== null,
+    gradingEngine: currentGraderEngine(),
   };
 }
 
@@ -292,6 +295,7 @@ export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
     openAssignmentCount: countOpenAssignments(),
     gradingPreferences: getGradingPreferences(t.id),
     worker: getWorkerStatus(),
+    grader: { engine: getGradingEngine(), agent: getHostedAgentStatus() },
   };
 }
 
@@ -303,8 +307,7 @@ export function getSettingsView(a: Assignment): SettingsView {
   const { cacheTtl } = getConfig();
   const byModel = Object.entries(getAssignmentUsage(a.id));
   const total = sumUsage(byModel.map(([, usage]) => usage));
-  // Calls that used no tokens (the fake grader) cost nothing, whatever their model is called.
-  const costs = byModel.map(([model, usage]) => (tokenCount(usage) === 0 ? 0 : estimateCostUsd(usage, model, cacheTtl)));
+  const costs = byModel.map(([model, usage]) => estimateLedgerCostUsd(model, usage, cacheTtl));
   return {
     sectionsText: sectionsToText(listSections(a.id)),
     usage: {
@@ -312,8 +315,37 @@ export function getSettingsView(a: Assignment): SettingsView {
       papers: listSubmissions(a.id).filter((s) => s.usage !== null).length,
       ...total,
       estimatedCostUsd: costs.some((cost) => cost === null) ? null : costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0),
+      agentSessions: byModel.reduce((sum, [, usage]) => sum + (usage.agent?.sessions ?? 0), 0),
+      agentActiveSeconds: byModel.reduce((sum, [, usage]) => sum + (usage.agent?.activeSeconds ?? 0), 0),
     },
   };
+}
+
+/** List price of the hosted agent's running time (session runtime), on top of its tokens. */
+export const AGENT_RUNTIME_USD_PER_HOUR = 0.08;
+
+/**
+ * Estimated cost of one model's usage, or null for a model without a known price: its direct calls priced by their
+ * tokens, plus its hosted-agent sessions at the list cost Anthropic reported for them or, when any session reported
+ * none, estimated from their tokens and running time.
+ */
+export function estimateLedgerCostUsd(model: string, entry: ModelUsage, ttl: "5m" | "1h"): number | null {
+  const { agent } = entry;
+  const direct: AiUsage = agent
+    ? {
+      inputTokens: entry.inputTokens - agent.inputTokens,
+      outputTokens: entry.outputTokens - agent.outputTokens,
+      cacheReadTokens: entry.cacheReadTokens - agent.cacheReadTokens,
+      cacheWriteTokens: entry.cacheWriteTokens - agent.cacheWriteTokens,
+    }
+    : entry;
+  // Calls that used no tokens (the fake grader) cost nothing, whatever their model is called.
+  const directCost = tokenCount(direct) === 0 ? 0 : estimateCostUsd(direct, model, ttl);
+  if (directCost === null || !agent) return directCost;
+  if (agent.unpricedSessions === 0) return directCost + agent.listCostCents / 100;
+  const agentTokenCost = estimateCostUsd(agent, model, ttl);
+  if (agentTokenCost === null) return null;
+  return directCost + agentTokenCost + (agent.activeSeconds * AGENT_RUNTIME_USD_PER_HOUR) / 3600;
 }
 
 function tokenCount(u: AiUsage): number {
