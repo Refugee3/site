@@ -18,6 +18,7 @@ import {
 } from "@/lib/grading/split";
 import { decideFailure } from "@/lib/jobs/backoff";
 import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
+import { autoGradeCleanSplit } from "@/lib/services/scans";
 import { rescoreSubmission } from "@/lib/services/submissions";
 import { readDataFile, removeDataFile } from "@/lib/storage/files";
 import { extractPageSets } from "@/lib/storage/pdf";
@@ -25,9 +26,10 @@ import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReadin
 
 // Handlers own every write to the job's target (submission or key); the worker owns every jobs-table write.
 
+/** `throttled`: a rate limit or overload; the worker then slows down (see createWorker). */
 export type HandlerResult =
   | { kind: "done" }
-  | { kind: "requeue"; runAfter: number; error: string; maxTokens?: number; refundAttempt: boolean }
+  | { kind: "requeue"; runAfter: number; error: string; maxTokens?: number; refundAttempt: boolean; throttled?: boolean }
   | { kind: "fail"; error: string }
   | { kind: "pause"; resumeAt: number; reason: string; code: AiErrorCode };
 
@@ -163,7 +165,10 @@ function gradingFailure(ctx: GradingContext, err: AiError): HandlerResult {
   switch (decision.action) {
     case "requeue":
       return scheduleRetry(id, generation, decision.note)
-        ? { kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens, refundAttempt: decision.refundAttempt }
+        ? {
+          kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens, refundAttempt: decision.refundAttempt,
+          throttled: decision.throttled,
+        }
         : DONE;
     case "pause":
       return scheduleRetry(id, generation, `Paused: ${decision.reason}`)
@@ -228,6 +233,7 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
       approvedRevision: null, // the teacher must review AI-extracted items before anything is graded
       fingerprint: keyFingerprint(items, current.teacherNotes),
       errorMessage: null,
+      processingFinishedAt: now(),
     });
     return null;
   });
@@ -243,7 +249,10 @@ function extractionFailure(job: Job, sourceSha: string | null, err: AiError): Ha
   const decision = decideFailure(job, err, failureLimits());
   switch (decision.action) {
     case "requeue":
-      return { kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens, refundAttempt: decision.refundAttempt };
+      return {
+        kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens, refundAttempt: decision.refundAttempt,
+        throttled: decision.throttled,
+      };
     case "pause":
       return { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason, code: decision.code };
     case "fail":
@@ -277,10 +286,29 @@ interface SplitRun {
 
 type ScanChunk = { pages: number[]; pdf: Uint8Array } | { error: string };
 
+/** Why a split run stopped before reading every page; the first one wins, except that a superseded run writes nothing. */
+type SplitStop =
+  | { kind: "superseded" }
+  | { kind: "chunk"; error: string }
+  | { kind: "ai"; err: AiError }
+  | { kind: "crash"; error: unknown };
+
+/** What the parallel readers of one run share. JavaScript runs them one step at a time, so plain fields are safe. */
+interface SplitState {
+  readings: Array<ScanPageReading | null>;
+  /** Pages read, or being read by one of the readers. */
+  claimed: boolean[];
+  usage: AiUsage | null;
+  /** At least one chunk was read and saved by this run. */
+  progress: boolean;
+  stop: SplitStop | null;
+}
+
 /**
- * Has the AI describe the scan's pages chunk by chunk, then proposes where each paper starts. Readings are
- * saved after every chunk, so a requeued run resumes at the first unread page; "every N pages", "try the AI
- * again" and deleting the scan supersede a run, whose writes then change nothing.
+ * Has the AI describe the scan's pages chunk by chunk, up to SCAN_SPLIT_PARALLEL chunks at a time, then proposes where each
+ * paper starts. Each chunk's readings are saved as soon as it is read (in any order), so a requeued run reads only the pages
+ * still unread; "every N pages", "try the AI again" and deleting the scan supersede a run, whose writes then change nothing.
+ * When a chunk fails, no new chunk starts; the chunks being read finish and are saved. A clean proposal is graded at once.
  */
 export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSignal): Promise<HandlerResult> {
   const scan = getScan(job.targetId);
@@ -289,49 +317,120 @@ export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSig
   const key = getKey(scan.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
   const run: SplitRun = { job, scanId: scan.id, generation: scan.splitGeneration };
+  // Scans queued before the split clock existed start it now.
+  if (scan.splitStartedAt === null && !updateSplittingScan(run.scanId, run.generation, { splitStartedAt: now() })) return DONE;
   const items = listKeyItems(assignment.id);
   const sections = listSections(assignment.id);
   const keyPageCount = keyPageCountHint(key, items);
   const readings: Array<ScanPageReading | null> = scan.readings.length === scan.pageCount
     ? [...scan.readings]
     : new Array<ScanPageReading | null>(scan.pageCount).fill(null);
-  let usage = scan.usage;
-  let progress = false;
+  const state: SplitState = { readings, claimed: readings.map((r) => r !== null), usage: scan.usage, progress: false, stop: null };
+  const cfg = getConfig();
+  // One scan file read and cut at a time: at most one copy of the scan plus one chunk per reader is held.
+  const cutOneAtATime = serialized();
 
-  for (let start = readings.indexOf(null); start !== -1; start = readings.indexOf(null)) {
-    const chunk = await nextChunk(scan, readings, start);
-    if ("error" in chunk) return failScan(run, chunk.error);
-    let read: { meta: AiCallMeta; readings: ScanPageReading[] };
-    try {
-      const result = await grader.readScanPages(
-        {
-          assignmentTitle: assignment.title, sections, items, keyPageCount,
-          chunkPdf: chunk.pdf, firstPage: chunk.pages[0], chunkPageCount: chunk.pages.length, totalPages: scan.pageCount,
-          previousPage: previousPage(readings, chunk.pages[0]),
-        },
-        { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
-      );
-      recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
-      read = { meta: result.meta, readings: normalizeScanReadings(result.output, { chunkPageCount: chunk.pages.length }) };
-    } catch (e) {
-      const err = classifySdkError(e);
-      if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
-      return splitFailure(run, err, progress);
+  const readChunks = async (): Promise<void> => {
+    for (;;) {
+      if (state.stop) return;
+      const claimed = claimPages(state);
+      if (!claimed) return;
+      const chunk = await cutOneAtATime(() => nextChunk(scan, claimed));
+      if ("error" in chunk) {
+        state.stop ??= { kind: "chunk", error: chunk.error };
+        return;
+      }
+      // Pages left out of a chunk that was too large go back to the pool.
+      for (const page of claimed) if (!chunk.pages.includes(page)) state.claimed[page - 1] = false;
+      if (currentStop(state)) return;
+      let read: { meta: AiCallMeta; readings: ScanPageReading[] };
+      try {
+        const result = await grader.readScanPages(
+          {
+            assignmentTitle: assignment.title, sections, items, keyPageCount,
+            chunkPdf: chunk.pdf, firstPage: chunk.pages[0], chunkPageCount: chunk.pages.length, totalPages: scan.pageCount,
+            // What is known when the call starts: a chunk read in parallel with the one before it gets no previous page.
+            previousPage: previousPage(state.readings, chunk.pages[0]),
+          },
+          { signal, maxTokens: job.maxTokens ?? cfg.maxTokens },
+        );
+        recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
+        read = { meta: result.meta, readings: normalizeScanReadings(result.output, { chunkPageCount: chunk.pages.length }) };
+      } catch (e) {
+        const err = classifySdkError(e);
+        if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
+        state.stop ??= { kind: "ai", err };
+        return;
+      }
+      if (currentStop(state)?.kind === "superseded") return;
+      chunk.pages.forEach((page, i) => {
+        state.readings[page - 1] = read.readings[i];
+      });
+      state.usage = addUsage(state.usage, read.meta.usage);
+      const saved = updateSplittingScan(run.scanId, run.generation, {
+        readings: state.readings, pagesRead: state.readings.filter((r) => r !== null).length, statusNote: null,
+        aiModel: read.meta.servedModel, usage: state.usage,
+      });
+      if (!saved) {
+        state.stop = { kind: "superseded" };
+        return;
+      }
+      state.progress = true;
     }
-    chunk.pages.forEach((page, i) => {
-      readings[page - 1] = read.readings[i];
-    });
-    usage = addUsage(usage, read.meta.usage);
-    const saved = updateSplittingScan(run.scanId, run.generation, {
-      readings, pagesRead: readings.filter((r) => r !== null).length, statusNote: null, aiModel: read.meta.servedModel, usage,
-    });
-    if (!saved) return DONE;
-    progress = true;
+  };
+
+  const readers = Math.max(1, cfg.scanSplitParallel);
+  await Promise.all(Array.from({ length: readers }, () => readChunks().catch((error: unknown) => {
+    state.stop ??= { kind: "crash", error };
+  })));
+
+  const stop = currentStop(state);
+  if (stop) {
+    switch (stop.kind) {
+      case "superseded":
+        return DONE;
+      case "chunk":
+        return failScan(run, stop.error);
+      case "ai":
+        return splitFailure(run, stop.err, state.progress);
+      case "crash":
+        throw stop.error; // the worker retries with backoff; the pages read stay saved
+    }
   }
 
   const layout = proposeLayout(readings.filter((r) => r !== null), { keyPageCount });
-  updateSplittingScan(run.scanId, run.generation, { status: "review", layout, proposedLayout: layout, statusNote: null });
+  const proposed = updateSplittingScan(run.scanId, run.generation, {
+    status: "review", layout, proposedLayout: layout, statusNote: null, splitFinishedAt: now(),
+  });
+  if (proposed) await autoGradeCleanSplit(run.scanId);
   return DONE;
+}
+
+/** Read through a call: readers set it while others await, which TypeScript's narrowing of `state.stop` does not see. */
+function currentStop(state: SplitState): SplitStop | null {
+  return state.stop;
+}
+
+/** Claims the next run of unread pages no reader has, at most SCAN_CHUNK_MAX_PAGES (1-based pages); null when none is left. */
+function claimPages(state: SplitState): number[] | null {
+  const start = state.claimed.indexOf(false);
+  if (start === -1) return null;
+  const pages: number[] = [];
+  for (let i = start; i < state.claimed.length && !state.claimed[i] && pages.length < SCAN_CHUNK_MAX_PAGES; i++) {
+    state.claimed[i] = true;
+    pages.push(i + 1);
+  }
+  return pages;
+}
+
+/** Runs the given tasks one after another, in the order they were handed in. */
+function serialized(): <T>(task: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(task: () => Promise<T>) => {
+    const result = tail.then(task);
+    tail = result.catch(() => undefined);
+    return result;
+  };
 }
 
 /** The reading of the scan page before `firstPage` (1-based), so the AI can judge whether the chunk's first page continues it. */
@@ -342,13 +441,11 @@ function previousPage(readings: Array<ScanPageReading | null>, firstPage: number
 }
 
 /**
- * The unread pages from `start` (0-based) up to the next page already read, at most SCAN_CHUNK_MAX_PAGES and
- * fewer while their PDF is over SCAN_CHUNK_MAX_BYTES. The scan's bytes are dropped on return: only the chunk
- * is held across the AI call.
+ * The PDF of `claimed` (1-based, consecutive, unread), or of its first half, quarter … while it is over
+ * SCAN_CHUNK_MAX_BYTES. The scan's bytes are dropped on return: only the chunk is held across the AI call.
  */
-async function nextChunk(scan: Scan, readings: Array<ScanPageReading | null>, start: number): Promise<ScanChunk> {
-  let pages: number[] = [];
-  for (let i = start; i < readings.length && readings[i] === null && pages.length < SCAN_CHUNK_MAX_PAGES; i++) pages.push(i + 1);
+async function nextChunk(scan: Scan, claimed: number[]): Promise<ScanChunk> {
+  let pages = claimed;
   const bytes = await readStoredPdf(scan.pdfPath);
   if (!bytes) return { error: "The uploaded scan is missing on the server. Upload it again." };
   for (;;) {
@@ -380,7 +477,7 @@ function splitFailure(run: SplitRun, err: AiError, progress: boolean): HandlerRe
       return noteSplit(run, decision.note)
         ? {
           kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens,
-          refundAttempt: decision.refundAttempt || progress,
+          refundAttempt: decision.refundAttempt || progress, throttled: decision.throttled,
         }
         : DONE;
     case "pause":

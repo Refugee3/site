@@ -60,8 +60,13 @@ function rejectingGrader(err: AiError): Grader {
   return scriptedGrader({ gradeSubmission: () => Promise.reject(err) });
 }
 
+/** A retryable error that is not a rate limit or overload (those don't use up attempts: see "rate limits"). */
 function temporaryError(): AiError {
-  return new AiError("overloaded", "temporary trouble", { retryable: true });
+  return new AiError("server_error", "temporary trouble", { retryable: true });
+}
+
+function rateLimited(retryAfterMs: number | null = null): AiError {
+  return new AiError("rate_limited", "429 rate limit", { retryable: true, retryAfterMs });
 }
 
 /**
@@ -275,7 +280,7 @@ describe("AI failures", () => {
     for (const [index, base] of [30_000, 120_000, 480_000].entries()) {
       expect(await worker.runOnce()).toBe(true);
       const [job] = jobRows(id);
-      expect(job).toMatchObject({ status: "queued", attempts: index + 1, last_error: "overloaded: temporary trouble" });
+      expect(job).toMatchObject({ status: "queued", attempts: index + 1, last_error: "server_error: temporary trouble" });
       expect(job.run_after).toBeGreaterThanOrEqual(clock + base * 0.8);
       expect(job.run_after).toBeLessThanOrEqual(clock + base * 1.2);
       expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Retrying after a temporary AI error" });
@@ -286,7 +291,7 @@ describe("AI failures", () => {
     expect(await worker.runOnce()).toBe(true);
     expect(jobRows(id)).toMatchObject([{ status: "failed", attempts: 4 }]);
     expect(getSubmission(id)).toMatchObject({
-      status: "failed", errorCode: "overloaded", errorMessage: "The AI service failed (overloaded).", statusNote: null,
+      status: "failed", errorCode: "server_error", errorMessage: "The AI service failed (server_error).", statusNote: null,
     });
   });
 
@@ -716,6 +721,7 @@ describe("startWorker", () => {
     expect(jobRows(keyAssignment.id)).toMatchObject([{ kind: "extract_key", status: "queued", priority: PRIORITY.extractKey }]);
     expect(getWorkerStatus()).toEqual({
       state: "paused", reason: "No Anthropic API key. Add one in Settings.", aiMode: "claude", queued: 4, running: 0, keyIssue: "missing",
+      concurrency: 10, effectiveConcurrency: 10, throttledUntil: null,
     });
   });
 
@@ -909,6 +915,149 @@ describe("API key changes", () => {
     expect(jobRows(billing)).toMatchObject([{ run_after: T0, paused: 0 }]);
     expect(jobRows(backedOff)).toMatchObject([{ status: "queued", run_after: T0 + 30_000, paused: 0 }]);
     await worker.stop();
+  });
+});
+
+describe("rate limits", () => {
+  /** A grader whose calls wait until the test settles them: `settle(i, err?)` answers call i like the fake grader, or throws `err`. */
+  function controlledGrader() {
+    const calls: Array<{ resolve: () => void; reject: (err: AiError) => void }> = [];
+    const grader = scriptedGrader({
+      gradeSubmission: (input, options) => new Promise((resolve, reject) => {
+        calls.push({ resolve: () => resolve(instantFake.gradeSubmission(input, options)), reject });
+      }),
+    });
+    const settle = (i: number, err?: AiError) => (err ? calls[i].reject(err) : calls[i].resolve());
+    return { grader, calls, settle };
+  }
+
+  it("retries a rate-limited paper after retry-after without using up an attempt, also on its last one", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = await uploadPaper();
+    db.prepare("UPDATE jobs SET attempts = max_attempts - 1 WHERE target_id = ?").run(id);
+    let limited = true;
+    const worker = workerWith(scriptedGrader({
+      gradeSubmission: async (input, options) => {
+        if (limited) throw rateLimited(20_000);
+        return instantFake.gradeSubmission(input, options);
+      },
+    }));
+
+    expect(await worker.runOnce()).toBe(true);
+
+    const maxAttempts = getConfig().jobMaxAttempts;
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: maxAttempts - 1, run_after: T0 + 20_000, paused: 0,
+      last_error: "rate_limited: 429 rate limit" }]);
+    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Waiting: the AI service asked us to slow down", gradingStartedAt: null });
+
+    limited = false;
+    clock = T0 + 20_000;
+    expect(await worker.runOnce()).toBe(true);
+    expect(["graded", "needs_review"]).toContain(getSubmission(id)!.status);
+    expect(jobRows(id)).toMatchObject([{ status: "done", attempts: maxAttempts }]);
+  });
+
+  it("starts nothing new until the retry time, then halves its concurrency and climbs back by one per clean paper", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const limitedId = await uploadPaper("limited");
+    let limited = true;
+    const worker = createWorker({
+      grader: scriptedGrader({
+        gradeSubmission: async (input, options) => {
+          if (limited) throw rateLimited();
+          return instantFake.gradeSubmission(input, options);
+        },
+      }),
+      concurrency: 8,
+      pollMs: 1000,
+    });
+    expect(worker.status()).toMatchObject({ concurrency: 8, effectiveConcurrency: 8, throttledUntil: null });
+
+    await worker.runOnce();
+    const retryAt = jobRows(limitedId)[0].run_after;
+    // About 10 s without a retry-after.
+    expect(retryAt).toBeGreaterThanOrEqual(T0 + 8_000);
+    expect(retryAt).toBeLessThanOrEqual(T0 + 12_000);
+    expect(worker.status()).toMatchObject({ concurrency: 8, effectiveConcurrency: 4, throttledUntil: retryAt });
+
+    // Another paper is due now, but nothing new starts before the retry time.
+    const other = await uploadPaper("other");
+    limited = false;
+    expect(await worker.runOnce()).toBe(false);
+    expect(jobRows(other)).toMatchObject([{ status: "queued", attempts: 0 }]);
+
+    clock = retryAt;
+    expect(worker.status().throttledUntil).toBeNull();
+    expect(await worker.runOnce()).toBe(true);
+    expect(worker.status().effectiveConcurrency).toBe(5);
+    expect(await worker.runOnce()).toBe(true);
+    expect(worker.status().effectiveConcurrency).toBe(6);
+    expect([limitedId, other].map((id) => getSubmission(id)!.status)).not.toContain("queued");
+  });
+
+  it("halves once when many calls are rejected together, and never below one", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ids: string[] = [];
+    for (const label of ["a", "b", "c", "d"]) ids.push(await uploadPaper(label));
+    const { grader, calls, settle } = controlledGrader();
+    const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
+
+    worker.start();
+    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    for (let i = 0; i < 4; i++) settle(i, rateLimited(5_000));
+    await vi.waitFor(() => expect(ids.map((id) => jobRows(id)[0].status)).toEqual(["queued", "queued", "queued", "queued"]));
+    expect(worker.status()).toMatchObject({ effectiveConcurrency: 2, throttledUntil: T0 + 5_000 });
+    expect(ids.map((id) => jobRows(id)[0].attempts)).toEqual([0, 0, 0, 0]);
+
+    // After the hold, two run; both are rate-limited again: 2 → 1, and it stays at 1.
+    clock = T0 + 5_000;
+    worker.kick();
+    await vi.waitFor(() => expect(calls).toHaveLength(6));
+    settle(4, rateLimited(5_000));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(1));
+    settle(5, rateLimited(5_000));
+    await vi.waitFor(() => expect(ids.filter((id) => jobRows(id)[0].status === "queued")).toHaveLength(4));
+    expect(worker.status().effectiveConcurrency).toBe(1);
+    await worker.stop();
+  });
+
+  it("does not count papers started before the cut towards climbing back", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ids: string[] = [];
+    for (const label of ["a", "b", "c", "d", "e"]) ids.push(await uploadPaper(label));
+    const { grader, calls, settle } = controlledGrader();
+    const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
+
+    worker.start();
+    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    settle(0, rateLimited(1_000));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(2));
+    // Started before the cut: finishing cleanly does not raise it.
+    for (const i of [1, 2, 3]) settle(i);
+    await vi.waitFor(() => expect(ids.slice(1, 4).every((id) => jobRows(id)[0].status === "done")).toBe(true));
+    expect(worker.status().effectiveConcurrency).toBe(2);
+
+    clock = T0 + 1_000;
+    worker.kick();
+    await vi.waitFor(() => expect(calls).toHaveLength(6));
+    settle(4);
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(3));
+    settle(5);
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(4));
+    expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true);
+    await worker.stop();
+  });
+
+  it("resume() (a new API key) ends the hold and restores the full concurrency", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await uploadPaper();
+    const worker = createWorker({ grader: rejectingGrader(rateLimited(60_000)), concurrency: 6, pollMs: 1000 });
+    await worker.runOnce();
+    expect(worker.status()).toMatchObject({ effectiveConcurrency: 3, throttledUntil: T0 + 60_000 });
+
+    worker.resume();
+
+    expect(worker.status()).toMatchObject({ effectiveConcurrency: 6, throttledUntil: null });
   });
 });
 

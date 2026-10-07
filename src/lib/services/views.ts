@@ -4,6 +4,7 @@ import {
   countOpenAssignments, getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
   type ModelUsage,
 } from "@/lib/db/repos/assignments";
+import { queuedJobsAhead } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
 import { countPendingScans, listScans } from "@/lib/db/repos/scans";
@@ -25,6 +26,7 @@ import { decryptSecret } from "@/lib/secrets";
 import { isGuidanceStale, loadGuidance } from "@/lib/services/guidance";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
 import { studentUploadsEnabled } from "@/lib/services/settings";
+import { getGradingCounts, getGradingProgress, getSplitProgress, typicalExtractionMs, typicalPaperMs } from "@/lib/services/progress";
 import { currentOnly, receiptUrl } from "@/lib/services/submissions";
 import type {
   AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, FlagCode, KeyEditorView, KeyItem,
@@ -55,6 +57,7 @@ export function getDashboardView(t: Teacher): DashboardView {
         scans: countPendingScans(a.id),
         released: a.feedbackReleasedAt !== null,
         createdAt: a.createdAt,
+        progress: getGradingCounts(a.id),
       };
     }),
   };
@@ -108,6 +111,7 @@ export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
     active: submissions.some((s) => s.status === "queued" || s.status === "grading") || scans.splitting > 0,
     open: studentsCanUpload && a.status === "open",
     studentsCanUpload,
+    progress: getGradingProgress(a.id),
   };
 }
 
@@ -144,6 +148,9 @@ export function getKeyEditorView(a: Assignment): KeyEditorView {
     gradedCount: counts.graded + counts.needs_review,
     locked: isKeyLocked(a.id),
     studentsCanUpload: studentUploadsEnabled(),
+    extraction: key.status === "processing"
+      ? { extractionStartedAt: key.processingStartedAt ?? key.updatedAt, typicalExtractionMs: typicalExtractionMs() }
+      : null,
   };
 }
 
@@ -191,7 +198,17 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     earlierAttempts: attempts.slice(attempts.findIndex((attempt) => attempt.id === s.id) + 1).map(attemptSummary),
     released: a.feedbackReleasedAt !== null,
     gradingEngine: currentGraderEngine(),
+    queue: s.status === "queued" ? queuePosition(s.id) : null,
+    gradingTiming: s.status === "grading"
+      ? { gradingStartedAt: s.gradingStartedAt ?? s.updatedAt, typicalPaperMs: typicalPaperMs(a.id) }
+      : null,
   };
+}
+
+/** Null when the paper has no queued job (its run is being recorded, or the worker puts it back at the next start). */
+function queuePosition(submissionId: string): { position: number } | null {
+  const position = queuedJobsAhead("grade_submission", submissionId);
+  return position === null ? null : { position };
 }
 
 /**
@@ -241,7 +258,7 @@ export function getUploadPageView(a: Assignment): UploadPageView {
 function scanSummary(s: Scan): ScanSummary {
   return {
     id: s.id, status: s.status, originalFilename: s.originalFilename, pageCount: s.pageCount, createdAt: s.createdAt,
-    createdCount: s.createdCount,
+    createdCount: s.createdCount, autoGraded: s.autoGraded,
   };
 }
 
@@ -255,6 +272,7 @@ export function getScanReviewView(scan: Scan, a: Assignment): ScanReviewView {
     keyPageCount: keyPageCountHint(key, items),
     maxPagesPerPaper: getConfig().maxPages,
     remainingSubmissions: Math.max(0, a.maxSubmissions - countSubmissions(a.id)),
+    splitProgress: getSplitProgress(scan),
   };
 }
 
@@ -264,8 +282,8 @@ function shownScan(s: Scan): ScanReviewView["scan"] {
     id: s.id, assignmentId: s.assignmentId, status: s.status, splitMode: s.splitMode, pagesPerPaper: s.pagesPerPaper,
     splitGeneration: s.splitGeneration, originalFilename: s.originalFilename, byteSize: s.byteSize, pageCount: s.pageCount,
     readings: s.readings, pagesRead: s.pagesRead, layout: s.layout, proposedLayout: s.proposedLayout, statusNote: s.statusNote,
-    errorMessage: s.errorMessage, createdCount: s.createdCount, duplicateCount: s.duplicateCount, createdAt: s.createdAt,
-    updatedAt: s.updatedAt,
+    errorMessage: s.errorMessage, createdCount: s.createdCount, duplicateCount: s.duplicateCount, splitStartedAt: s.splitStartedAt,
+    splitFinishedAt: s.splitFinishedAt, autoGraded: s.autoGraded, createdAt: s.createdAt, updatedAt: s.updatedAt,
   };
 }
 

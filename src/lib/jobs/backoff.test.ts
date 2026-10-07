@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AiError, type AiErrorCode, type AiErrorOptions } from "@/lib/ai/errors";
-import { decideFailure, nextRunAfter } from "@/lib/jobs/backoff";
+import { decideFailure, nextRunAfter, throttleRunAfter } from "@/lib/jobs/backoff";
 import type { Job } from "@/lib/types";
 
 const NOW = 1_700_000_000_000;
@@ -38,6 +38,16 @@ describe("nextRunAfter", () => {
 
   it("returns whole milliseconds (run_after is an INTEGER column)", () => {
     expect(Number.isInteger(nextRunAfter(NOW, 1, null, () => 0.123456789))).toBe(true);
+  });
+});
+
+describe("throttleRunAfter", () => {
+  it("waits for retry-after when the API sent one, else about 10 s (±20 %)", () => {
+    expect(throttleRunAfter(NOW, 42_000, () => 0.5)).toBe(NOW + 42_000);
+    expect(throttleRunAfter(NOW, 0, () => 0.5)).toBe(NOW);
+    expect(throttleRunAfter(NOW, null, () => 0.5)).toBe(NOW + 10_000);
+    expect(throttleRunAfter(NOW, null, () => 0)).toBe(NOW + 8_000);
+    expect(throttleRunAfter(NOW, null, () => 1)).toBe(NOW + 12_000);
   });
 });
 
@@ -113,19 +123,45 @@ describe("decideFailure", () => {
   });
 
   it("row 3: requeues a retryable error with backoff while attempts remain", () => {
-    expect(decideFailure(makeJob({ attempts: 2 }), aiError("overloaded", { retryable: true }), LIMITS)).toEqual({
+    expect(decideFailure(makeJob({ attempts: 2 }), aiError("server_error", { retryable: true }), LIMITS)).toEqual({
       action: "requeue", runAfter: NOW + 120_000, refundAttempt: false, note: "Retrying after a temporary AI error",
     });
   });
 
   it("row 3: honours retry-after", () => {
-    const err = aiError("rate_limited", { retryable: true, retryAfterMs: 600_000 });
+    const err = aiError("server_error", { retryable: true, retryAfterMs: 600_000 });
     expect(decideFailure(makeJob(), err, LIMITS)).toMatchObject({ action: "requeue", runAfter: NOW + 600_000 });
   });
 
+  it("throttle row: a rate limit waits for retry-after without using up the attempt, and tells the worker to slow down", () => {
+    const err = aiError("rate_limited", { retryable: true, retryAfterMs: 600_000 });
+    expect(decideFailure(makeJob(), err, LIMITS)).toEqual({
+      action: "requeue", runAfter: NOW + 600_000, refundAttempt: true, throttled: true,
+      note: "Waiting: the AI service asked us to slow down",
+    });
+  });
+
+  it("throttle row: an overload without retry-after waits about 10 s, also on the last attempt, and never fails the paper", () => {
+    for (const code of ["overloaded", "rate_limited"] as const) {
+      for (const attempts of [1, 4]) {
+        expect(decideFailure(makeJob({ attempts }), aiError(code, { retryable: true }), LIMITS), `${code} ${attempts}`).toEqual({
+          action: "requeue", runAfter: NOW + 10_000, refundAttempt: true, throttled: true,
+          note: "Waiting: the AI service asked us to slow down",
+        });
+      }
+    }
+    const split = makeJob({ kind: "split_scan", attempts: 4 });
+    expect(decideFailure(split, aiError("overloaded", { retryable: true }), LIMITS)).toMatchObject({ action: "requeue", throttled: true });
+  });
+
+  it("throttle row: a bad key still pauses, and max_tokens still gets its one larger retry", () => {
+    expect(decideFailure(makeJob(), aiError("max_tokens", { retryable: true }), LIMITS)).not.toHaveProperty("throttled");
+    expect(decideFailure(makeJob(), aiError("auth", { pauseWorker: true }), LIMITS).action).toBe("pause");
+  });
+
   it("row 4: fails a retryable error once attempts are exhausted", () => {
-    expect(decideFailure(makeJob({ attempts: 4 }), aiError("overloaded", { retryable: true }), LIMITS)).toEqual({
-      action: "fail", message: "The AI service failed (overloaded).",
+    expect(decideFailure(makeJob({ attempts: 4 }), aiError("server_error", { retryable: true }), LIMITS)).toEqual({
+      action: "fail", message: "The AI service failed (server_error).",
     });
   });
 
@@ -148,8 +184,8 @@ describe("decideFailure", () => {
     expect(decideFailure(split({ attempts: 4 }), aiError("invalid_output", { retryable: true }), LIMITS)).toEqual({
       action: "fail", message: "The AI returned an unusable answer several times. Split the scan every N pages instead.",
     });
-    expect(decideFailure(split({ attempts: 4 }), aiError("overloaded", { retryable: true }), LIMITS)).toEqual({
-      action: "fail", message: "The AI service failed (overloaded). Try again or split the scan every N pages.",
+    expect(decideFailure(split({ attempts: 4 }), aiError("server_error", { retryable: true }), LIMITS)).toEqual({
+      action: "fail", message: "The AI service failed (server_error). Try again or split the scan every N pages.",
     });
   });
 });

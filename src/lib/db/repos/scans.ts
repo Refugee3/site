@@ -1,6 +1,6 @@
 import { now } from "@/lib/clock";
 import { getAssignment } from "@/lib/db/repos/assignments";
-import { all, encodePatch, one, run, updateRow, type ColumnMap } from "@/lib/db/sql";
+import { all, encodePatch, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import type { AiUsage, Assignment, PendingScans, Scan, ScanLayout, ScanPageReading, ScanSplitMode, ScanStatus } from "@/lib/types";
 
@@ -8,7 +8,8 @@ export type NewScan = Pick<Scan, "id" | "assignmentId" | "splitMode" | "pagesPer
   | "byteSize" | "pageCount"> & { status: "splitting" | "review"; layout: ScanLayout | null };
 
 type ScanFields = Pick<Scan, "status" | "splitMode" | "pagesPerPaper" | "splitGeneration" | "readings" | "pagesRead" | "layout"
-  | "proposedLayout" | "statusNote" | "errorMessage" | "aiModel" | "usage" | "createdCount" | "duplicateCount">;
+  | "proposedLayout" | "statusNote" | "errorMessage" | "aiModel" | "usage" | "createdCount" | "duplicateCount" | "splitStartedAt"
+  | "splitFinishedAt" | "autoGraded">;
 export type ScanPatch = Partial<ScanFields>;
 
 interface ScanRow {
@@ -33,6 +34,9 @@ interface ScanRow {
   usage_json: string | null;
   created_count: number | null;
   duplicate_count: number | null;
+  split_started_at: number | null;
+  split_finished_at: number | null;
+  auto_graded: 0 | 1;
   created_at: number;
   updated_at: number;
 }
@@ -68,21 +72,24 @@ function scanFromRow(row: ScanRow): Scan {
     usage: parseOrNull<AiUsage>(row.usage_json),
     createdCount: row.created_count,
     duplicateCount: row.duplicate_count,
+    splitStartedAt: row.split_started_at,
+    splitFinishedAt: row.split_finished_at,
+    autoGraded: row.auto_graded === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-/** The proposed layout starts out as `layout`. */
+/** The proposed layout starts out as `layout`; a scan inserted `splitting` starts its split clock (split_started_at) now. */
 export function insertScan(s: NewScan): Scan {
   const at = now();
   const layout = jsonOrNull(s.layout);
   const row = one<ScanRow>(
     `INSERT INTO scans (id, assignment_id, status, split_mode, pages_per_paper, pdf_path, original_filename, content_sha256,
-       byte_size, page_count, layout_json, proposed_layout_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+       byte_size, page_count, layout_json, proposed_layout_json, split_started_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
     s.id, s.assignmentId, s.status, s.splitMode, s.pagesPerPaper, s.pdfPath, s.originalFilename, s.contentSha256,
-    s.byteSize, s.pageCount, layout, layout, at, at,
+    s.byteSize, s.pageCount, layout, layout, s.status === "splitting" ? at : null, at, at,
   );
   return scanFromRow(row!);
 }
@@ -148,6 +155,9 @@ const SCAN_COLUMNS: ColumnMap<ScanFields> = {
   usage: ["usage_json", jsonOrNull],
   createdCount: "created_count",
   duplicateCount: "duplicate_count",
+  splitStartedAt: "split_started_at",
+  splitFinishedAt: "split_finished_at",
+  autoGraded: ["auto_graded", toBit],
 };
 
 /** Throws AppError("not_found") when the scan does not exist. */
@@ -184,4 +194,24 @@ export function listSplittingScansWithoutJob(): Array<{ id: string; assignmentId
 /** Boot recovery: papers are created inside a request, so a scan left `creating` goes back to `review`. */
 export function resetCreatingScans(): number {
   return run("UPDATE scans SET status = 'review', updated_at = ? WHERE status = 'creating'", now());
+}
+
+/**
+ * Milliseconds per page of the last `limit` AI splits that read every page ((split_finished_at - split_started_at) / pages),
+ * newest first: of one assignment, or of every assignment when `assignmentId` is null.
+ */
+export function recentSplitPageDurations(assignmentId: string | null, limit: number): number[] {
+  const where = `split_started_at IS NOT NULL AND split_finished_at IS NOT NULL AND split_finished_at >= split_started_at`;
+  const rows = assignmentId === null
+    ? all<{ ms: number }>(
+      `SELECT (split_finished_at - split_started_at) * 1.0 / page_count AS ms FROM scans WHERE ${where}
+       ORDER BY split_finished_at DESC LIMIT ?`,
+      limit,
+    )
+    : all<{ ms: number }>(
+      `SELECT (split_finished_at - split_started_at) * 1.0 / page_count AS ms FROM scans WHERE assignment_id = ? AND ${where}
+       ORDER BY split_finished_at DESC LIMIT ?`,
+      assignmentId, limit,
+    );
+  return rows.map((row) => row.ms);
 }

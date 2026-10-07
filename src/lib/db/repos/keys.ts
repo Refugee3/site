@@ -21,6 +21,8 @@ interface AnswerKeyRow {
   error_message: string | null;
   ai_model: string | null;
   usage_json: string | null;
+  processing_started_at: number | null;
+  processing_finished_at: number | null;
   updated_at: number;
 }
 
@@ -60,6 +62,8 @@ function keyFromRow(row: AnswerKeyRow): AnswerKey {
     errorMessage: row.error_message,
     aiModel: row.ai_model,
     usage: row.usage_json === null ? null : (JSON.parse(row.usage_json) as AiUsage),
+    processingStartedAt: row.processing_started_at,
+    processingFinishedAt: row.processing_finished_at,
     updatedAt: row.updated_at,
   };
 }
@@ -115,6 +119,8 @@ const KEY_COLUMNS: ColumnMap<KeyPatch> = {
   errorMessage: "error_message",
   aiModel: "ai_model",
   usage: ["usage_json", (usage) => (usage === null ? null : JSON.stringify(usage))],
+  processingStartedAt: "processing_started_at",
+  processingFinishedAt: "processing_finished_at",
 };
 
 /** Throws AppError("not_found") when the assignment has no key row. */
@@ -212,4 +218,14 @@ export function listProcessingKeysWithoutJob(): string[] {
                        AND j.status IN ('queued', 'running'))
      ORDER BY k.updated_at`,
   ).map((row) => row.assignment_id);
+}
+
+/** How long the last `limit` key readings took (from processing to the stored reading), newest first, over every assignment. */
+export function recentExtractionDurations(limit: number): number[] {
+  return all<{ ms: number }>(
+    `SELECT processing_finished_at - processing_started_at AS ms FROM answer_keys
+     WHERE processing_started_at IS NOT NULL AND processing_finished_at IS NOT NULL AND processing_finished_at >= processing_started_at
+     ORDER BY processing_finished_at DESC LIMIT ?`,
+    limit,
+  ).map((row) => row.ms);
 }

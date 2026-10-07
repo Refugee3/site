@@ -6,7 +6,7 @@ const CONFIG_VARS = [
   "NODE_ENV", "DATA_DIR", "APP_URL", "AI_MODE", "ALLOW_FAKE_AI", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "ANTHROPIC_EFFORT",
   "AI_FALLBACKS", "AI_CACHE_TTL", "AI_TIMEOUT_MS", "GRADING_CONCURRENCY", "JOB_MAX_ATTEMPTS", "TEACHER_SIGNUP_CODE",
   "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES", "AGENT_BUDGET_EXTRACT_USD",
-  "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS",
+  "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS", "SCAN_SPLIT_PARALLEL",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -33,7 +33,8 @@ describe("getConfig", () => {
       jobTimeoutMs: 2_700_000,
       maxTokens: 64_000,
       maxTokensCeiling: 128_000,
-      concurrency: 3,
+      concurrency: 10,
+      scanSplitParallel: 4,
       jobMaxAttempts: 4,
       teacherSignupCode: null,
       cookieSecure: false,
@@ -61,7 +62,8 @@ describe("getConfig", () => {
       AI_FALLBACKS: "off",
       AI_CACHE_TTL: "5m",
       AI_TIMEOUT_MS: "30000",
-      GRADING_CONCURRENCY: "8",
+      GRADING_CONCURRENCY: "32",
+      SCAN_SPLIT_PARALLEL: "8",
       JOB_MAX_ATTEMPTS: "1",
       TEACHER_SIGNUP_CODE: " maple-quartz-4417 ",
       MAX_UPLOAD_MB: "5",
@@ -84,7 +86,8 @@ describe("getConfig", () => {
       fallbacks: false,
       cacheTtl: "5m",
       aiTimeoutMs: 30_000,
-      concurrency: 8,
+      concurrency: 32,
+      scanSplitParallel: 8,
       jobMaxAttempts: 1,
       teacherSignupCode: "maple-quartz-4417",
       cookieSecure: true,
@@ -114,7 +117,7 @@ describe("getConfig", () => {
   it("treats empty and blank values as unset", () => {
     const cfg = configWith({ ANTHROPIC_API_KEY: "  ", GRADING_CONCURRENCY: "", TEACHER_SIGNUP_CODE: "" });
     expect(cfg.hasApiKey).toBe(false);
-    expect(cfg.concurrency).toBe(3);
+    expect(cfg.concurrency).toBe(10);
     expect(cfg.teacherSignupCode).toBeNull();
   });
 
@@ -142,6 +145,11 @@ describe("getConfig", () => {
     }
     expect(message).toContain("APP_SECRET");
     expect(message).not.toContain("hunter2");
+  });
+
+  it("grades up to 32 papers at once and reads up to 8 chunks of a scan at once", () => {
+    expect(configWith({ GRADING_CONCURRENCY: "1", SCAN_SPLIT_PARALLEL: "1" })).toMatchObject({ concurrency: 1, scanSplitParallel: 1 });
+    expect(configWith({ GRADING_CONCURRENCY: "32", SCAN_SPLIT_PARALLEL: "8" })).toMatchObject({ concurrency: 32, scanSplitParallel: 8 });
   });
 
   it("parses the scan limits within their ranges", () => {
@@ -204,7 +212,7 @@ describe("getConfig", () => {
   it("lists every invalid variable in one error", () => {
     let message = "";
     try {
-      configWith({ GRADING_CONCURRENCY: "9", MAX_UPLOAD_MB: "abc", AI_MODE: "openai", ANTHROPIC_EFFORT: "extreme" });
+      configWith({ GRADING_CONCURRENCY: "33", MAX_UPLOAD_MB: "abc", AI_MODE: "openai", ANTHROPIC_EFFORT: "extreme" });
     } catch (error) {
       message = (error as Error).message;
     }
@@ -217,6 +225,10 @@ describe("getConfig", () => {
     ["AI_TIMEOUT_MS", "9999"],
     ["GRADING_CONCURRENCY", "0"],
     ["GRADING_CONCURRENCY", "2.5"],
+    ["GRADING_CONCURRENCY", "33"],
+    ["SCAN_SPLIT_PARALLEL", "0"],
+    ["SCAN_SPLIT_PARALLEL", "9"],
+    ["SCAN_SPLIT_PARALLEL", "1.5"],
     ["JOB_MAX_ATTEMPTS", "11"],
     ["MAX_UPLOAD_MB", "23"],
     ["MAX_PAGES", "0"],

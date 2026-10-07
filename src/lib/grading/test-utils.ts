@@ -96,6 +96,8 @@ export function makeSubmission(o: Partial<Submission> = {}): Submission {
     errorMessage: null,
     gradedAt: null,
     reviewedAt: null,
+    gradingStartedAt: null,
+    queuedAt: 1_000,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...o,

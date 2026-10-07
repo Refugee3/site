@@ -12,10 +12,10 @@ import { sha256Hex } from "@/lib/ids";
 import { PRIORITY } from "@/lib/jobs/queue";
 import { jobRows } from "@/lib/jobs/test-utils";
 import { everyNLayout } from "@/lib/scan-layout";
-import { createPapersFromScan, deleteScan, ingestScan, retryScanWithAi, splitScanEvery } from "@/lib/services/scans";
+import { autoGradeCleanSplit, createPapersFromScan, deleteScan, ingestScan, retryScanWithAi, splitScanEvery } from "@/lib/services/scans";
 import { scanPdfRel } from "@/lib/storage/paths";
 import type { UploadedFile } from "@/lib/storage/pdf";
-import type { Assignment, Scan, ScanLayout } from "@/lib/types";
+import type { Assignment, Scan, ScanLayout, ScanPageReading } from "@/lib/types";
 import { makePdf, seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
@@ -142,11 +142,12 @@ describe("changing the split", () => {
   it("retryScanWithAi starts the AI split over", async () => {
     const scan = await reviewScan(6, 2);
 
-    const retried = retryScanWithAi(scan);
+    updateScan(scan.id, { splitStartedAt: T0 - 50_000, splitFinishedAt: T0 - 1_000 });
+    const retried = retryScanWithAi(getScan(scan.id)!);
 
     expect(retried).toMatchObject({
       status: "splitting", splitMode: "auto", pagesPerPaper: null, splitGeneration: 2, readings: [], pagesRead: 0, layout: null,
-      proposedLayout: null,
+      proposedLayout: null, splitStartedAt: T0, splitFinishedAt: null,
     });
     expect(jobRows(scan.id)).toMatchObject([{ kind: "split_scan", status: "queued" }]);
     expect(() => retryScanWithAi(retried)).toThrow(expect.objectContaining({
@@ -180,7 +181,7 @@ describe("createPapersFromScan", () => {
       ["stack.pdf (pages 7–9)", 3, "teacher", "queued"],
     ]);
     for (const p of papers) expect(jobRows(p.id)).toMatchObject([{ kind: "grade_submission", priority: PRIORITY.teacher }]);
-    expect(getScan(scan.id)).toMatchObject({ status: "done", createdCount: 3, duplicateCount: 0, layout });
+    expect(getScan(scan.id)).toMatchObject({ status: "done", createdCount: 3, duplicateCount: 0, layout, autoGraded: false });
   });
 
   it("creates nothing twice when run again after a crash", async () => {
@@ -325,3 +326,93 @@ async function pdfWithHeavyPage(pages: number, heavy: number): Promise<Uint8Arra
   }
   return doc.save();
 }
+
+describe("autoGradeCleanSplit", () => {
+  function reading(o: Partial<ScanPageReading> = {}): ScanPageReading {
+    return {
+      kind: "student_work", startsNewPaper: false, studentName: null, sectionRaw: null, pageMarker: null, worksheetPage: null,
+      confidence: "high", note: "", reported: true, ...o,
+    };
+  }
+
+  /** A four-page scan the AI read as two two-page papers, in review; `o` adjusts the readings or the layout. */
+  async function aiSplit(o: { readings?: ScanPageReading[]; layout?: ScanLayout; splitMode?: "auto" | "every" } = {}): Promise<Scan> {
+    const scan = await ingestScan(assignment, await scanFile(4, `ai-${randomBytes(4).toString("hex")}`), { mode: "auto", pagesPerPaper: null });
+    const layout = o.layout ?? everyNLayout(4, 2);
+    return updateScan(scan.id, {
+      status: "review", splitMode: o.splitMode ?? "auto", layout, proposedLayout: layout, pagesRead: 4,
+      readings: o.readings ?? [
+        reading({ startsNewPaper: true, studentName: "Ana Lopez" }), reading(),
+        reading({ startsNewPaper: true, studentName: "Ben Ortiz" }), reading(),
+      ],
+    });
+  }
+
+  it("grades a split with nothing to check at once, like \"Grade N papers\", and records it", async () => {
+    const scan = await aiSplit();
+
+    expect(await autoGradeCleanSplit(scan.id)).toBe(true);
+
+    expect(getScan(scan.id)).toMatchObject({ status: "done", autoGraded: true, createdCount: 2, duplicateCount: 0 });
+    const papers = listSubmissions(assignment.id);
+    expect(papers.map((p) => [p.source, p.status, p.pageCount])).toEqual([["teacher", "queued", 2], ["teacher", "queued", 2]]);
+    for (const p of papers) expect(jobRows(p.id)).toMatchObject([{ kind: "grade_submission", priority: PRIORITY.teacher }]);
+  });
+
+  it.each([
+    ["low confidence", { readings: [reading({ studentName: "Ana Lopez", confidence: "low" }), reading(), reading({ studentName: "Ben Ortiz" }), reading()] }],
+    ["no name", { readings: [reading({ studentName: "Ana Lopez" }), reading(), reading(), reading()] }],
+    ["several names", { readings: [reading({ studentName: "Ana Lopez" }), reading({ studentName: "Carl Diaz" }), reading({ studentName: "Ben Ortiz" }), reading()] }],
+    ["an unread page", { readings: [reading({ studentName: "Ana Lopez" }), reading({ reported: false }), reading({ studentName: "Ben Ortiz" }), reading()] }],
+    ["an unusual page count", {
+      layout: [{ startsPaper: true, dropped: false }, { startsPaper: true, dropped: false }, { startsPaper: false, dropped: false },
+        { startsPaper: true, dropped: false }],
+      readings: [reading({ studentName: "Ana Lopez" }), reading({ studentName: "Ben Ortiz" }), reading(), reading({ studentName: "Carl Diaz" })],
+    }],
+  ] as Array<[string, { readings: ScanPageReading[]; layout?: ScanLayout }]>)("leaves a split with %s in review for the teacher", async (_flag, o) => {
+    const scan = await aiSplit(o);
+
+    expect(await autoGradeCleanSplit(scan.id)).toBe(false);
+
+    expect(getScan(scan.id)).toMatchObject({ status: "review", autoGraded: false, createdCount: null });
+    expect(countSubmissions(assignment.id)).toBe(0);
+  });
+
+  it("leaves a paper over MAX_PAGES (too many pages) in review", async () => {
+    vi.stubEnv("MAX_PAGES", "1");
+    resetConfigForTests();
+    const scan = await aiSplit();
+    expect(await autoGradeCleanSplit(scan.id)).toBe(false);
+    expect(getScan(scan.id)!.status).toBe("review");
+  });
+
+  it("leaves a scan split every N pages, one not in review, and one without an approved key to the teacher", async () => {
+    const every = await aiSplit({ splitMode: "every" });
+    expect(await autoGradeCleanSplit(every.id)).toBe(false);
+    expect(getScan(every.id)!.status).toBe("review");
+
+    const splitting = await aiSplit();
+    updateScan(splitting.id, { status: "splitting" });
+    expect(await autoGradeCleanSplit(splitting.id)).toBe(false);
+
+    const unapproved = await aiSplit();
+    updateKey(assignment.id, { approvedRevision: null });
+    expect(await autoGradeCleanSplit(unapproved.id)).toBe(false);
+    expect(getScan(unapproved.id)).toMatchObject({ status: "review", autoGraded: false });
+    expect(await autoGradeCleanSplit("missing")).toBe(false);
+    expect(countSubmissions(assignment.id)).toBe(0);
+  });
+
+  it("falls back to review when creating the papers fails (the submission limit)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const limited = seedAssignment(seedTeacher().id, { maxSubmissions: 1 });
+    seedApprovedKey(limited.id, [{ label: "1" }]);
+    assignment = limited;
+    const scan = await aiSplit();
+
+    expect(await autoGradeCleanSplit(scan.id)).toBe(false);
+
+    expect(getScan(scan.id)).toMatchObject({ status: "review", autoGraded: false, createdCount: null });
+    expect(countSubmissions(limited.id)).toBe(0);
+  });
+});

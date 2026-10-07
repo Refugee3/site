@@ -56,7 +56,10 @@ describe("ingestKeyPdf", () => {
   it("stores the PDF, marks the key processing and queues extraction", async () => {
     const key = await ingestKeyPdf(assignment, await keyFile());
 
-    expect(key).toMatchObject({ status: "processing", sourceFilename: "key.pdf", sourcePageCount: 2, errorMessage: null });
+    expect(key).toMatchObject({
+      status: "processing", sourceFilename: "key.pdf", sourcePageCount: 2, errorMessage: null,
+      processingStartedAt: 1_700_000_000_000, processingFinishedAt: null,
+    });
     expect(keyFiles()).toHaveLength(1);
     expect(jobRows(assignment.id)).toMatchObject([{ kind: "extract_key", status: "queued", priority: 0 }]);
   });
@@ -103,9 +106,12 @@ describe("retryKeyExtraction", () => {
     updateKey(assignment.id, { status: "failed", errorMessage: "No questions found" });
     await drainQueue(); // the earlier job finishes without writing: the key is no longer processing
 
+    setClockForTests(() => 1_700_000_005_000);
     retryKeyExtraction(assignment);
 
-    expect(getKey(assignment.id)).toMatchObject({ status: "processing", errorMessage: null });
+    expect(getKey(assignment.id)).toMatchObject({
+      status: "processing", errorMessage: null, processingStartedAt: 1_700_000_005_000, processingFinishedAt: null,
+    });
     expect(jobRows(assignment.id).at(-1)).toMatchObject({ status: "queued" });
   });
 
@@ -184,5 +190,18 @@ describe("saveKey", () => {
     updateKey(assignment.id, { status: "processing" });
     expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: false }))
       .toThrow(expect.objectContaining({ code: "invalid_state" }));
+  });
+});
+
+describe("reading the key", () => {
+  it("records when the AI's reading was stored, for the typical reading time", async () => {
+    await ingestKeyPdf(assignment, await keyFile());
+    setClockForTests(() => 1_700_000_030_000);
+
+    await drainQueue();
+
+    expect(getKey(assignment.id)).toMatchObject({
+      status: "ready", processingStartedAt: 1_700_000_000_000, processingFinishedAt: 1_700_000_030_000,
+    });
   });
 });

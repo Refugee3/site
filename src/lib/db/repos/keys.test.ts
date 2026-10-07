@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { claimNextJob, completeJob, enqueueJob } from "@/lib/db/repos/jobs";
 import {
-  createEmptyKey, getKey, listKeyItems, listProcessingKeysWithoutJob, replaceKeyItems, updateKey, upsertKeyItems,
+  createEmptyKey, getKey, listKeyItems, listProcessingKeysWithoutJob, recentExtractionDurations, replaceKeyItems, updateKey, upsertKeyItems,
 } from "@/lib/db/repos/keys";
 import { listItems, setItemOverride } from "@/lib/db/repos/submissions";
 import { seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
@@ -42,7 +42,7 @@ describe("answer key row", () => {
     expect(getKey(assignment.id)).toEqual({
       assignmentId: assignment.id, status: "empty", sourcePdfPath: null, sourceFilename: null, sourceSha256: null,
       sourcePageCount: null, documentKind: null, teacherNotes: "", aiNotes: "", revision: 0, approvedRevision: null,
-      fingerprint: null, errorMessage: null, aiModel: null, usage: null, updatedAt: T0,
+      fingerprint: null, errorMessage: null, aiModel: null, usage: null, processingStartedAt: null, processingFinishedAt: null, updatedAt: T0,
     });
     expect(getKey("missing")).toBeNull();
   });
@@ -132,5 +132,18 @@ describe("listProcessingKeysWithoutJob", () => {
   it("ignores keys that are not processing", () => {
     updateKey(assignment.id, { status: "failed" });
     expect(listProcessingKeysWithoutJob()).toEqual([]);
+  });
+});
+
+describe("recentExtractionDurations", () => {
+  it("lists how long recent key readings took, newest first, over every assignment", () => {
+    const other = seedAssignment(seedTeacher().id);
+    updateKey(assignment.id, { processingStartedAt: T0, processingFinishedAt: T0 + 40_000 });
+    updateKey(other.id, { processingStartedAt: T0 + 100_000, processingFinishedAt: T0 + 120_000 });
+    const unfinished = seedAssignment(seedTeacher().id);
+    updateKey(unfinished.id, { status: "processing", processingStartedAt: T0 });
+
+    expect(recentExtractionDurations(20)).toEqual([20_000, 40_000]);
+    expect(recentExtractionDurations(1)).toEqual([20_000]);
   });
 });

@@ -253,3 +253,36 @@ export function addAssignmentUsage(
     run("UPDATE assignments SET ai_usage_json = ? WHERE id = ?", JSON.stringify(ledger), assignmentId);
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// The grading batch: papers queued since the assignment's queue last became non-empty (progress bars)
+
+/**
+ * Called when `submissionId` (already queued) gets its grading job. Starts a new batch when no other paper of the assignment
+ * is queued or being graded (or none was recorded): the batch then starts when the oldest paper waiting now was queued.
+ */
+export function startGradingBatchIfIdle(assignmentId: string, submissionId: string): void {
+  run(
+    `UPDATE assignments SET batch_started_at = (
+       SELECT min(s.queued_at) FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading'))
+     WHERE id = @aid AND (batch_started_at IS NULL OR NOT EXISTS (
+       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading') AND s.id <> @sid))`,
+    { aid: assignmentId, sid: submissionId },
+  );
+}
+
+/** Ends the batch once none of the assignment's papers is queued or being graded. */
+export function clearGradingBatchIfDrained(assignmentId: string): void {
+  run(
+    `UPDATE assignments SET batch_started_at = NULL
+     WHERE id = @aid AND batch_started_at IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading'))`,
+    { aid: assignmentId },
+  );
+}
+
+/** When the assignment's current grading batch started; null when none is recorded. */
+export function getGradingBatchStartedAt(assignmentId: string): number | null {
+  return one<{ batch_started_at: number | null }>("SELECT batch_started_at FROM assignments WHERE id = ?", assignmentId)
+    ?.batch_started_at ?? null;
+}

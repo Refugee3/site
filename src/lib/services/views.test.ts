@@ -6,8 +6,11 @@ import { AiError } from "@/lib/ai/errors";
 import { getGrader, resetGrader } from "@/lib/ai/index";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
+import { getDb } from "@/lib/db/connection";
 import { getConfig, resetConfigForTests } from "@/lib/config";
-import { addAssignmentUsage } from "@/lib/db/repos/assignments";
+import { addAssignmentUsage, getGradingBatchStartedAt } from "@/lib/db/repos/assignments";
+import { updateKey } from "@/lib/db/repos/keys";
+import { getScan, updateScan } from "@/lib/db/repos/scans";
 import { updateLesson } from "@/lib/db/repos/lessons";
 import { saveHostedAgentError, setGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
 import { getSubmission, getSubmissionByReceipt, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
@@ -15,6 +18,7 @@ import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jobs/test-utils";
 import { createWorker } from "@/lib/jobs/worker";
+import { ingestKeyPdf } from "@/lib/services/keys";
 import { everyNLayout } from "@/lib/scan-layout";
 import { rotateShareCode, setFeedbackReleased } from "@/lib/services/assignments";
 import { removeApiKey, saveApiKey, setAiModel, setStudentUploads } from "@/lib/services/settings";
@@ -735,3 +739,137 @@ describe("getTeacherSettingsView", () => {
     });
   });
 });
+
+describe("progress and timing", () => {
+  /** Uploads a one-page student paper (queued); returns its id. */
+  async function upload(label: string): Promise<string> {
+    const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label }) }]);
+    return getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.id;
+  }
+
+  /** Grades every queued paper, each taking `ms` on the test clock. */
+  function slowGrader(ms: number) {
+    return scriptedGrader({
+      async gradeSubmission(input, options) {
+        clock += ms;
+        return answeringGrader((refs) => makeGradingOutput(refs)).gradeSubmission(input, options);
+      },
+    });
+  }
+
+  it("shows no progress while nothing is queued or being graded", () => {
+    expect(getBoardView(assignment, "all").progress).toBeNull();
+    expect(getDashboardView(teacher).assignments[0].progress).toBeNull();
+  });
+
+  it("follows the batch on the board and the dashboard, with the typical paper time and an ETA, until it is done", async () => {
+    clock = T0 + 1_000;
+    const ids = [await upload("a"), await upload("b"), await upload("c")];
+    expect(getGradingBatchStartedAt(assignment.id)).toBe(T0 + 1_000);
+
+    // Nothing measured on this server yet: 60 s per paper; ten at once, so one round.
+    expect(getBoardView(assignment, "all").progress).toEqual({
+      done: 0, total: 3, queued: 3, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 60_000, etaMs: 60_000,
+    });
+    expect(getDashboardView(teacher).assignments[0].progress).toEqual({ done: 0, total: 3 });
+
+    // One paper graded in 30 s: the typical time is now this assignment's.
+    await createWorker({ grader: slowGrader(30_000), concurrency: 1, pollMs: 1000 }).runOnce();
+    expect(getBoardView(assignment, "all").progress).toEqual({
+      done: 1, total: 3, queued: 2, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 30_000, etaMs: 30_000,
+    });
+
+    // A paper being graded for 10 s: 20 s left for it, and the queued one runs beside it.
+    const id = ids.find((candidate) => getSubmission(candidate)!.status === "queued")!;
+    updateSubmission(id, { status: "grading" });
+    getDbRun("UPDATE submissions SET grading_started_at = ? WHERE id = ?", clock - 10_000, id);
+    expect(getBoardView(assignment, "all").progress).toMatchObject({ done: 1, total: 3, queued: 1, grading: 1, etaMs: 30_000 });
+    updateSubmission(id, { status: "queued" });
+
+    // A regrade during the batch joins it; the dashboard follows.
+    await drainQueue(slowGrader(30_000));
+    expect(getBoardView(assignment, "all").progress).toBeNull();
+    expect(getDashboardView(teacher).assignments[0].progress).toBeNull();
+    // The worker ended the batch with its last paper.
+    expect(getGradingBatchStartedAt(assignment.id)).toBeNull();
+
+    clock += 60_000;
+    regradeSubmission(getSubmission(ids[0])!);
+    expect(getBoardView(assignment, "all").progress).toMatchObject({ done: 0, total: 1, queued: 1, startedAt: clock, typicalPaperMs: 30_000 });
+  });
+
+  it("estimates with the worker's current concurrency", async () => {
+    for (const label of ["a", "b", "c", "d"]) await upload(label);
+    const worker = createWorker({ grader: rejectingRateLimit(), concurrency: 2, pollMs: 1000 });
+    worker.start();
+    // The worker slot is what the views read; createWorker alone does not fill it.
+    (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("pag.worker")] = worker;
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(1));
+    await worker.stop();
+
+    // Four papers, one at a time, 60 s each.
+    expect(getBoardView(assignment, "all").progress).toMatchObject({ queued: 4, etaMs: 240_000 });
+  });
+
+  it("tells the review page the paper's place in the queue, or when its grading started", async () => {
+    const first = await upload("a");
+    const second = await upload("b");
+
+    expect(getReviewView(getSubmission(first)!, assignment, ORIGIN)).toMatchObject({ queue: { position: 0 }, gradingTiming: null });
+    expect(getReviewView(getSubmission(second)!, assignment, ORIGIN)).toMatchObject({ queue: { position: 1 }, gradingTiming: null });
+
+    clock += 5_000;
+    updateSubmission(first, { status: "grading" });
+    getDbRun("UPDATE submissions SET grading_started_at = ? WHERE id = ?", clock, first);
+    getDbRun("UPDATE jobs SET status = 'running' WHERE target_id = ?", first);
+    expect(getReviewView(getSubmission(first)!, assignment, ORIGIN)).toMatchObject({
+      queue: null, gradingTiming: { gradingStartedAt: clock, typicalPaperMs: 60_000 },
+    });
+    expect(getReviewView(getSubmission(second)!, assignment, ORIGIN).queue).toEqual({ position: 0 });
+
+    const graded = await gradedPaper("Maria Lopez");
+    expect(getReviewView(graded, assignment, ORIGIN)).toMatchObject({ queue: null, gradingTiming: null });
+  });
+
+  it("tells the key tab when the key's reading started and how long readings take", async () => {
+    expect(getKeyEditorView(assignment).extraction).toBeNull();
+    const draft = seedAssignment(teacher.id);
+    clock += 1_000;
+    await ingestKeyPdf(draft, { filename: "key.pdf", bytes: await makePdf(2, { label: "key" }) });
+
+    expect(getKeyEditorView(draft).extraction).toEqual({ extractionStartedAt: clock, typicalExtractionMs: 45_000 });
+
+    // A reading that took 20 s becomes the typical time.
+    updateKey(assignment.id, { processingStartedAt: T0, processingFinishedAt: T0 + 20_000 });
+    expect(getKeyEditorView(draft).extraction).toEqual({ extractionStartedAt: clock, typicalExtractionMs: 20_000 });
+  });
+
+  it("shows a scan's split progress while the AI reads it, and whether its papers were graded automatically", async () => {
+    const scan = await seedScan(assignment.id, { pages: 30 });
+    clock += 12_000;
+    updateScan(scan.id, { pagesRead: 20 });
+
+    // 30 pages × 2 s, 12 s gone.
+    expect(getScanReviewView(getScan(scan.id)!, assignment)).toMatchObject({
+      splitProgress: { splitStartedAt: T0, pagesRead: 20, pageCount: 30, etaMs: 48_000 },
+      scan: { autoGraded: false, splitStartedAt: T0, splitFinishedAt: null },
+    });
+
+    updateScan(scan.id, { status: "done", splitFinishedAt: T0 + 30_000, autoGraded: true, createdCount: 10 });
+    const done = getScanReviewView(getScan(scan.id)!, assignment);
+    expect(done).toMatchObject({ splitProgress: null, scan: { autoGraded: true, splitFinishedAt: T0 + 30_000 } });
+    expect(getUploadPageView(assignment).scans).toMatchObject([{ id: scan.id, autoGraded: true, createdCount: 10 }]);
+
+    // That split (1 s per page) is now the typical speed.
+    const next = await seedScan(assignment.id, { pages: 10 });
+    expect(getScanReviewView(next, assignment).splitProgress).toEqual({ splitStartedAt: clock, pagesRead: 0, pageCount: 10, etaMs: 10_000 });
+  });
+});
+
+function getDbRun(sql: string, ...params: unknown[]): void {
+  getDb().prepare(sql).run(...params);
+}
+
+function rejectingRateLimit() {
+  return scriptedGrader({ gradeSubmission: () => Promise.reject(new AiError("rate_limited", "429", { retryable: true, retryAfterMs: 60_000 })) });
+}

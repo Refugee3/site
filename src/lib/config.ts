@@ -19,7 +19,10 @@ export interface AppConfig {
   jobTimeoutMs: number;
   maxTokens: number;
   maxTokensCeiling: number;
+  /** The most jobs the worker runs at once; it runs fewer for a while after Anthropic rate-limits it (adaptive concurrency). */
   concurrency: number;
+  /** How many chunks of one whole-class scan the AI reads at once. */
+  scanSplitParallel: number;
   jobMaxAttempts: number;
   teacherSignupCode: string | null;
   cookieSecure: boolean;
@@ -93,7 +96,8 @@ const EnvSchema = z.object({
   AI_FALLBACKS: z.enum(["on", "off"]).default("on"),
   AI_CACHE_TTL: z.enum(["5m", "1h"]).default("1h"),
   AI_TIMEOUT_MS: intVar(10_000, Number.MAX_SAFE_INTEGER, 600_000),
-  GRADING_CONCURRENCY: intVar(1, 8, 3),
+  GRADING_CONCURRENCY: intVar(1, 32, 10),
+  SCAN_SPLIT_PARALLEL: intVar(1, 8, 4),
   JOB_MAX_ATTEMPTS: intVar(1, 10, 4),
   // The code is the only thing between a stranger and a teacher account (and the API key), so no short words.
   TEACHER_SIGNUP_CODE: z.string().min(12, "must be at least 12 characters; use a random code").optional(),
@@ -147,6 +151,7 @@ function parseConfig(): AppConfig {
     cacheTtl: env.AI_CACHE_TTL,
     aiTimeoutMs: env.AI_TIMEOUT_MS,
     concurrency: env.GRADING_CONCURRENCY,
+    scanSplitParallel: env.SCAN_SPLIT_PARALLEL,
     jobMaxAttempts: env.JOB_MAX_ATTEMPTS,
     teacherSignupCode: env.TEACHER_SIGNUP_CODE ?? null,
     cookieSecure: env.COOKIE_SECURE === "auto" ? (appUrl?.startsWith("https:") ?? false) : env.COOKIE_SECURE === "true",

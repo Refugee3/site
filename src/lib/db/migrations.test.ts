@@ -207,7 +207,8 @@ describe("migration 4 on a version-3 database", () => {
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
       ai_model: "claude-sonnet-5-5",
     }]);
-    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, ai_engine: null });
+    // Migration 6 adds the timing columns: queued_at starts as the upload time.
+    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, ai_engine: null, grading_started_at: null, queued_at: 1 });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
@@ -298,14 +299,14 @@ describe("migration 5 on a version-4 database", () => {
   it("adds the AI model as Sonnet 5.5 and keeps every other setting and paper as it was", () => {
     const db = versionFourDatabase(null);
     const settings = db.prepare("SELECT * FROM app_settings").get() as Record<string, unknown>;
-    const submission = db.prepare("SELECT * FROM submissions").get();
+    const submission = db.prepare("SELECT * FROM submissions").get() as Record<string, unknown>;
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(5);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5" });
-    // The papers keep the model and engine they were graded with.
-    expect(db.prepare("SELECT * FROM submissions").get()).toEqual(submission);
+    // The papers keep the model and engine they were graded with (migration 6 only adds its timing columns).
+    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, grading_started_at: null, queued_at: 1 });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
@@ -348,6 +349,69 @@ describe("migration 5 on a version-4 database", () => {
     expect(db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
     expect(db.prepare("SELECT grading_engine, ai_model FROM app_settings").get())
       .toEqual({ grading_engine: "agent", ai_model: "claude-opus-5-5" });
+    db.close();
+  });
+});
+
+describe("migration 6 on a version-5 database", () => {
+  /** A v5 database with a batch being graded, a key being read and a scan being split. */
+  function versionFiveDatabase(): DB {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const migration of MIGRATIONS.slice(0, 5)) db.exec(migration.sql);
+    db.pragma("user_version = 5");
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a2', 't1', 'Idle', 'GHJKLM', 1, 1);
+      INSERT INTO answer_keys (assignment_id, status, updated_at) VALUES ('a1', 'processing', 40), ('a2', 'ready', 41);
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, created_at, updated_at) VALUES
+        ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha1', 1, 1, 'graded', 10, 10),
+        ('s2', 'a1', 'teacher', 'r2', 'p', 'f.pdf', 'sha2', 1, 1, 'grading', 20, 20),
+        ('s3', 'a1', 'teacher', 'r3', 'p', 'f.pdf', 'sha3', 1, 1, 'queued', 30, 30),
+        ('s4', 'a2', 'teacher', 'r4', 'p', 'f.pdf', 'sha4', 1, 1, 'graded', 5, 5);
+      INSERT INTO scans (id, assignment_id, status, split_mode, pdf_path, original_filename, content_sha256, byte_size, page_count,
+        created_at, updated_at) VALUES
+        ('c1', 'a1', 'splitting', 'auto', 'p', 's.pdf', 'shac1', 1, 4, 50, 55),
+        ('c2', 'a1', 'review', 'auto', 'p', 's.pdf', 'shac2', 1, 4, 60, 65);
+    `);
+    return db;
+  }
+
+  it("adds the timing columns, starts the batch of papers already waiting, and the clocks of work in progress", () => {
+    const db = versionFiveDatabase();
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(6);
+    expect(db.prepare("SELECT id, queued_at, grading_started_at FROM submissions ORDER BY id").all()).toEqual([
+      { id: "s1", queued_at: 10, grading_started_at: null }, { id: "s2", queued_at: 20, grading_started_at: null },
+      { id: "s3", queued_at: 30, grading_started_at: null }, { id: "s4", queued_at: 5, grading_started_at: null },
+    ]);
+    expect(db.prepare("SELECT id, batch_started_at FROM assignments ORDER BY id").all()).toEqual([
+      { id: "a1", batch_started_at: 20 }, { id: "a2", batch_started_at: null },
+    ]);
+    expect(db.prepare("SELECT assignment_id, processing_started_at, processing_finished_at FROM answer_keys ORDER BY assignment_id").all())
+      .toEqual([
+        { assignment_id: "a1", processing_started_at: 40, processing_finished_at: null },
+        { assignment_id: "a2", processing_started_at: null, processing_finished_at: null },
+      ]);
+    expect(db.prepare("SELECT id, split_started_at, split_finished_at, auto_graded FROM scans ORDER BY id").all()).toEqual([
+      { id: "c1", split_started_at: 50, split_finished_at: null, auto_graded: 0 },
+      { id: "c2", split_started_at: null, split_finished_at: null, auto_graded: 0 },
+    ]);
+    expect(() => db.prepare("UPDATE scans SET auto_graded = 2").run()).toThrow(/constraint/i);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+
+  it("is a no-op when re-run", () => {
+    const db = versionFiveDatabase();
+    migrate(db);
+    const schema = db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all();
+    migrate(db);
+    expect(db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
     db.close();
   });
 });

@@ -7,7 +7,10 @@ import type { WorkerStatus } from "@/lib/types";
 import { seedAssignment, seedScan, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 
 const slots = globalThis as unknown as Record<symbol, unknown>;
-const STATUS: WorkerStatus = { state: "running", reason: null, aiMode: "fake", queued: 0, running: 0, keyIssue: null };
+const STATUS: WorkerStatus = {
+  state: "running", reason: null, aiMode: "fake", queued: 0, running: 0, keyIssue: null, concurrency: 10, effectiveConcurrency: 10,
+  throttledUntil: null,
+};
 
 beforeEach(() => {
   useTestDb();

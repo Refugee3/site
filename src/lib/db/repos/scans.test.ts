@@ -3,7 +3,8 @@ import { setClockForTests } from "@/lib/clock";
 import { deleteAssignmentRow } from "@/lib/db/repos/assignments";
 import { claimNextJob, completeJob, enqueueJob } from "@/lib/db/repos/jobs";
 import {
-  deleteScanRow, findScanBySha, getScan, getScanForTeacher, insertScan, listScans, listSplittingScansWithoutJob, resetCreatingScans,
+  deleteScanRow, findScanBySha, getScan, getScanForTeacher, insertScan, listScans, listSplittingScansWithoutJob, recentSplitPageDurations,
+  resetCreatingScans,
   updateScan, updateSplittingScan, type NewScan,
 } from "@/lib/db/repos/scans";
 import { newId } from "@/lib/ids";
@@ -58,14 +59,15 @@ describe("insertScan and lookups", () => {
       id: input.id, assignmentId: assignment.id, status: "splitting", splitMode: "auto", pagesPerPaper: null, splitGeneration: 1,
       pdfPath: input.pdfPath, originalFilename: "period 3.pdf", contentSha256: input.contentSha256, byteSize: 1234, pageCount: 3,
       readings: [], pagesRead: 0, layout: null, proposedLayout: null, statusNote: null, errorMessage: null, aiModel: null,
-      usage: null, createdCount: null, duplicateCount: null, createdAt: T0, updatedAt: T0,
+      usage: null, createdCount: null, duplicateCount: null, splitStartedAt: T0, splitFinishedAt: null, autoGraded: false, createdAt: T0,
+      updatedAt: T0,
     });
     expect(getScan(scan.id)).toEqual(scan);
   });
 
   it("inserts an every-N scan ready for review, proposing its layout", () => {
     const scan = insertScan(newScan({ status: "review", splitMode: "every", pagesPerPaper: 2, layout: LAYOUT }));
-    expect(scan).toMatchObject({ status: "review", splitMode: "every", pagesPerPaper: 2, layout: LAYOUT, proposedLayout: LAYOUT });
+    expect(scan).toMatchObject({ status: "review", splitMode: "every", pagesPerPaper: 2, layout: LAYOUT, proposedLayout: LAYOUT, splitStartedAt: null });
   });
 
   it("getScanForTeacher scopes by the owning teacher", () => {
@@ -98,13 +100,15 @@ describe("updateScan", () => {
     const updated = updateScan(scan.id, {
       status: "done", readings: [READING, null, { ...READING, reported: false }], pagesRead: 2, layout: LAYOUT,
       proposedLayout: LAYOUT, statusNote: "note", errorMessage: "error", aiModel: "claude-opus-5-5", usage, createdCount: 1,
-      duplicateCount: 0, splitMode: "every", pagesPerPaper: 3, splitGeneration: 4,
+      duplicateCount: 0, splitMode: "every", pagesPerPaper: 3, splitGeneration: 4, splitStartedAt: T0 + 1, splitFinishedAt: T0 + 5,
+      autoGraded: true,
     });
 
     expect(updated).toEqual({
       ...scan, status: "done", readings: [READING, null, { ...READING, reported: false }], pagesRead: 2, layout: LAYOUT,
       proposedLayout: LAYOUT, statusNote: "note", errorMessage: "error", aiModel: "claude-opus-5-5", usage, createdCount: 1,
-      duplicateCount: 0, splitMode: "every", pagesPerPaper: 3, splitGeneration: 4, updatedAt: T0 + 9,
+      duplicateCount: 0, splitMode: "every", pagesPerPaper: 3, splitGeneration: 4, splitStartedAt: T0 + 1, splitFinishedAt: T0 + 5,
+      autoGraded: true, updatedAt: T0 + 9,
     });
     expect(getScan(scan.id)).toEqual(updated);
     expect(updateScan(scan.id, { layout: null, usage: null })).toMatchObject({ layout: null, usage: null, proposedLayout: LAYOUT });
@@ -173,5 +177,20 @@ describe("deletion and boot recovery", () => {
     expect(getScan(creating.id)!.status).toBe("review");
     expect(getScan(done.id)!.status).toBe("done");
     expect(resetCreatingScans()).toBe(0);
+  });
+});
+
+describe("recentSplitPageDurations", () => {
+  it("lists ms per page of recent finished splits, newest first, of one assignment or of all", () => {
+    const other = seedAssignment(teacher.id);
+    const a = insertScan(newScan());
+    updateScan(a.id, { splitStartedAt: T0, splitFinishedAt: T0 + 30_000 }); // 3 pages
+    const b = insertScan(newScan({ assignmentId: other.id, pdfPath: scanPdfRel(other.id, newId()) }));
+    updateScan(b.id, { splitStartedAt: T0, splitFinishedAt: T0 + 60_000 + 3_000 });
+    insertScan(newScan()); // still splitting
+
+    expect(recentSplitPageDurations(assignment.id, 20)).toEqual([10_000]);
+    expect(recentSplitPageDurations(null, 20)).toEqual([21_000, 10_000]);
+    expect(recentSplitPageDurations(null, 1)).toEqual([21_000]);
   });
 });

@@ -39,7 +39,10 @@ export interface AiUsage { inputTokens: number; outputTokens: number; cacheReadT
 export interface AnswerKey { assignmentId: string; status: KeyStatus; sourcePdfPath: string | null; sourceFilename: string | null;
   sourceSha256: string | null; sourcePageCount: number | null; documentKind: string | null; teacherNotes: string; aiNotes: string;
   revision: number; approvedRevision: number | null; fingerprint: string | null; errorMessage: string | null; aiModel: string | null;
-  usage: AiUsage | null; updatedAt: number }
+  usage: AiUsage | null;
+  /** When the key last went to processing (upload or "read again"), and when the AI's reading of it was stored. */
+  processingStartedAt: number | null; processingFinishedAt: number | null;
+  updatedAt: number }
 export interface KeyItem { id: string; assignmentId: string; position: number; label: string; groupLabel: string; prompt: string;
   answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string; pointsCenti: number;
   partialCredit: boolean; page: number | null; answerSource: AnswerSource; aiConfidence: Confidence | null; aiNote: string }
@@ -57,7 +60,12 @@ export interface Submission { id: string; assignmentId: string; source: "student
   integrityNote: string; unmatchedWork: string; totalOverrideCenti: number | null; scoreEarnedCenti: number | null;
   scoreMaxCenti: number | null; completionCenti: number | null; accuracyCenti: number | null; aiModel: string | null;
   aiEngine: GraderEngine | null; usage: AiUsage | null; errorCode: string | null; errorMessage: string | null; gradedAt: number | null;
-  reviewedAt: number | null; createdAt: number; updatedAt: number }
+  reviewedAt: number | null;
+  /** When the current grading run started (status → grading); null while queued. Kept after grading: graded_at minus it is how long it took. */
+  gradingStartedAt: number | null;
+  /** When the paper was last queued (upload or regrade): the grading batch it belongs to. */
+  queuedAt: number;
+  createdAt: number; updatedAt: number }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
   finishedAt: number | null; paused: boolean }
@@ -78,13 +86,52 @@ export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason:
    * Grading can't run because there is no key at all, or Anthropic rejected the key in use; `agent`: paused because the
    * hosted agent isn't available with the key in use.
    */
-  keyIssue: "missing" | "rejected" | "agent" | null }
+  keyIssue: "missing" | "rejected" | "agent" | null;
+  /** GRADING_CONCURRENCY: the most jobs the worker runs at once. */
+  concurrency: number;
+  /** How many it runs at once now: halved after a rate limit or overload, then back up by one per job that finishes. */
+  effectiveConcurrency: number;
+  /** While set (ms), the worker starts no new job: Anthropic asked it to slow down. Grading continues afterwards. */
+  throttledUntil: number | null }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
 /** Scans still waiting: being split by the AI, split and waiting for the teacher's check, or failed to split. */
 export interface PendingScans { splitting: number; review: number; failed: number; firstReviewId: string | null }
+/**
+ * The assignment's current grading batch: papers queued since its queue last went from empty to non-empty (an upload, a
+ * scan's papers, a regrade). Timestamps are epoch ms, durations ms. Null in the views while nothing is queued or grading.
+ */
+export interface GradingProgress {
+  /** Papers of the batch that are graded, need review, or failed. */
+  done: number;
+  /** done + queued + grading. */
+  total: number;
+  queued: number;
+  grading: number;
+  /** When the batch started (its first paper was queued). */
+  startedAt: number;
+  /** Median of the recent paper gradings: this assignment's last 20, else every assignment's, else 60 000. */
+  typicalPaperMs: number;
+  /**
+   * Estimated ms until the batch is done: the worker's current concurrency as slots, each paper being graded holding its slot
+   * for max(0, typicalPaperMs - its elapsed time), each queued paper then taking the first free slot for typicalPaperMs
+   * (≈ ceil(queued / concurrency) × typicalPaperMs when nothing is in flight). Shrinks as time passes; 0 = finishing up.
+   */
+  etaMs: number;
+}
+/** A whole-class scan being read by the AI. */
+export interface ScanSplitProgress {
+  /** When the split was queued (upload or "try the AI again"), epoch ms. */
+  splitStartedAt: number;
+  pagesRead: number;
+  pageCount: number;
+  /** max(0, pageCount × typical ms per page - ms since splitStartedAt); typical: median of recent splits, else 2 000 per page. */
+  etaMs: number;
+}
 export interface DashboardView { assignments: Array<{ id: string; title: string;
   status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans;
-  released: boolean; createdAt: number }>;
+  released: boolean; createdAt: number;
+  /** The current grading batch (see GradingProgress); null while nothing is queued or grading. */
+  progress: { done: number; total: number } | null }>;
   studentsCanUpload: boolean }
 export interface AssignmentHeader { assignment: Assignment; shareUrl: string; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
   totalPointsCenti: number; counts: StatusCounts; canOpen: boolean; studentsCanUpload: boolean }
@@ -93,9 +140,13 @@ export interface BoardRow { submissionId: string; displayName: string; status: S
   source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number }
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
-  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean }
+  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean;
+  /** Null while none of the assignment's papers is queued or being graded. */
+  progress: GradingProgress | null }
 export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean;
-  studentsCanUpload: boolean }
+  studentsCanUpload: boolean;
+  /** Only while the key is processing: when it went to processing (epoch ms) and the median of the last 20 readings (else 45 000). */
+  extraction: { extractionStartedAt: number; typicalExtractionMs: number } | null }
 export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore;
   /** `sent`: the grader is sent it now; otherwise `notSent` says why (as on the Lessons tab). */
   lesson: { id: string; reason: string; active: boolean; sent: boolean; notSent: LessonNotSentReason | null } | null }
@@ -103,7 +154,11 @@ export interface ReviewView { submission: Submission; sections: Section[]; secti
   score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
   earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean;
   /** The engine that would grade this paper now; null without a usable key. */
-  gradingEngine: GraderEngine | null }
+  gradingEngine: GraderEngine | null;
+  /** Only while the paper is queued: how many queued papers (of every assignment) the worker takes before it; 0 = next. */
+  queue: { position: number } | null;
+  /** Only while the paper is being graded: when this run started (epoch ms), and how long a paper typically takes. */
+  gradingTiming: { gradingStartedAt: number; typicalPaperMs: number } | null }
 export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null; agentSessions: number; agentActiveSeconds: number } }
 export interface StudentUploadView { code: string; title: string; instructions: string; teacherName: string; status: AssignmentStatus;
@@ -132,7 +187,12 @@ export interface Scan { id: string; assignmentId: string; status: ScanStatus; sp
   splitGeneration: number; pdfPath: string; originalFilename: string; contentSha256: string; byteSize: number; pageCount: number;
   readings: Array<ScanPageReading | null>; pagesRead: number; layout: ScanLayout | null; proposedLayout: ScanLayout | null;
   statusNote: string | null; errorMessage: string | null; aiModel: string | null; usage: AiUsage | null;
-  createdCount: number | null; duplicateCount: number | null; createdAt: number; updatedAt: number }
+  createdCount: number | null; duplicateCount: number | null;
+  /** When the AI split was queued (upload or "try the AI again"), and when it finished reading every page. */
+  splitStartedAt: number | null; splitFinishedAt: number | null;
+  /** The AI's split had nothing to check, so its papers were created and queued for grading without the teacher. */
+  autoGraded: boolean;
+  createdAt: number; updatedAt: number }
 
 // ---- v2: lessons and guidance ----
 export interface Lesson { id: string; assignmentId: string; itemId: string; submissionId: string | null; studentAnswer: string;
@@ -167,11 +227,16 @@ export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: n
   notSent: LessonNotSentReason | null; paperHref: string | null; paperDeleted: boolean }
 export interface LessonsView { lessons: LessonView[] /* key order, then newest first */; activeCount: number; sentCount: number;
   guidanceStaleCount: number; hasPreferences: boolean }
-export interface ScanSummary { id: string; status: ScanStatus; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null }
+export interface ScanSummary { id: string; status: ScanStatus; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null;
+  /** The AI's split looked clean, so its papers were created and queued for grading without the teacher. */
+  autoGraded: boolean }
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
   maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean }
+/** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage">; pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
-  keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number }
+  keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number;
+  /** Only while the AI is splitting the scan. */
+  splitProgress: ScanSplitProgress | null }
 
 // ---- v3: grading engines and the hosted agent ----
 /** Which engine produced an AI call or a stored grading. */

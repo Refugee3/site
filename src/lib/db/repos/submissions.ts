@@ -76,6 +76,8 @@ interface SubmissionRow {
   error_message: string | null;
   graded_at: number | null;
   reviewed_at: number | null;
+  grading_started_at: number | null;
+  queued_at: number;
   created_at: number;
   updated_at: number;
 }
@@ -150,6 +152,8 @@ function submissionFromRow(row: SubmissionRow): Submission {
     errorMessage: row.error_message,
     gradedAt: row.graded_at,
     reviewedAt: row.reviewed_at,
+    gradingStartedAt: row.grading_started_at,
+    queuedAt: row.queued_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -193,10 +197,10 @@ export function insertSubmission(s: NewSubmission): Submission {
   try {
     const row = one<SubmissionRow>(
       `INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256,
-         client_upload_id, byte_size, page_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+         client_upload_id, byte_size, page_count, queued_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       s.id, s.assignmentId, s.source, s.receiptToken, s.pdfPath, s.originalFilename, s.contentSha256,
-      s.clientUploadId ?? null, s.byteSize, s.pageCount, at, at,
+      s.clientUploadId ?? null, s.byteSize, s.pageCount, at, at, at,
     );
     return submissionFromRow(row!);
   } catch (error) {
@@ -257,12 +261,16 @@ export function countByStatus(assignmentId: string): StatusCounts {
   return counts;
 }
 
-/** queued (or grading left by a crashed run of the same job) → grading, only for the current generation. */
+/**
+ * queued (or grading left by a crashed run of the same job) → grading, only for the current generation. Records when this
+ * run started (grading_started_at), which the progress views and duration estimates read.
+ */
 export function startGrading(id: string, generation: number): boolean {
+  const at = now();
   return run(
-    `UPDATE submissions SET status = 'grading', updated_at = ?
+    `UPDATE submissions SET status = 'grading', grading_started_at = ?, updated_at = ?
      WHERE id = ? AND grading_generation = ? AND status IN ('queued', 'grading')`,
-    now(), id, generation,
+    at, at, id, generation,
   ) > 0;
 }
 
@@ -389,7 +397,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
 /** grading → queued with a note for the teacher, only for the current generation. */
 export function scheduleRetry(id: string, generation: number, note: string): boolean {
   return run(
-    `UPDATE submissions SET status = 'queued', status_note = ?, updated_at = ?
+    `UPDATE submissions SET status = 'queued', status_note = ?, grading_started_at = NULL, updated_at = ?
      WHERE id = ? AND grading_generation = ? AND status = 'grading'`,
     note, now(), id, generation,
   ) > 0;
@@ -404,13 +412,17 @@ export function markFailed(id: string, generation: number, code: string, message
   ) > 0;
 }
 
-/** Starts a new grading generation (any running result for the old one is then discarded); returns it. */
+/**
+ * Starts a new grading generation (any running result for the old one is then discarded); returns it. The paper joins the
+ * assignment's current grading batch (queued_at).
+ */
 export function requeueForRegrade(id: string): number {
+  const at = now();
   const row = one<{ grading_generation: number }>(
     `UPDATE submissions SET grading_generation = grading_generation + 1, status = 'queued', reviewed_at = NULL,
-       error_code = NULL, error_message = NULL, status_note = NULL, updated_at = ?
+       error_code = NULL, error_message = NULL, status_note = NULL, grading_started_at = NULL, queued_at = ?, updated_at = ?
      WHERE id = ? RETURNING grading_generation`,
-    now(), id,
+    at, at, id,
   );
   if (!row) throw new AppError("not_found", "Submission not found.");
   return row.grading_generation;
@@ -547,7 +559,7 @@ export function listGuidanceStaleIds(assignmentId: string, revision: number, fin
 
 /** Boot recovery: nothing can be grading before the worker starts. */
 export function resetGradingToQueued(): number {
-  return run("UPDATE submissions SET status = 'queued', updated_at = ? WHERE status = 'grading'", now());
+  return run("UPDATE submissions SET status = 'queued', grading_started_at = NULL, updated_at = ? WHERE status = 'grading'", now());
 }
 
 /** Queued submissions with no queued or running grade job (boot recovery). */
@@ -559,4 +571,62 @@ export function listQueuedWithoutJob(): Array<{ id: string; assignmentId: string
                        AND j.status IN ('queued', 'running'))
      ORDER BY s.created_at, s.rowid`,
   ).map((row) => ({ id: row.id, assignmentId: row.assignment_id, source: row.source }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Progress: the current grading batch and recent grading times
+
+/** What a grading batch holds: papers queued at or after `since`, by status, plus every paper queued or grading now. */
+export interface BatchCounts {
+  queued: number;
+  grading: number;
+  /** Papers of the batch that are graded, need review, or failed. */
+  done: number;
+  /** When each paper being graded now started (its grading_started_at, else when it last changed). */
+  gradingStartedAts: number[];
+}
+
+/**
+ * The assignment's papers queued or being graded now (whenever they were queued), and those of the batch started at
+ * `since` that are finished (graded, needs_review or failed).
+ */
+export function batchCounts(assignmentId: string, since: number): BatchCounts {
+  const rows = all<{ status: SubmissionStatus; started: number }>(
+    `SELECT status, coalesce(grading_started_at, updated_at) AS started FROM submissions
+     WHERE assignment_id = ? AND (status IN ('queued', 'grading') OR queued_at >= ?)`,
+    assignmentId, since,
+  );
+  const counts: BatchCounts = { queued: 0, grading: 0, done: 0, gradingStartedAts: [] };
+  for (const row of rows) {
+    if (row.status === "queued") counts.queued++;
+    else if (row.status === "grading") {
+      counts.grading++;
+      counts.gradingStartedAts.push(row.started);
+    } else counts.done++;
+  }
+  return counts;
+}
+
+/** When the assignment's oldest paper still queued or being graded was queued; null when none is. */
+export function oldestActiveQueuedAt(assignmentId: string): number | null {
+  return one<{ at: number | null }>(
+    "SELECT min(queued_at) AS at FROM submissions WHERE assignment_id = ? AND status IN ('queued', 'grading')",
+    assignmentId,
+  )?.at ?? null;
+}
+
+/**
+ * How long the last `limit` gradings took (graded_at - grading_started_at), newest first: of one assignment, or of every
+ * assignment when `assignmentId` is null.
+ */
+export function recentGradingDurations(assignmentId: string | null, limit: number): number[] {
+  const where = `grading_started_at IS NOT NULL AND graded_at IS NOT NULL AND graded_at >= grading_started_at
+    AND status IN ('graded', 'needs_review')`;
+  const rows = assignmentId === null
+    ? all<{ ms: number }>(`SELECT graded_at - grading_started_at AS ms FROM submissions WHERE ${where} ORDER BY graded_at DESC LIMIT ?`, limit)
+    : all<{ ms: number }>(
+      `SELECT graded_at - grading_started_at AS ms FROM submissions WHERE assignment_id = ? AND ${where} ORDER BY graded_at DESC LIMIT ?`,
+      assignmentId, limit,
+    );
+  return rows.map((row) => row.ms);
 }

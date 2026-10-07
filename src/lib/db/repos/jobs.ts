@@ -228,3 +228,18 @@ export function queueStats(): { queued: number; running: number } {
 export function pruneFinishedJobs(before: number): number {
   return run("DELETE FROM jobs WHERE status IN ('done', 'failed', 'cancelled') AND finished_at < ?", before);
 }
+
+/**
+ * How many queued jobs of `kind` the worker would claim before the target's queued job (claim order: priority, run_after,
+ * id), across every assignment; null when the target has no queued job of that kind. Approximate: a job backing off
+ * counts by its run_after, and an unapproved key holds its papers back.
+ */
+export function queuedJobsAhead(kind: JobKind, targetId: string): number | null {
+  const row = one<{ ahead: number }>(
+    `SELECT (SELECT count(*) FROM jobs j WHERE j.kind = me.kind AND j.status = 'queued'
+               AND (j.priority, j.run_after, j.id) < (me.priority, me.run_after, me.id)) AS ahead
+     FROM jobs me WHERE me.kind = ? AND me.target_id = ? AND me.status = 'queued'`,
+    kind, targetId,
+  );
+  return row ? row.ahead : null;
+}

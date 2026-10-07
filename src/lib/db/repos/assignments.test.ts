@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import {
-  addAssignmentUsage, deleteAssignmentRow, getAssignment, getAssignmentByShareCode, getAssignmentForTeacher, getAssignmentUsage,
+  addAssignmentUsage, clearGradingBatchIfDrained, deleteAssignmentRow, getGradingBatchStartedAt, startGradingBatchIfIdle, getAssignment, getAssignmentByShareCode, getAssignmentForTeacher, getAssignmentUsage,
   insertAssignment, latestSectionsForTeacher, listAssignmentsForTeacher, listSections, replaceSections, shareCodeExists,
   updateAssignment,
 } from "@/lib/db/repos/assignments";
-import { getSubmission, updateSubmission } from "@/lib/db/repos/submissions";
+import { getSubmission, requeueForRegrade, updateSubmission } from "@/lib/db/repos/submissions";
 import { newId } from "@/lib/ids";
 import { seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 import type { Teacher } from "@/lib/types";
@@ -174,5 +174,62 @@ describe("AI usage ledger", () => {
     addAssignmentUsage(a.id, MODEL, usage(1), { listCostCents: 1, activeSeconds: 1 });
 
     expect(getAssignmentUsage(a.id)).toEqual({});
+  });
+});
+
+describe("grading batch", () => {
+  it("starts when a paper is queued while none is waiting, keeps going while papers wait, and ends when they are all done", () => {
+    let clock = T0;
+    setClockForTests(() => clock);
+    const a = seedAssignment(teacher.id);
+    const earlier = seedSubmission(a.id, { status: "graded" });
+    expect(getGradingBatchStartedAt(a.id)).toBeNull();
+
+    clock = T0 + 1_000;
+    const first = seedSubmission(a.id);
+    startGradingBatchIfIdle(a.id, first.id);
+    expect(getGradingBatchStartedAt(a.id)).toBe(T0 + 1_000);
+
+    // More papers while one waits: the same batch.
+    clock = T0 + 2_000;
+    const second = seedSubmission(a.id);
+    startGradingBatchIfIdle(a.id, second.id);
+    clock = T0 + 3_000;
+    requeueForRegrade(earlier.id);
+    startGradingBatchIfIdle(a.id, earlier.id);
+    expect(getGradingBatchStartedAt(a.id)).toBe(T0 + 1_000);
+
+    // Not drained while a paper waits.
+    updateSubmission(first.id, { status: "graded" });
+    clearGradingBatchIfDrained(a.id);
+    expect(getGradingBatchStartedAt(a.id)).toBe(T0 + 1_000);
+
+    updateSubmission(second.id, { status: "failed" });
+    updateSubmission(earlier.id, { status: "needs_review" });
+    clearGradingBatchIfDrained(a.id);
+    expect(getGradingBatchStartedAt(a.id)).toBeNull();
+
+    // The next paper starts a new batch.
+    clock = T0 + 9_000;
+    requeueForRegrade(first.id);
+    startGradingBatchIfIdle(a.id, first.id);
+    expect(getGradingBatchStartedAt(a.id)).toBe(T0 + 9_000);
+  });
+
+  it("starts a new batch when the last one was never ended (a restart), and doesn't change the assignment's updated_at", () => {
+    let clock = T0;
+    setClockForTests(() => clock);
+    const a = seedAssignment(teacher.id);
+    const old = seedSubmission(a.id);
+    startGradingBatchIfIdle(a.id, old.id);
+    updateSubmission(old.id, { status: "graded" }); // finished without clearGradingBatchIfDrained
+
+    clock = T0 + 60_000;
+    const next = seedSubmission(a.id);
+    startGradingBatchIfIdle(a.id, next.id);
+
+    expect(getGradingBatchStartedAt(a.id)).toBe(T0 + 60_000);
+    expect(getAssignment(a.id)!.updatedAt).toBe(T0);
+    expect(getGradingBatchStartedAt("missing")).toBeNull();
   });
 });

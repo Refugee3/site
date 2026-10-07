@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
-  cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, hasActiveJob, pruneFinishedJobs, queueStats,
+  cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, hasActiveJob, pruneFinishedJobs, queuedJobsAhead, queueStats,
   recoverRunningJobs, releasePausedJobs, requeueJob, requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { updateKey } from "@/lib/db/repos/keys";
@@ -318,5 +318,27 @@ describe("queue housekeeping", () => {
 
     expect(pruneFinishedJobs(T0 + 1)).toBe(1);
     expect(db.prepare("SELECT target_id FROM jobs ORDER BY id").all()).toEqual([{ target_id: "new" }, { target_id: "waiting" }]);
+  });
+});
+
+describe("queuedJobsAhead", () => {
+  it("counts the queued jobs of the kind that are claimed first (priority, run_after, id), across assignments", () => {
+    const other = seedAssignment(seedTeacher().id);
+    seedApprovedKey(other.id, [{}]);
+    grade("a", { priority: 10 });
+    grade("b", { priority: 10 });
+    grade("c", { priority: 20 });
+    grade("d", { priority: 5, assignmentId: other.id });
+    grade("e", { priority: 10, runAfter: T0 + 60_000 });
+    enqueueJob({ kind: "extract_key", targetId: assignment.id, assignmentId: assignment.id, priority: 0, maxAttempts: 4 });
+
+    expect(["d", "a", "b", "e", "c"].map((id) => queuedJobsAhead("grade_submission", id))).toEqual([0, 1, 2, 3, 4]);
+    expect(queuedJobsAhead("grade_submission", "missing")).toBeNull();
+
+    // A running job is no longer ahead, and has no position itself.
+    expect(claimNextJob(T0)).toMatchObject({ targetId: assignment.id }); // the key extraction first
+    expect(claimNextJob(T0)).toMatchObject({ targetId: "d" });
+    expect(queuedJobsAhead("grade_submission", "a")).toBe(0);
+    expect(queuedJobsAhead("grade_submission", "d")).toBeNull();
   });
 });

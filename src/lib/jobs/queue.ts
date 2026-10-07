@@ -1,4 +1,5 @@
 import { getConfig } from "@/lib/config";
+import { startGradingBatchIfIdle } from "@/lib/db/repos/assignments";
 import { enqueueJob } from "@/lib/db/repos/jobs";
 import type { WorkerStatus } from "@/lib/types";
 
@@ -33,8 +34,12 @@ export function enqueueExtractKey(assignmentId: string): void {
   kickWorker();
 }
 
-/** Safe inside a caller's tx(), like enqueueExtractKey. */
+/**
+ * Safe inside a caller's tx(), like enqueueExtractKey. The paper must already be queued: it starts the assignment's grading
+ * batch (progress bar) when nothing else of the assignment is waiting.
+ */
 export function enqueueGrade(submissionId: string, assignmentId: string, priority: number): void {
+  startGradingBatchIfIdle(assignmentId, submissionId);
   enqueueJob({
     kind: "grade_submission",
     targetId: submissionId,

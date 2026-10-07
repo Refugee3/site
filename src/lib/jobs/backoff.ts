@@ -4,8 +4,14 @@ import type { Job, JobKind } from "@/lib/types";
 const BASE_DELAY_MS = 30_000;
 const MAX_DELAY_MS = 1_800_000;
 const PAUSE_MS = 5 * 60_000;
+/** The short wait after a rate limit or overload that came without a retry-after: 10 s (±20 %). */
+const THROTTLE_DELAY_MS = 10_000;
+
+/** Errors that say "too much at once" rather than "this request is bad": the worker slows down instead of failing papers. */
+export const THROTTLE_CODES: ReadonlySet<AiErrorCode> = new Set(["rate_limited", "overloaded"]);
 
 const RETRY_NOTE = "Retrying after a temporary AI error";
+const THROTTLE_NOTE = "Waiting: the AI service asked us to slow down";
 const LARGER_BUDGET_NOTE = "Retrying with more room for the AI's answer";
 const LARGER_SPENDING_CAP_NOTE = "Retrying with a larger spending cap for the hosted agent";
 
@@ -20,13 +26,24 @@ export function nextRunAfter(now: number, attempts: number, retryAfterMs: number
   return now + Math.round(Math.max(retryAfterMs ?? 0, jittered));
 }
 
+/**
+ * When to retry after a rate limit or overload: the API's retry-after when it sent one, else a short pause
+ * (about 10 s). Attempts don't grow (the attempt is refunded), so this does not back off exponentially; the worker
+ * slows down instead (it holds new claims until then and halves its concurrency).
+ */
+export function throttleRunAfter(now: number, retryAfterMs: number | null, rand: () => number = Math.random): number {
+  return now + Math.round(retryAfterMs ?? THROTTLE_DELAY_MS * (0.8 + 0.4 * rand()));
+}
+
+/** `throttled`: a rate limit or overload; the worker holds new claims until `runAfter` and lowers its concurrency. */
 export type FailureDecision =
-  | { action: "requeue"; runAfter: number; maxTokens?: number; refundAttempt: boolean; note: string }
+  | { action: "requeue"; runAfter: number; maxTokens?: number; refundAttempt: boolean; note: string; throttled?: true }
   | { action: "fail"; message: string /* teacher-readable */ }
   | { action: "pause"; resumeAt: number; reason: string; code: AiErrorCode };
 
 /**
- * What to do after a failed AI call. `job.attempts` already counts the current run.
+ * What to do after a failed AI call. `job.attempts` already counts the current run. A rate limit or overload is
+ * retried without counting the attempt, after retry-after (or a short pause), and marked `throttled` for the worker.
  * Final refusals never get here: the handlers turn them into a result of their own. A retryable
  * refusal (the fallback model was unavailable) arrives only while attempts remain and is requeued.
  */
@@ -44,6 +61,12 @@ export function decideFailure(
   }
   if (err.o.pauseWorker) {
     return { action: "pause", resumeAt: o.now + PAUSE_MS, reason: pauseReason(err.code), code: err.code };
+  }
+  if (THROTTLE_CODES.has(err.code)) {
+    // Not the paper's fault and not a used attempt, also on the last one: ten papers at once on a low-tier account must
+    // not fail papers. The worker backs off as a whole instead.
+    const runAfter = throttleRunAfter(o.now, err.o.retryAfterMs ?? null, o.rand);
+    return { action: "requeue", runAfter, refundAttempt: true, note: THROTTLE_NOTE, throttled: true };
   }
   if (err.o.retryable && job.attempts < job.maxAttempts) {
     const runAfter = nextRunAfter(o.now, job.attempts, err.o.retryAfterMs ?? null, o.rand);

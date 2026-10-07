@@ -4,6 +4,7 @@ import type { Grader } from "@/lib/ai/grader";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { getDb, tx } from "@/lib/db/connection";
+import { clearGradingBatchIfDrained } from "@/lib/db/repos/assignments";
 import {
   claimNextJob, completeJob, failJob, pruneFinishedJobs, queueStats, recoverRunningJobs, releasePausedJobs, requeueJob,
   requeueOrphanedRunningJobs,
@@ -56,12 +57,25 @@ const ORPHAN_RETRY_MS = 30_000;
  * `concurrency` jobs at once, and claims nothing while it has no grader or is paused. Given a function, it
  * asks it for the grader every time, so a key saved in Settings is used without a restart; running jobs
  * finish on the grader they started with.
+ *
+ * Rate limits (adaptive concurrency): when a job comes back `throttled` (Anthropic said rate_limited or overloaded), the
+ * worker claims nothing new until that job's retry time (retry-after, or a short pause), and halves the number of jobs it
+ * runs at once (at least 1). Each job that then finishes cleanly raises it by one again, up to `concurrency`. Only jobs
+ * launched since the last cut count, so ten calls rejected together halve it once, not ten times, and jobs that started
+ * before the cut don't undo it.
  */
 export function createWorker(o: { grader: Grader | null | (() => Grader | null); concurrency: number; pollMs: number }): Worker {
   const given = o.grader;
   const currentGrader = typeof given === "function" ? given : () => given;
-  // Each running job with the controller that aborts its AI call (on the job timeout, or when the worker stops).
-  const inFlight = new Map<Promise<void>, { abort: AbortController; jobId: number }>();
+  const maxConcurrency = Math.max(1, Math.floor(o.concurrency));
+  // Each running job with the controller that aborts its AI call (on the job timeout, or when the worker stops), and the
+  // concurrency window it was launched in.
+  const inFlight = new Map<Promise<void>, { abort: AbortController; jobId: number; window: number }>();
+  let effectiveConcurrency = maxConcurrency;
+  /** Bumped at every cut of the concurrency. */
+  let window = 0;
+  /** No new claims before this time (ms): set by a rate limit or overload. */
+  let holdUntil = 0;
   let running = false;
   let poller: NodeJS.Timeout | null = null;
   let tickScheduled = false;
@@ -86,7 +100,24 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
   }
 
   function claim(): Job | null {
-    return pauseState(currentGrader()) === null ? claimNextJob(now()) : null;
+    if (pauseState(currentGrader()) !== null) return null;
+    const at = now();
+    return at < holdUntil ? null : claimNextJob(at);
+  }
+
+  /** A rate limit or overload: hold new claims until `retryAt`, and halve the concurrency once per window. */
+  function throttle(job: Job, retryAt: number, launchedIn: number): void {
+    holdUntil = Math.max(holdUntil, retryAt);
+    if (launchedIn !== window) return; // launched before the last cut, which already accounted for it
+    window++;
+    effectiveConcurrency = Math.max(1, Math.floor(effectiveConcurrency / 2));
+    console.warn(`[worker] job ${job.id} (${job.kind}) was rate-limited; running at most ${effectiveConcurrency} jobs at once, `
+      + `starting nothing new until ${new Date(holdUntil).toISOString()}`);
+  }
+
+  /** A job that ran to its end without being throttled: one more job may run at once, up to the configured maximum. */
+  function succeeded(launchedIn: number): void {
+    if (launchedIn === window && effectiveConcurrency < maxConcurrency) effectiveConcurrency++;
   }
 
   /**
@@ -107,7 +138,8 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), getConfig().jobTimeoutMs);
     timeout.unref();
-    const task: Promise<void> = execute(job, grader, abort.signal)
+    const launchedIn = window;
+    const task: Promise<void> = execute(job, grader, abort.signal, launchedIn)
       .catch((e: unknown) => {
         // The job row is still `running`, which blocks later jobs for its paper or key until it is put back.
         console.error(`[worker] could not record the outcome of job ${job.id}`, e);
@@ -118,7 +150,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         inFlight.delete(task);
         scheduleTick();
       });
-    inFlight.set(task, { abort, jobId: job.id });
+    inFlight.set(task, { abort, jobId: job.id, window: launchedIn });
     return task;
   }
 
@@ -147,7 +179,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     }, ORPHAN_RETRY_MS).unref();
   }
 
-  async function execute(job: Job, grader: Grader, signal: AbortSignal): Promise<void> {
+  async function execute(job: Job, grader: Grader, signal: AbortSignal, launchedIn: number): Promise<void> {
     let result: HandlerResult;
     try {
       result = await HANDLERS[job.kind](job, grader, signal);
@@ -155,22 +187,26 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
       recoverFromCrash(job, e);
       return;
     }
-    apply(job, result, grader);
+    apply(job, result, grader, launchedIn);
   }
 
-  /** `grader` is the one the job ran on. */
-  function apply(job: Job, result: HandlerResult, grader: Grader): void {
+  /** `grader` is the one the job ran on; `launchedIn` the concurrency window it was launched in. */
+  function apply(job: Job, result: HandlerResult, grader: Grader, launchedIn: number): void {
     switch (result.kind) {
       case "done":
         completeJob(job.id);
+        succeeded(launchedIn);
+        endBatchIfDrained(job);
         return;
       case "requeue":
         requeueJob(job.id, {
           runAfter: result.runAfter, error: result.error, maxTokens: result.maxTokens, refundAttempt: result.refundAttempt,
         });
+        if (result.throttled) throttle(job, result.runAfter, launchedIn);
         return;
       case "fail":
         failJob(job.id, result.error);
+        endBatchIfDrained(job);
         return;
       case "pause":
         if (grader !== currentGraderOrNull()) {
@@ -186,6 +222,16 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         pauseCode = result.code;
         console.warn(`[worker] paused until ${new Date(result.resumeAt).toISOString()}: ${result.reason}`);
         return;
+    }
+  }
+
+  /** The progress bar's batch ends with the assignment's last paper; never fails the job, whose outcome is recorded. */
+  function endBatchIfDrained(job: Job): void {
+    if (job.kind !== "grade_submission") return;
+    try {
+      clearGradingBatchIfDrained(job.assignmentId);
+    } catch (e) {
+      console.error(`[worker] could not end the grading batch of assignment ${job.assignmentId}`, e);
     }
   }
 
@@ -208,7 +254,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     try {
       const grader = currentGrader();
       if (grader === null) return;
-      while (inFlight.size < o.concurrency) {
+      while (inFlight.size < effectiveConcurrency) {
         const job = claim();
         if (!job) break;
         void launch(job, grader);
@@ -251,6 +297,9 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         // getGrader() only returns null in claude mode without an API key.
         aiMode: grader?.mode ?? "claude",
         keyIssue: keyIssue(grader),
+        concurrency: maxConcurrency,
+        effectiveConcurrency,
+        throttledUntil: now() < holdUntil ? holdUntil : null,
         ...queueStats(),
       };
     },
@@ -268,6 +317,10 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
       pausedUntil = 0;
       pauseReason = null;
       pauseCode = null;
+      // A new key comes with its own rate limits.
+      holdUntil = 0;
+      effectiveConcurrency = maxConcurrency;
+      window++;
       releasePausedJobs(now());
       scheduleTick();
     },

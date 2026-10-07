@@ -321,6 +321,33 @@ ALTER TABLE app_settings ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-sonne
 -- grading_engine keeps its values; NULL (never chosen) now means the direct API, which the code resolves.
 `,
   },
+  {
+    version: 6,
+    name: "timings_batches_auto_grade",
+    sql: `
+-- Progress and time estimates (all ms). A paper's grading time is graded_at - grading_started_at.
+ALTER TABLE submissions ADD COLUMN grading_started_at INTEGER;     -- set when status -> grading; cleared when put back in the queue
+ALTER TABLE submissions ADD COLUMN queued_at INTEGER;              -- when it was last queued (upload or regrade): batch membership
+UPDATE submissions SET queued_at = created_at;
+CREATE INDEX submissions_graded ON submissions(assignment_id, graded_at);
+CREATE INDEX submissions_graded_at ON submissions(graded_at);
+-- The current grading batch: set when a paper is queued while none of the assignment's papers is queued or grading,
+-- cleared when they are all done. Papers queued since then make up the batch.
+ALTER TABLE assignments ADD COLUMN batch_started_at INTEGER;
+UPDATE assignments SET batch_started_at = (SELECT min(s.queued_at) FROM submissions s
+  WHERE s.assignment_id = assignments.id AND s.status IN ('queued', 'grading'));
+-- Answer-key reading: when the key went to processing, and when the AI's reading was stored.
+ALTER TABLE answer_keys ADD COLUMN processing_started_at INTEGER;
+ALTER TABLE answer_keys ADD COLUMN processing_finished_at INTEGER;
+UPDATE answer_keys SET processing_started_at = updated_at WHERE status = 'processing';
+-- Whole-class scans: when the AI split was queued and when it finished; auto_graded = papers were created without the teacher
+-- because the AI's split had nothing to check.
+ALTER TABLE scans ADD COLUMN split_started_at INTEGER;
+ALTER TABLE scans ADD COLUMN split_finished_at INTEGER;
+ALTER TABLE scans ADD COLUMN auto_graded INTEGER NOT NULL DEFAULT 0 CHECK (auto_graded IN (0,1));
+UPDATE scans SET split_started_at = created_at WHERE status = 'splitting';
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

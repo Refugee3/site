@@ -305,7 +305,7 @@ describe("isKeyApproved", () => {
   const key = (o: Partial<AnswerKey>): AnswerKey => ({
     assignmentId: "a", status: "ready", sourcePdfPath: null, sourceFilename: null, sourceSha256: null, sourcePageCount: null,
     documentKind: null, teacherNotes: "", aiNotes: "", revision: 2, approvedRevision: 2, fingerprint: null, errorMessage: null,
-    aiModel: null, usage: null, updatedAt: 0, ...o,
+    aiModel: null, usage: null, processingStartedAt: null, processingFinishedAt: null, updatedAt: 0, ...o,
   });
 
   it("needs a ready key, approved at the current revision, with items", () => {

@@ -1,14 +1,16 @@
+import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { getAssignment } from "@/lib/db/repos/assignments";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { deleteScanRow, findScanBySha, getScan, insertScan, updateScan } from "@/lib/db/repos/scans";
 import { countSubmissions, findBySha } from "@/lib/db/repos/submissions";
-import { AppError } from "@/lib/errors";
+import { AppError, isAppError } from "@/lib/errors";
+import { keyPageCountHint } from "@/lib/grading/split";
 import { newId, sha256Hex } from "@/lib/ids";
 import { enqueueSplitScan } from "@/lib/jobs/queue";
-import { everyNLayout, formatPageRanges, papersFromLayout } from "@/lib/scan-layout";
-import { requireKey } from "@/lib/services/key-state";
+import { describePapers, everyNLayout, formatPageRanges, papersFromLayout } from "@/lib/scan-layout";
+import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
@@ -118,6 +120,8 @@ export function retryScanWithAi(scan: Scan): Scan {
       status: "splitting",
       errorMessage: null,
       statusNote: null,
+      splitStartedAt: now(),
+      splitFinishedAt: null,
     });
     enqueueSplitScan(current.id, current.assignmentId);
     return updated;
@@ -128,8 +132,11 @@ export function retryScanWithAi(scan: Scan): Scan {
  * Cuts the scan into one PDF per paper of `layout` and stores each as a teacher submission to be graded.
  * Papers whose content is already in the assignment are skipped and counted, so running it again after a
  * crash or failure creates nothing twice. Any failure puts the scan back to review (papers created stay).
+ * `auto`: the server does it without the teacher (autoGradeCleanSplit); the scan then records that it was auto-graded.
  */
-export async function createPapersFromScan(a: Assignment, scan: Scan, layout: ScanLayout): Promise<{ created: number; duplicates: number }> {
+export async function createPapersFromScan(
+  a: Assignment, scan: Scan, layout: ScanLayout, o: { auto?: boolean } = {},
+): Promise<{ created: number; duplicates: number }> {
   const { maxPages } = getConfig();
   if (layout.length !== scan.pageCount) {
     throw new AppError("validation", "The split doesn't match the scan's pages. Reload the page and try again.");
@@ -151,7 +158,9 @@ export async function createPapersFromScan(a: Assignment, scan: Scan, layout: Sc
 
   try {
     const counts = await storePapers(a, current, papers);
-    updateScan(current.id, { status: "done", createdCount: counts.created, duplicateCount: counts.duplicates });
+    updateScan(current.id, {
+      status: "done", createdCount: counts.created, duplicateCount: counts.duplicates, ...(o.auto ? { autoGraded: true } : {}),
+    });
     return counts;
   } catch (e) {
     updateScan(current.id, { status: "review" });
@@ -201,6 +210,34 @@ function assertRoomFor(assignmentId: string, fresh: number): void {
   const remaining = Math.max(0, assignment.maxSubmissions - countSubmissions(assignmentId));
   if (fresh > remaining) {
     throw new AppError("submission_limit", `This assignment can take only ${remaining} more papers. Raise the limit in the assignment's Settings.`);
+  }
+}
+
+/**
+ * Right after the AI split a scan: when its proposal has nothing for the teacher to check (no paper with any flag of
+ * describePapers: low confidence, unusual page count, no name, several names, unread pages, too many pages), grades it at
+ * once, exactly as "Grade N papers" would with the AI's layout. It needs the approved key and room under the submission limit
+ * like the button does; when anything is flagged or creating the papers fails, the scan stays in review for the teacher.
+ * True when the papers were created.
+ */
+export async function autoGradeCleanSplit(scanId: string): Promise<boolean> {
+  const scan = getScan(scanId);
+  const assignment = scan && getAssignment(scan.assignmentId);
+  if (!scan || !assignment || scan.status !== "review" || scan.splitMode !== "auto" || !scan.layout || scan.readings.length === 0) {
+    return false;
+  }
+  const { key, items, approved } = loadKeyState(assignment.id);
+  if (!approved) return false; // the teacher grades it once the key is approved
+  const papers = describePapers(scan.layout, scan.readings, { keyPageCount: keyPageCountHint(key, items), maxPagesPerPaper: getConfig().maxPages });
+  if (papers.length === 0 || papers.some((paper) => paper.flags.length > 0)) return false;
+  try {
+    await createPapersFromScan(assignment, scan, scan.layout, { auto: true });
+    return true;
+  } catch (e) {
+    // Left in review: the teacher sees the split and the reason when they press "Grade N papers".
+    const reason = isAppError(e) ? `${e.code}: ${e.message}` : e;
+    console.warn(`[scans] could not grade scan ${scanId} automatically; it waits for the teacher`, reason);
+    return false;
   }
 }
 

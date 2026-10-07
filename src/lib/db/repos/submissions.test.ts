@@ -5,9 +5,9 @@ import { listSections, replaceSections } from "@/lib/db/repos/assignments";
 import { enqueueJob } from "@/lib/db/repos/jobs";
 import { upsertKeyItems } from "@/lib/db/repos/keys";
 import {
-  countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getItem, getSubmission, getSubmissionByReceipt,
+  batchCounts, countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getItem, getSubmission, getSubmissionByReceipt,
   getSubmissionForTeacher, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems, listItemsForAssignment, listQueuedWithoutJob,
-  listStaleIds, listSubmissions, markFailed, requeueForRegrade, resetGradingToQueued, saveGradingResult, scheduleRetry,
+  listStaleIds, listSubmissions, markFailed, oldestActiveQueuedAt, recentGradingDurations, requeueForRegrade, resetGradingToQueued, saveGradingResult, scheduleRetry,
   setItemOverride, startGrading, updateSubmission, type GradingWrite,
 } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
@@ -499,5 +499,85 @@ describe("boot recovery", () => {
     expect(resetGradingToQueued()).toBe(1);
     expect(getSubmission(orphan.id)!.status).toBe("queued");
     expect(listQueuedWithoutJob()).toEqual([{ id: orphan.id, assignmentId: assignment.id, source: "student" }]);
+  });
+});
+
+describe("timing columns", () => {
+  it("records when a paper was queued and when its grading run started, and clears the start when it goes back to the queue", () => {
+    let clock = T0;
+    setClockForTests(() => clock);
+    const s = seedSubmission(assignment.id);
+    expect(getSubmission(s.id)).toMatchObject({ queuedAt: T0, gradingStartedAt: null });
+
+    clock = T0 + 1_000;
+    startGrading(s.id, 1);
+    expect(getSubmission(s.id)).toMatchObject({ status: "grading", gradingStartedAt: T0 + 1_000 });
+    // A crashed run of the same job starts again: a new start time.
+    clock = T0 + 2_000;
+    startGrading(s.id, 1);
+    expect(getSubmission(s.id)!.gradingStartedAt).toBe(T0 + 2_000);
+
+    scheduleRetry(s.id, 1, "Retrying after a temporary AI error");
+    expect(getSubmission(s.id)).toMatchObject({ status: "queued", gradingStartedAt: null, queuedAt: T0 });
+
+    startGrading(s.id, 1);
+    resetGradingToQueued();
+    expect(getSubmission(s.id)!.gradingStartedAt).toBeNull();
+
+    clock = T0 + 5_000;
+    startGrading(s.id, 1);
+    expect(saveGradingResult(gradingWrite(getSubmission(s.id)!))).toBe(true);
+    expect(getSubmission(s.id)).toMatchObject({ gradingStartedAt: T0 + 5_000, gradedAt: T0 + 5_000 });
+
+    clock = T0 + 9_000;
+    requeueForRegrade(s.id);
+    expect(getSubmission(s.id)).toMatchObject({ status: "queued", gradingStartedAt: null, queuedAt: T0 + 9_000 });
+  });
+
+  it("lists recent grading durations, newest first, of one assignment or of all", () => {
+    let clock = T0;
+    setClockForTests(() => clock);
+    const other = seedAssignment(teacher.id);
+    seedApprovedKey(other.id, [{ label: "1" }]);
+    const graded = (a: Assignment, startAt: number, durationMs: number) => {
+      const s = seedSubmission(a.id);
+      clock = startAt;
+      startGrading(s.id, 1);
+      clock = startAt + durationMs;
+      db.prepare("UPDATE submissions SET status = 'graded', graded_at = ? WHERE id = ?").run(clock, s.id);
+      return s;
+    };
+    graded(assignment, T0, 30_000);
+    graded(assignment, T0 + 100_000, 50_000);
+    graded(other, T0 + 200_000, 70_000);
+    // Failed, or never started: no duration.
+    const failed = graded(assignment, T0 + 300_000, 10_000);
+    db.prepare("UPDATE submissions SET status = 'failed' WHERE id = ?").run(failed.id);
+    seedSubmission(assignment.id, { status: "graded" });
+
+    expect(recentGradingDurations(assignment.id, 20)).toEqual([50_000, 30_000]);
+    expect(recentGradingDurations(assignment.id, 1)).toEqual([50_000]);
+    expect(recentGradingDurations(null, 20)).toEqual([70_000, 50_000, 30_000]);
+  });
+
+  it("counts a batch: every paper waiting now, and the finished papers queued since it started", () => {
+    let clock = T0;
+    setClockForTests(() => clock);
+    seedSubmission(assignment.id, { status: "graded" });
+    clock = T0 + 10_000;
+    seedSubmission(assignment.id, { status: "needs_review" });
+    seedSubmission(assignment.id, { status: "failed" });
+    seedSubmission(assignment.id);
+    const grading = seedSubmission(assignment.id);
+    clock = T0 + 15_000;
+    startGrading(grading.id, 1);
+    seedSubmission(seedAssignment(teacher.id).id); // another assignment's
+
+    expect(batchCounts(assignment.id, T0 + 10_000)).toEqual({ queued: 1, grading: 1, done: 2, gradingStartedAts: [T0 + 15_000] });
+    expect(batchCounts(assignment.id, T0)).toMatchObject({ done: 3 });
+    expect(oldestActiveQueuedAt(assignment.id)).toBe(T0 + 10_000);
+
+    db.prepare("UPDATE submissions SET status = 'graded' WHERE assignment_id = ?").run(assignment.id);
+    expect(oldestActiveQueuedAt(assignment.id)).toBeNull();
   });
 });

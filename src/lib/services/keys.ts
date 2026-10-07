@@ -1,3 +1,4 @@
+import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
@@ -38,6 +39,8 @@ export async function ingestKeyPdf(a: Assignment, f: UploadedFile): Promise<Answ
         sourcePageCount: pageCount,
         documentKind: null, // the previous PDF's verdict; this one has not been read yet
         errorMessage: null,
+        processingStartedAt: now(),
+        processingFinishedAt: null,
       });
       queueExtraction(a.id);
       return { key, previousPdfPath: previous.sourcePdfPath };
@@ -57,7 +60,7 @@ export function retryKeyExtraction(a: Assignment): void {
     if (!key.sourcePdfPath) {
       throw new AppError("invalid_state", "There is no uploaded key PDF to read again. Upload one or build the key manually.");
     }
-    updateKey(a.id, { status: "processing", errorMessage: null });
+    updateKey(a.id, { status: "processing", errorMessage: null, processingStartedAt: now(), processingFinishedAt: null });
     queueExtraction(a.id);
   });
 }
