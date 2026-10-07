@@ -96,6 +96,14 @@ describe("reconcileGrading: consistency rules", () => {
     return { judgment: result.items[0].judgment, repairs: result.repairs, flags: result.fields.flags };
   }
 
+  it("lists the repairs in the teacher's notes, after the AI's summary", () => {
+    const result = reconcile(output({ teacher_summary: "Solid paper.", items: withItem(0, { attempt: "complete", correctness: "no_answer" }) }));
+    expect(result.fields.teacherSummary).toBe(
+      'Solid paper.\nAutomatic corrections: Item 1: judged "no answer" but marked attempted; set to not attempted.',
+    );
+    expect(reconcile(output({ teacher_summary: "Solid paper." })).fields.teacherSummary).toBe("Solid paper.");
+  });
+
   it("rule 1: no_answer means not attempted", () => {
     const { judgment, repairs } = judge({ attempt: "complete", correctness: "no_answer", student_answer: "" });
     expect(judgment).toMatchObject({ attempt: "none", correctness: "no_answer", confidence: "high" });

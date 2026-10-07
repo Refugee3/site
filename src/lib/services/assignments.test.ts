@@ -12,7 +12,7 @@ import {
   AssignmentFormSchema, createAssignment, defaultSectionsText, deleteAssignment, rotateShareCode, setAssignmentStatus,
   setFeedbackReleased, updateAssignment,
 } from "@/lib/services/assignments";
-import { ingestStudentUpload } from "@/lib/services/submissions";
+import { ingestStudentUpload, updateIdentity } from "@/lib/services/submissions";
 import type { Assignment, AssignmentFormInput, Submission, Teacher } from "@/lib/types";
 import { makePdf, seedApprovedKey, seedTeacher, useTestDb } from "@/test/helpers";
 
@@ -103,6 +103,54 @@ describe("updateAssignment", () => {
 
     const period3 = listSections(assignment.id)[2];
     expect(getSubmission(paper.id)).toMatchObject({ sectionId: period3.id, sectionSource: "ai", status: "graded", flags: [] });
+  });
+
+  describe("papers whose identity the teacher confirmed", () => {
+    const sectionNamed = (a: Assignment, label: string) => listSections(a.id).find((section) => section.label === label)!;
+
+    it("are placed again when their section is renamed to a new spelling", async () => {
+      const { assignment, paper } = await withGradedPaper({ sectionsText: "Peroid 3\nPeriod 4" });
+      updateIdentity(getSubmission(paper.id)!, { studentName: "Maria Lopez", sectionId: sectionNamed(assignment, "Peroid 3").id });
+
+      updateAssignment(assignment, form({ sectionsText: "Period 3\nPeriod 4" }));
+
+      expect(getSubmission(paper.id)).toMatchObject({
+        sectionId: sectionNamed(assignment, "Period 3").id, sectionSource: "ai", nameSource: "teacher", status: "graded", flags: [],
+      });
+    });
+
+    it("are flagged for review when their section is gone and nothing else matches", async () => {
+      const { assignment, paper } = await withGradedPaper({ sectionsText: "Peroid 3\nPeriod 4" });
+      updateIdentity(getSubmission(paper.id)!, { studentName: "Maria Lopez", sectionId: sectionNamed(assignment, "Peroid 3").id });
+
+      updateAssignment(assignment, form({ sectionsText: "Biology\nPeriod 4" }));
+
+      expect(getSubmission(paper.id)).toMatchObject({
+        sectionId: null, sectionSource: null, status: "needs_review", flags: ["section_unmatched"],
+      });
+    });
+
+    it("keep a section the teacher chose while it still exists", async () => {
+      const { assignment, paper } = await withGradedPaper({ sectionsText: "Period 3\nPeriod 4" });
+      const period4 = sectionNamed(assignment, "Period 4");
+      updateIdentity(getSubmission(paper.id)!, { studentName: "Maria Lopez", sectionId: period4.id });
+
+      updateAssignment(assignment, form({ sectionsText: "Period 3\nPeriod 4 | P4, 4th\nPeriod 5" }));
+
+      expect(getSubmission(paper.id)).toMatchObject({ sectionId: period4.id, sectionSource: "teacher", status: "graded", flags: [] });
+    });
+
+    it("are placed once sections are added, if they were confirmed while there were none", async () => {
+      const { assignment, paper } = await withGradedPaper();
+      updateIdentity(getSubmission(paper.id)!, { studentName: "Maria Lopez", sectionId: null });
+      expect(getSubmission(paper.id)).toMatchObject({ nameSource: "teacher", sectionSource: null });
+
+      updateAssignment(assignment, form({ sectionsText: "Period 3" }));
+
+      expect(getSubmission(paper.id)).toMatchObject({
+        sectionId: sectionNamed(assignment, "Period 3").id, sectionSource: "ai", status: "graded",
+      });
+    });
   });
 });
 

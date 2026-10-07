@@ -171,6 +171,18 @@ CREATE UNIQUE INDEX jobs_one_queued ON jobs(kind, target_id) WHERE status = 'que
 CREATE INDEX jobs_claim ON jobs(status, priority, run_after, id);
 `,
   },
+  {
+    version: 2,
+    name: "usage_ledger_overrides_upload_ids",
+    sql: `
+-- Every AI call's usage, added up per served model: {"<model>": {calls, inputTokens, ...}}.
+ALTER TABLE assignments ADD COLUMN ai_usage_json TEXT NOT NULL DEFAULT '{}';
+-- The teacher's version of the student-facing "what you did" note; survives regrades like override_feedback.
+ALTER TABLE submission_items ADD COLUMN override_what_student_did TEXT;
+-- The id the student's browser sent with the upload, so only a retry of the same upload replays its receipt.
+ALTER TABLE submissions ADD COLUMN client_upload_id TEXT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

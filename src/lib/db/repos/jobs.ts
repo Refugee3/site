@@ -176,6 +176,28 @@ export function recoverRunningJobs(): number {
   });
 }
 
+/**
+ * Puts back running jobs that no in-flight run owns: a run whose outcome could not be recorded (e.g.
+ * SQLITE_BUSY or a full disk) leaves its job `running`, which blocks every later job for that target.
+ * Same rules as boot recovery, but the jobs in `activeIds` (still running here) are left alone; a single
+ * instance runs, so any other running job is an orphan. Returns how many jobs were recovered.
+ */
+export function requeueOrphanedRunningJobs(activeIds: number[]): number {
+  return tx(() => {
+    const at = now();
+    const params = { at, active: JSON.stringify(activeIds) };
+    const orphan = "status = 'running' AND id NOT IN (SELECT value FROM json_each(@active))";
+    const cancelled = run(
+      `UPDATE jobs SET status = 'cancelled', finished_at = @at, updated_at = @at
+       WHERE ${orphan}
+         AND EXISTS (SELECT 1 FROM jobs q WHERE q.kind = jobs.kind AND q.target_id = jobs.target_id AND q.status = 'queued')`,
+      params,
+    );
+    const requeued = run(`UPDATE jobs SET status = 'queued', run_after = @at, updated_at = @at WHERE ${orphan}`, params);
+    return cancelled + requeued;
+  });
+}
+
 export function hasActiveJob(kind: JobKind, targetId: string): boolean {
   return one(
     "SELECT 1 FROM jobs WHERE kind = ? AND target_id = ? AND status IN ('queued', 'running')",

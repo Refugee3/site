@@ -57,7 +57,7 @@ describe("getConfig", () => {
       AI_TIMEOUT_MS: "30000",
       GRADING_CONCURRENCY: "8",
       JOB_MAX_ATTEMPTS: "1",
-      TEACHER_SIGNUP_CODE: " letmein ",
+      TEACHER_SIGNUP_CODE: " maple-quartz-4417 ",
       MAX_UPLOAD_MB: "5",
       MAX_PAGES: "200",
     });
@@ -73,7 +73,7 @@ describe("getConfig", () => {
       aiTimeoutMs: 30_000,
       concurrency: 8,
       jobMaxAttempts: 1,
-      teacherSignupCode: "letmein",
+      teacherSignupCode: "maple-quartz-4417",
       cookieSecure: true,
       maxUploadBytes: 5 * 1_048_576,
       maxPages: 200,
@@ -87,6 +87,12 @@ describe("getConfig", () => {
     expect(cfg.teacherSignupCode).toBeNull();
   });
 
+  it("requires a TEACHER_SIGNUP_CODE of at least 12 characters (after trimming), since it gates every signup", () => {
+    expect(() => configWith({ TEACHER_SIGNUP_CODE: "letmein" })).toThrow(/TEACHER_SIGNUP_CODE: must be at least 12 characters/);
+    expect(() => configWith({ TEACHER_SIGNUP_CODE: "  math2026xx  " })).toThrow(/TEACHER_SIGNUP_CODE/);
+    expect(configWith({ TEACHER_SIGNUP_CODE: "k3v9-qp2m-x7tw" }).teacherSignupCode).toBe("k3v9-qp2m-x7tw");
+  });
+
   it("derives cookieSecure from APP_URL unless set explicitly", () => {
     expect(configWith({ APP_URL: "http://localhost:3000" }).cookieSecure).toBe(false);
     expect(configWith({ APP_URL: "https://grader.school.org" }).cookieSecure).toBe(true);
@@ -94,9 +100,14 @@ describe("getConfig", () => {
     expect(configWith({ COOKIE_SECURE: "true" }).cookieSecure).toBe(true);
   });
 
-  it("treats any AI_FALLBACKS value other than off as on", () => {
+  it("accepts only on or off for AI_FALLBACKS, on by default", () => {
     expect(configWith({ AI_FALLBACKS: "on" }).fallbacks).toBe(true);
-    expect(configWith({ AI_FALLBACKS: "yes" }).fallbacks).toBe(true);
+    expect(configWith({ AI_FALLBACKS: "off" }).fallbacks).toBe(false);
+    expect(configWith({}).fallbacks).toBe(true);
+    // A typo must not silently leave fallbacks on against the admin's choice.
+    for (const value of ["yes", "false", "0", "OFF"]) {
+      expect(() => configWith({ AI_FALLBACKS: value }), value).toThrow(/AI_FALLBACKS/);
+    }
   });
 
   it("refuses fake AI in production unless ALLOW_FAKE_AI=1", () => {

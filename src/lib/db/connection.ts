@@ -7,7 +7,8 @@ import { migrate } from "@/lib/db/migrations";
 
 export type DB = import("better-sqlite3").Database;
 
-// Process-wide (§4): instrumentation and route bundles may load separate copies of this module.
+// Process-wide globalThis slot so separate module copies share it: instrumentation and route bundles
+// may load separate copies of this module.
 const DB_SLOT = Symbol.for("pag.db");
 const slots = globalThis as unknown as Record<symbol, DB | undefined>;
 

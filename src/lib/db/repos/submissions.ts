@@ -3,7 +3,9 @@ import { tx } from "@/lib/db/connection";
 import { getAssignment } from "@/lib/db/repos/assignments";
 import { all, encodePatch, isUniqueViolation, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
+import { statusFromFlags } from "@/lib/flags";
 import {
+  FLAG_CODES,
   SUBMISSION_STATUSES,
   type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode,
   type ItemJudgment, type ItemReviewReason, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
@@ -11,7 +13,7 @@ import {
 } from "@/lib/types";
 
 export type NewSubmission = Pick<Submission, "id" | "assignmentId" | "source" | "receiptToken" | "pdfPath" | "originalFilename"
-  | "contentSha256" | "byteSize" | "pageCount">;
+  | "contentSha256" | "byteSize" | "pageCount"> & Partial<Pick<Submission, "clientUploadId">>;
 
 export interface GradingWrite {
   submissionId: string;
@@ -31,6 +33,7 @@ interface SubmissionRow {
   pdf_path: string;
   original_filename: string;
   content_sha256: string;
+  client_upload_id: string | null;
   byte_size: number;
   page_count: number;
   status: SubmissionStatus;
@@ -86,6 +89,7 @@ interface SubmissionItemRow {
   teacher_note: string;
   override_centi: number | null;
   override_feedback: string | null;
+  override_what_student_did: string | null;
   updated_at: number;
 }
 
@@ -102,6 +106,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     pdfPath: row.pdf_path,
     originalFilename: row.original_filename,
     contentSha256: row.content_sha256,
+    clientUploadId: row.client_upload_id,
     byteSize: row.byte_size,
     pageCount: row.page_count,
     status: row.status,
@@ -169,6 +174,7 @@ function itemFromRow(row: SubmissionItemRow): SubmissionItem {
     judgment: judgmentFromRow(row),
     overrideCenti: row.override_centi,
     overrideFeedback: row.override_feedback,
+    overrideWhatStudentDid: row.override_what_student_did,
     updatedAt: row.updated_at,
   };
 }
@@ -179,10 +185,10 @@ export function insertSubmission(s: NewSubmission): Submission {
   try {
     const row = one<SubmissionRow>(
       `INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256,
-         byte_size, page_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+         client_upload_id, byte_size, page_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       s.id, s.assignmentId, s.source, s.receiptToken, s.pdfPath, s.originalFilename, s.contentSha256,
-      s.byteSize, s.pageCount, at, at,
+      s.clientUploadId ?? null, s.byteSize, s.pageCount, at, at,
     );
     return submissionFromRow(row!);
   } catch (error) {
@@ -256,6 +262,24 @@ function sectionBelongsTo(sectionId: string, assignmentId: string): boolean {
   return one("SELECT 1 FROM sections WHERE id = ? AND assignment_id = ?", sectionId, assignmentId) !== undefined;
 }
 
+function hasSections(assignmentId: string): boolean {
+  return one("SELECT 1 FROM sections WHERE assignment_id = ?", assignmentId) !== undefined;
+}
+
+/**
+ * The section fields to store when the result names a section that is gone (the teacher edited the
+ * sections after it was computed): the paper is unsectioned and, while sections exist, flagged for review.
+ */
+function withoutVanishedSection(f: GradingWrite["fields"], assignmentId: string): Pick<GradingWrite["fields"], "sectionId" | "sectionSource" | "flags" | "status"> {
+  if (f.sectionId === null || sectionBelongsTo(f.sectionId, assignmentId)) {
+    return { sectionId: f.sectionId, sectionSource: f.sectionSource, flags: f.flags, status: f.status };
+  }
+  const present = new Set<FlagCode>(f.flags.filter((flag) => flag !== "section_inferred"));
+  if (hasSections(assignmentId)) present.add("section_unmatched");
+  const flags = FLAG_CODES.filter((code) => present.has(code));
+  return { sectionId: null, sectionSource: null, flags, status: statusFromFlags(flags, null) };
+}
+
 function upsertJudgment(submissionId: string, itemId: string, judgment: ItemJudgment | null, at: number): void {
   run(
     `INSERT INTO submission_items (submission_id, item_id, attempt, correctness, legibility, confidence, review_reason,
@@ -300,9 +324,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
 
     const at = now();
     const f = w.fields;
-    // The teacher may have removed the matched section while the AI call was running.
-    const sectionId = f.sectionId !== null && sectionBelongsTo(f.sectionId, current.assignment_id) ? f.sectionId : null;
-    const sectionSource = sectionId === null && f.sectionSource === "ai" ? null : f.sectionSource;
+    const section = withoutVanishedSection(f, current.assignment_id);
     run(
       `UPDATE submissions SET
          ai_name = @ai_name, ai_name_confidence = @ai_name_confidence, ai_section_raw = @ai_section_raw,
@@ -327,12 +349,12 @@ export function saveGradingResult(w: GradingWrite): boolean {
         name_source: f.nameSource,
         name_key: f.nameKey,
         name_sort_key: f.nameSortKey,
-        section_id: sectionId,
+        section_id: section.sectionId,
         section_key: f.sectionKey,
-        section_source: sectionSource,
+        section_source: section.sectionSource,
         document_match: f.documentMatch,
-        flags_json: JSON.stringify(f.flags),
-        status: f.status,
+        flags_json: JSON.stringify(section.flags),
+        status: section.status,
         teacher_summary: f.teacherSummary,
         integrity_note: f.integrityNote,
         unmatched_work: f.unmatchedWork,
@@ -448,7 +470,7 @@ export function listItemsForAssignment(assignmentId: string): Map<string, Submis
 export function setItemOverride(
   submissionId: string,
   itemId: string,
-  p: { overrideCenti?: number | null; overrideFeedback?: string | null },
+  p: { overrideCenti?: number | null; overrideFeedback?: string | null; overrideWhatStudentDid?: string | null },
 ): void {
   tx(() => {
     run(
@@ -456,7 +478,11 @@ export function setItemOverride(
        ON CONFLICT (submission_id, item_id) DO NOTHING`,
       submissionId, itemId, now(),
     );
-    const values = encodePatch(p, { overrideCenti: "override_centi", overrideFeedback: "override_feedback" });
+    const values = encodePatch(p, {
+      overrideCenti: "override_centi",
+      overrideFeedback: "override_feedback",
+      overrideWhatStudentDid: "override_what_student_did",
+    });
     updateRow("submission_items", { submission_id: submissionId, item_id: itemId }, values);
   });
 }

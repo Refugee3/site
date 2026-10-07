@@ -1,21 +1,22 @@
 import { getConfig } from "@/lib/config";
-import { getAssignment, getAssignmentByShareCode, listAssignmentsForTeacher, listSections } from "@/lib/db/repos/assignments";
+import {
+  getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
+} from "@/lib/db/repos/assignments";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import {
   countByStatus, getSubmissionByReceipt, listItems, listItemsForAssignment, listStaleIds, listSubmissions,
 } from "@/lib/db/repos/submissions";
 import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
-import { nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
+import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
 import { toCsv } from "@/lib/grading/csv";
-import { computeScore, roundHalfUpDiv } from "@/lib/grading/scoring";
+import { computeScore, percentTenths } from "@/lib/grading/scoring";
 import { sectionsToText } from "@/lib/grading/sections";
-import { getWorkerStatus } from "@/lib/jobs/queue";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
 import { receiptUrl } from "@/lib/services/submissions";
 import type {
   AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, FlagCode, KeyEditorView, KeyItem,
-  ReceiptNotice, ReceiptPhase, ReceiptView, ReviewView, ScoreResult, SettingsView, StudentUploadView, Submission,
+  ReceiptNotice, ReceiptPhase, ReceiptView, ReviewView, ScoreResult, SettingsView, StatusCounts, StudentUploadView, Submission,
   SubmissionItem, SubmissionStatus, Teacher,
 } from "@/lib/types";
 
@@ -27,8 +28,6 @@ const UNNAMED = "No name";
 
 export function getDashboardView(t: Teacher): DashboardView {
   return {
-    teacher: t,
-    worker: getWorkerStatus(),
     assignments: listAssignmentsForTeacher(t.id).map((a) => {
       const { key, approved } = loadKeyState(a.id);
       return {
@@ -38,7 +37,7 @@ export function getDashboardView(t: Teacher): DashboardView {
         shareCode: a.shareCode,
         keyStatus: key.status,
         keyApproved: approved,
-        counts: countByStatus(a.id),
+        counts: currentCounts(a.id),
         released: a.feedbackReleasedAt !== null,
         createdAt: a.createdAt,
       };
@@ -55,37 +54,37 @@ export function getAssignmentHeader(a: Assignment, origin: string): AssignmentHe
     keyApproved: approved,
     itemCount: items.length,
     totalPointsCenti: items.reduce((sum, item) => sum + item.pointsCenti, 0),
-    counts: countByStatus(a.id),
-    staleCount: listStaleIds(a.id, key.revision).length,
+    counts: currentCounts(a.id),
     canOpen: approved && a.status !== "open",
-    worker: getWorkerStatus(),
   };
 }
 
-const BOARD_FILTERS: Record<BoardFilter, (status: SubmissionStatus) => boolean> = {
-  all: () => true,
-  needs_review: (status) => status === "needs_review",
-  in_progress: (status) => status === "queued" || status === "grading",
-  failed: (status) => status === "failed",
-  graded: (status) => status === "graded",
-};
+/**
+ * Status counts of the papers the board shows (current attempts only), like the CSV. Counting folded
+ * earlier attempts would ask the teacher to review papers no filter shows.
+ */
+function currentCounts(assignmentId: string): StatusCounts {
+  return countCurrent(organizeBoard(listSubmissions(assignmentId), listSections(assignmentId)));
+}
 
 export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
   const { revision } = requireKey(a.id);
-  const counts = countByStatus(a.id);
-  const groups = organizeBoard(listSubmissions(a.id), listSections(a.id))
+  const submissions = listSubmissions(a.id);
+  const board = organizeBoard(submissions, listSections(a.id));
+  const current = new Set(boardOrderIds(board));
+  const groups = board
     .map((group) => ({
       key: group.key,
       label: group.label,
-      rows: group.rows.filter((row) => BOARD_FILTERS[filter](row.current.status)).map((row) => boardRow(row, revision)),
+      rows: group.rows.filter((row) => inBoardFilter(filter, row.current.status)).map((row) => boardRow(row, revision)),
     }))
     .filter((group) => group.rows.length > 0);
   return {
-    filter,
     groups,
-    counts,
-    staleCount: listStaleIds(a.id, revision).length,
-    active: counts.queued + counts.grading > 0,
+    counts: countCurrent(board),
+    staleCount: listStaleIds(a.id, revision).filter((id) => current.has(id)).length,
+    // Polls while anything is being graded, including a regraded earlier attempt.
+    active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
     open: a.status === "open",
   };
 }
@@ -145,7 +144,6 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     sectionLabel: sections.find((section) => section.id === s.sectionId)?.label ?? null,
     items: items.map((item, i) => ({ item, result: resultByItem.get(item.id) ?? null, score: score.items[i] })),
     score,
-    flags: s.flags.map((code) => ({ code, ...FLAG_DEFS[code] })),
     stale: isStale(s, key.revision),
     pdfUrl: `/api/teacher/submissions/${s.id}/pdf`,
     receiptUrl: receiptUrl(s.receiptToken, origin),
@@ -154,18 +152,33 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     nextNeedsReviewId: nextNeedsReview(groups, s.id),
     // Attempts are newest first, so the ones after this paper are older.
     earlierAttempts: attempts.slice(attempts.findIndex((attempt) => attempt.id === s.id) + 1).map(attemptSummary),
+    released: a.feedbackReleasedAt !== null,
   };
 }
 
+/**
+ * The assignment's AI usage: every call ever made for it (grading, regrades, retries, refusals, reading
+ * the key, papers deleted since), each priced at the rate of the model that answered it.
+ */
 export function getSettingsView(a: Assignment): SettingsView {
-  const cfg = getConfig();
-  const paperUsages = listSubmissions(a.id).map((s) => s.usage).filter((usage) => usage !== null);
-  const keyUsage = requireKey(a.id).usage;
-  const total = sumUsage(keyUsage ? [keyUsage, ...paperUsages] : paperUsages);
+  const { cacheTtl } = getConfig();
+  const byModel = Object.entries(getAssignmentUsage(a.id));
+  const total = sumUsage(byModel.map(([, usage]) => usage));
+  // Calls that used no tokens (the fake grader) cost nothing, whatever their model is called.
+  const costs = byModel.map(([model, usage]) => (tokenCount(usage) === 0 ? 0 : estimateCostUsd(usage, model, cacheTtl)));
   return {
     sectionsText: sectionsToText(listSections(a.id)),
-    usage: { papers: paperUsages.length, ...total, estimatedCostUsd: estimateCostUsd(total, cfg.model, cfg.cacheTtl) },
+    usage: {
+      calls: byModel.reduce((sum, [, usage]) => sum + usage.calls, 0),
+      papers: listSubmissions(a.id).filter((s) => s.usage !== null).length,
+      ...total,
+      estimatedCostUsd: costs.some((cost) => cost === null) ? null : costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0),
+    },
   };
+}
+
+function tokenCount(u: AiUsage): number {
+  return u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
 }
 
 function sumUsage(usages: AiUsage[]): AiUsage {
@@ -227,22 +240,26 @@ const RECEIPT_NOTICES: Array<[FlagCode, ReceiptNotice]> = [
   ["pages_missing", "pages_missing"],
 ];
 
-/** What a student sees on their receipt (§1.2, §8): results only once released, and never for a paper under review. */
+/**
+ * What a student sees on their receipt: results only once released, and never for a paper
+ * under review. Never the assignment's current share code: a rotated code must not leak through old receipts.
+ */
 export function getReceiptView(token: string): ReceiptView | null {
   const s = getSubmissionByReceipt(token);
   const a = s && getAssignment(s.assignmentId);
   if (!s || !a) return null;
   const phase = receiptPhase(s, a);
+  // Once the teacher has reviewed and accepted the paper, its warnings no longer ask the student to resubmit.
+  const showNotices = phase === "checked" && s.reviewedAt === null;
   return {
     assignmentTitle: a.title,
-    shareCode: a.shareCode,
     submittedAt: s.createdAt,
     pageCount: s.pageCount,
     phase,
     pdfUrl: `/api/r/${token}/pdf`,
     detectedName: s.studentName,
     detectedSection: listSections(a.id).find((section) => section.id === s.sectionId)?.label ?? s.aiSectionRaw,
-    notices: phase === "checked" ? RECEIPT_NOTICES.filter(([flag]) => s.flags.includes(flag)).map(([, notice]) => notice) : [],
+    notices: showNotices ? RECEIPT_NOTICES.filter(([flag]) => s.flags.includes(flag)).map(([, notice]) => notice) : [],
     result: phase === "released" ? releasedResult(s, a) : null,
   };
 }
@@ -267,7 +284,7 @@ function releasedResult(s: Submission, a: Assignment): NonNullable<ReceiptView["
       label: item.label,
       earnedCenti: score.items[i].earnedCenti,
       maxCenti: score.items[i].maxCenti,
-      whatStudentDid: result?.judgment?.whatStudentDid ?? "",
+      whatStudentDid: result?.overrideWhatStudentDid ?? result?.judgment?.whatStudentDid ?? "",
       feedback: result?.overrideFeedback ?? result?.judgment?.feedback ?? "",
     };
     // Consecutive parts of one question share a group; standalone items share the "" group.
@@ -286,25 +303,30 @@ function releasedResult(s: Submission, a: Assignment): NonNullable<ReceiptView["
 }
 
 // ---------------------------------------------------------------------------------------------
-// CSV export (§6.6)
+// CSV export
 
 const CSV_COLUMNS = [
   "Section", "Student name", "Status", "Points earned", "Points possible", "Percent", "Completion %", "Accuracy %",
-  "Reviewed", "Flags", "Overall feedback", "Submitted at", "Receipt link",
+  "Reviewed", "Flags", "Overall feedback", "Submitted at", "Earlier attempts", "Receipt link",
 ];
 
-/** Current papers in board order, scored from the live key, judgments and overrides (like the review page). */
+/**
+ * Current papers in board order, scored from the live key, judgments and overrides (like the review
+ * page). "Earlier attempts" counts the papers folded under each row, so a merge is visible in the export.
+ */
 export function buildGradesCsv(a: Assignment, origin: string): { filename: string; csv: string } {
   const items = listKeyItems(a.id);
   const resultsBySubmission = listItemsForAssignment(a.id);
   const header = [...CSV_COLUMNS, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
   const rows = organizeBoard(listSubmissions(a.id), listSections(a.id)).flatMap((group) =>
-    group.rows.map(({ current }) => csvRow(group.label, current, a, items, resultsBySubmission.get(current.id) ?? [], origin)));
+    group.rows.map(({ current, earlier }) =>
+      csvRow(group.label, current, earlier.length, a, items, resultsBySubmission.get(current.id) ?? [], origin)));
   return { filename: `${slugify(a.title)}-grades.csv`, csv: toCsv([header, ...rows]) };
 }
 
 function csvRow(
-  sectionLabel: string, s: Submission, a: Assignment, items: KeyItem[], results: SubmissionItem[], origin: string,
+  sectionLabel: string, s: Submission, earlierAttempts: number, a: Assignment, items: KeyItem[], results: SubmissionItem[],
+  origin: string,
 ): Array<string | null> {
   const identity = [sectionLabel, s.studentName ?? "", STATUS_LABEL[s.status]];
   const trailing = [
@@ -312,6 +334,7 @@ function csvRow(
     s.flags.filter((flag) => FLAG_DEFS[flag].severity === "review").map((flag) => FLAG_DEFS[flag].label).join("; "),
     s.overallFeedback,
     new Date(s.createdAt).toISOString(),
+    earlierAttempts > 0 ? String(earlierAttempts) : "",
     receiptUrl(s.receiptToken, origin),
   ];
   if (!hasGrade(s)) {
@@ -348,13 +371,9 @@ function hasGrade(s: Submission): boolean {
   return s.status === "graded" || s.status === "needs_review";
 }
 
-/** Graded against an older key revision (§6.3); the paper keeps its score until regraded. */
+/** Graded against an older key revision; the paper keeps its score until regraded. */
 function isStale(s: Submission, keyRevision: number): boolean {
   return hasGrade(s) && s.gradedKeyRevision !== null && s.gradedKeyRevision < keyRevision;
-}
-
-function percentTenths(earnedCenti: number, maxCenti: number): number | null {
-  return maxCenti > 0 ? roundHalfUpDiv(earnedCenti * 1000, maxCenti) : null;
 }
 
 function attemptSummary(s: Submission): { submissionId: string; createdAt: number; status: SubmissionStatus } {

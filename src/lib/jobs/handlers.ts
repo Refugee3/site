@@ -4,7 +4,7 @@ import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
-import { getAssignment, listSections } from "@/lib/db/repos/assignments";
+import { addAssignmentUsage, getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
@@ -13,8 +13,8 @@ import { isKeyApproved, keyFingerprint, normalizeExtractedKey } from "@/lib/grad
 import { buildRefusedResult, reconcileGrading } from "@/lib/grading/reconcile";
 import { decideFailure } from "@/lib/jobs/backoff";
 import { rescoreSubmission } from "@/lib/services/submissions";
-import { readDataFile } from "@/lib/storage/files";
-import type { AnswerKey, Assignment, Job, KeyItem, Section } from "@/lib/types";
+import { readDataFile, removeDataFile } from "@/lib/storage/files";
+import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Section } from "@/lib/types";
 
 // Handlers own every write to the job's target (submission or key); the worker owns every jobs-table write.
 
@@ -27,9 +27,11 @@ export type HandlerResult =
 const DONE: HandlerResult = { kind: "done" };
 const KEY_WAIT_MS = 60_000;
 const WAITING_FOR_KEY = "Waiting for the answer key";
+/** Extraction verdicts that mean the uploaded "key" is not one: its PDF must not be used as the teacher's reference. */
+const NOT_A_KEY: ReadonlySet<string> = new Set(["student_work", "unrelated"]);
 
 // ---------------------------------------------------------------------------------------------
-// Grading one submission (§7 handleGradeSubmission)
+// Grading one submission (handleGradeSubmission)
 
 interface GradingContext {
   job: Job;
@@ -38,12 +40,15 @@ interface GradingContext {
   assignment: Assignment;
   key: AnswerKey;
   items: KeyItem[];
+  /** As sent to the AI; the result is reconciled against the sections at save time. */
   sections: Section[];
 }
 
+type Billed = NonNullable<AiError["o"]["billed"]>;
+
 type GradingOutcome =
   | { kind: "graded"; output: GradingOutput; refs: string[]; meta: AiCallMeta }
-  | { kind: "refused"; category: string | null };
+  | { kind: "refused"; category: string | null; billed: Billed | null };
 
 /**
  * Idempotent: a submission that is gone, already graded, or on a newer grading generation is left
@@ -76,8 +81,10 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       ? { kind: "fail", error: "file_missing: student PDF not found" }
       : DONE;
   }
-  const keyPdf = key.sourcePdfPath ? await readStoredPdf(key.sourcePdfPath) : null;
-  if (key.sourcePdfPath && !keyPdf) console.warn(`[jobs] key PDF of assignment ${assignment.id} is missing; grading without it`);
+  // A PDF the extraction judged not to be a key (a student's paper, something unrelated) is never shown as the teacher's reference.
+  const keyPdfPath = key.documentKind !== null && NOT_A_KEY.has(key.documentKind) ? null : key.sourcePdfPath;
+  const keyPdf = keyPdfPath ? await readStoredPdf(keyPdfPath) : null;
+  if (keyPdfPath && !keyPdf) console.warn(`[jobs] key PDF of assignment ${assignment.id} is missing; grading without it`);
 
   let outcome: GradingOutcome;
   try {
@@ -89,10 +96,12 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
     outcome = { kind: "graded", output: result.output, refs: result.refs, meta: result.meta };
+    recordUsage(assignment.id, result.meta.servedModel, result.meta.usage);
   } catch (e) {
     const err = classifySdkError(e);
-    if (err.code !== "refusal") return gradingFailure(ctx, err);
-    outcome = { kind: "refused", category: err.o.refusalCategory ?? null };
+    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+    if (!isFinalRefusal(job, err)) return gradingFailure(ctx, err);
+    outcome = { kind: "refused", category: err.o.refusalCategory ?? null, billed: err.o.billed ?? null };
   }
 
   try {
@@ -105,20 +114,24 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
   return DONE;
 }
 
-/** Runs inside tx(). Reconciles against the latest row so name or section edits made during the AI call survive (§5.6). */
+/**
+ * Runs inside tx(). Reconciles against the latest row and the current section list, so name or
+ * section edits the teacher made during the AI call survive and apply.
+ */
 function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
   const latest = getSubmission(ctx.submissionId);
   if (!latest || latest.gradingGeneration !== ctx.generation) return; // regraded or deleted mid-call
+  const sections = listSections(ctx.assignment.id);
 
   const reconciled = outcome.kind === "graded"
     ? reconcileGrading({
-      output: outcome.output, refs: outcome.refs, items: ctx.items, sections: ctx.sections, pageCount: latest.pageCount,
+      output: outcome.output, refs: outcome.refs, items: ctx.items, sections, pageCount: latest.pageCount,
       current: latest, fallbackUsed: outcome.meta.fallbackUsed,
     })
-    : buildRefusedResult({ items: ctx.items, current: latest, hasSections: ctx.sections.length > 0, category: outcome.category });
+    : buildRefusedResult({ items: ctx.items, current: latest, hasSections: sections.length > 0, category: outcome.category });
   const ai = outcome.kind === "graded"
     ? { aiModel: outcome.meta.servedModel, usage: outcome.meta.usage, aiOutputJson: JSON.stringify(outcome.output) }
-    : { aiModel: getConfig().model, usage: null, aiOutputJson: null };
+    : { aiModel: outcome.billed?.servedModel ?? getConfig().model, usage: outcome.billed?.usage ?? null, aiOutputJson: null };
 
   const saved = saveGradingResult({
     submissionId: ctx.submissionId,
@@ -149,7 +162,7 @@ function gradingFailure(ctx: GradingContext, err: AiError): HandlerResult {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Reading the answer key (§7 handleExtractKey)
+// Reading the answer key (handleExtractKey)
 
 /**
  * Turns the key PDF into key items. Every key write is conditional on the key still being
@@ -174,18 +187,25 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
       { signal, maxTokens: job.maxTokens ?? cfg.maxTokens },
     );
   } catch (e) {
-    return extractionFailure(job, sourceSha, classifySdkError(e));
+    const err = classifySdkError(e);
+    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+    return extractionFailure(job, sourceSha, err);
   }
 
   const { output, meta } = extraction;
+  recordUsage(assignment.id, meta.servedModel, meta.usage);
   const normalized = normalizeExtractedKey(output, { pageCount: key.sourcePageCount, maxItems: cfg.maxKeyItems });
-  tx(() => {
+  const notAKeyPdf = tx((): string | null => {
     const current = getKey(job.targetId);
-    if (!current || !isSameRun(current, sourceSha)) return;
+    if (!current || !isSameRun(current, sourceSha)) return null;
     const aiFields = { documentKind: output.document_kind, aiNotes: normalized.aiNotes, aiModel: meta.servedModel, usage: meta.usage };
     if (normalized.fatal) {
-      updateKey(job.targetId, { ...aiFields, status: "failed", errorMessage: normalized.fatal });
-      return;
+      // A student's paper or an unrelated document must not stay attached as the key PDF (it would be sent
+      // as the teacher's reference with every paper); reading it again cannot help either.
+      const detach = NOT_A_KEY.has(output.document_kind) ? current.sourcePdfPath : null;
+      const source = detach ? { sourcePdfPath: null, sourceFilename: null, sourceSha256: null, sourcePageCount: null } : {};
+      updateKey(job.targetId, { ...aiFields, ...source, status: "failed", errorMessage: normalized.fatal });
+      return detach;
     }
     const items = replaceKeyItems(job.targetId, normalized.items);
     updateKey(job.targetId, {
@@ -196,13 +216,15 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
       fingerprint: keyFingerprint(items, current.teacherNotes),
       errorMessage: null,
     });
+    return null;
   });
+  if (notAKeyPdf) await removeDataFile(notAKeyPdf);
   return DONE;
 }
 
 /** A retry or pause leaves the key `processing`; a re-upload meanwhile turns the requeue into a cancel (requeueJob). */
 function extractionFailure(job: Job, sourceSha: string | null, err: AiError): HandlerResult {
-  if (err.code === "refusal") {
+  if (isFinalRefusal(job, err)) {
     return failKey(job.targetId, sourceSha, "The AI declined to read this document. Build the key manually.");
   }
   const decision = decideFailure(job, err, failureLimits());
@@ -234,6 +256,15 @@ function isSameRun(key: AnswerKey, sourceSha: string | null): boolean {
 // Shared
 
 /**
+ * A refusal that stands: the handlers turn it into a result of their own (ai_refused paper, failed
+ * key). A retryable refusal (the fallback model was unavailable) goes through decideFailure like any
+ * temporary error until the job's attempts run out.
+ */
+function isFinalRefusal(job: Job, err: AiError): boolean {
+  return err.code === "refusal" && !(err.o.retryable && job.attempts < job.maxAttempts);
+}
+
+/**
  * Marks the target failed after a handler threw on its last attempt. The worker calls it after
  * failJob, so any job still active for the target is a newer one (a regrade or re-upload): then the
  * target belongs to that job and is left alone.
@@ -248,6 +279,18 @@ export function failTarget(job: Job, message: string): void {
       updateKey(job.targetId, { status: "failed", errorMessage: message });
     }
   });
+}
+
+/**
+ * Adds a billed AI call to the assignment's usage totals (Settings). Accounting never fails the job:
+ * a failed write is logged, since retrying would only bill the call again.
+ */
+function recordUsage(assignmentId: string, model: string, usage: AiUsage): void {
+  try {
+    addAssignmentUsage(assignmentId, model, usage);
+  } catch (e) {
+    console.error(`[jobs] could not record AI usage for assignment ${assignmentId}`, e);
+  }
 }
 
 /** The stored PDF, or null when the file is gone; other I/O errors propagate to the worker. */

@@ -3,6 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
+import { getDb } from "@/lib/db/connection";
 import { listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { updateKey } from "@/lib/db/repos/keys";
 import { countSubmissions, getSubmission, getSubmissionByReceipt, listItems, updateSubmission } from "@/lib/db/repos/submissions";
@@ -20,6 +21,7 @@ import { makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, 
 
 const T0 = 1_700_000_000_000;
 const ORIGIN = "https://school.test";
+const UPLOAD_ID = "0123456789abcdef0123456789abcdef";
 let assignment: Assignment;
 let items: KeyItem[];
 
@@ -36,6 +38,14 @@ async function pdfFile(label: string, pages = 1): Promise<UploadedFile> {
 
 function byReceipt(receiptUrl: string): Submission {
   return getSubmissionByReceipt(receiptUrl.slice(receiptUrl.lastIndexOf("/") + 1))!;
+}
+
+/** A paper read as "Maria Lopez", submitted `minute` minutes after T0 (the newest one is the board's current row). */
+function mariaLopezPaper(status: "failed" | "graded", minute: number): string {
+  const { id } = seedSubmission(assignment.id);
+  updateSubmission(id, { status, studentName: "Maria Lopez", nameKey: "lopez maria", nameSortKey: "lopez maria" });
+  getDb().prepare("UPDATE submissions SET created_at = ? WHERE id = ?").run(T0 + minute * 60_000, id);
+  return id;
 }
 
 function storedFiles(a: Assignment): string[] {
@@ -84,20 +94,34 @@ describe("ingestStudentUpload", () => {
     await expect(ingestStudentUpload("ZZZZZZ", [await pdfFile("maria")])).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("returns the earlier receipt when a student sends the exact same upload again", async () => {
+  it("returns the earlier receipt when the same browser sends the same upload again", async () => {
     const parts = [await pdfFile("maria")];
-    const first = await ingestStudentUpload(assignment.shareCode, parts);
-    const replay = await ingestStudentUpload(assignment.shareCode, parts);
+    const first = await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
+    const replay = await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
 
     expect(replay).toEqual({ receiptUrl: first.receiptUrl, duplicate: true });
     expect(countSubmissions(assignment.id)).toBe(1);
+    expect(byReceipt(first.receiptUrl).clientUploadId).toBe(UPLOAD_ID);
+  });
+
+  it("never hands another upload of the same bytes the earlier student's receipt", async () => {
+    const parts = [await pdfFile("maria")];
+    await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
+    for (const otherId of ["another-upload-id-42", null]) {
+      await expect(ingestStudentUpload(assignment.shareCode, parts, otherId)).rejects.toMatchObject({ code: "duplicate" });
+    }
+    // An upload sent without an id cannot be replayed either.
+    const anonymous = [await pdfFile("ana")];
+    await ingestStudentUpload(assignment.shareCode, anonymous);
+    await expect(ingestStudentUpload(assignment.shareCode, anonymous)).rejects.toMatchObject({ code: "duplicate" });
+    expect(countSubmissions(assignment.id)).toBe(2);
   });
 
   it("returns one receipt for a double tap (two identical uploads at once)", async () => {
     const parts = [await pdfFile("maria")];
     const [a, b] = await Promise.all([
-      ingestStudentUpload(assignment.shareCode, parts),
-      ingestStudentUpload(assignment.shareCode, parts),
+      ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID),
+      ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID),
     ]);
 
     expect(a.receiptUrl).toBe(b.receiptUrl);
@@ -162,9 +186,10 @@ describe("updateIdentity", () => {
 
     updateIdentity(s, { studentName: "  maria   lopez ", sectionId: null });
 
+    // Without configured sections there was no section to confirm, so it is not pinned as the teacher's.
     expect(getSubmission(s.id)).toMatchObject({
       status: "graded", flags: [], studentName: "Maria Lopez", nameSource: "teacher", nameKey: "lopez maria",
-      nameSortKey: "lopez maria", sectionId: null, sectionSource: "teacher",
+      nameSortKey: "lopez maria", sectionId: null, sectionSource: null,
     });
   });
 
@@ -212,6 +237,36 @@ describe("overrides and feedback", () => {
     expect(getSubmission(s.id)).toMatchObject({ totalOverrideCenti: 250, scoreEarnedCenti: 250 });
     setTotalOverride(s, null);
     expect(getSubmission(s.id)!.scoreEarnedCenti).toBe(150);
+  });
+
+  it("accepts a total override above one item's 1000-point maximum", () => {
+    const big = seedAssignment(seedTeacher().id, { status: "open" });
+    const [first] = seedApprovedKey(big.id, [{ pointsCenti: 80_000 }, { pointsCenti: 80_000 }]);
+    const s = seedSubmission(big.id, { status: "graded" });
+
+    setTotalOverride(s, 120_000);
+    expect(getSubmission(s.id)).toMatchObject({ totalOverrideCenti: 120_000, scoreEarnedCenti: 120_000, scoreMaxCenti: 160_000 });
+    expect(() => setTotalOverride(s, 12.5)).toThrow(expect.objectContaining({ code: "validation" }));
+    // One item's override is still capped at 1000 points.
+    expect(() => saveItemOverride(s, first.id, { pointsCenti: 100_001, feedback: null }))
+      .toThrow(expect.objectContaining({ code: "validation" }));
+  });
+
+  it("stores the teacher's version of the \"what you did\" note, which a regrade keeps", async () => {
+    const s = await gradedPaper();
+    saveItemOverride(s, items[0].id, { pointsCenti: null, feedback: null, whatStudentDid: "  You cross-multiplied and got x = 4.  " });
+    expect(listItems(s.id)[0]).toMatchObject({ overrideWhatStudentDid: "You cross-multiplied and got x = 4.", overrideCenti: null });
+
+    // Leaving it out keeps it; null clears it.
+    saveItemOverride(s, items[0].id, { pointsCenti: 50, feedback: null });
+    expect(listItems(s.id)[0].overrideWhatStudentDid).toBe("You cross-multiplied and got x = 4.");
+    regradeSubmission(s);
+    await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
+    expect(listItems(s.id)[0]).toMatchObject({ overrideWhatStudentDid: "You cross-multiplied and got x = 4." });
+    saveItemOverride(s, items[0].id, { pointsCenti: null, feedback: null, whatStudentDid: null });
+    expect(listItems(s.id)[0].overrideWhatStudentDid).toBeNull();
+    expect(() => saveItemOverride(s, items[0].id, { pointsCenti: null, feedback: null, whatStudentDid: "x".repeat(1001) }))
+      .toThrow(expect.objectContaining({ code: "validation" }));
   });
 
   it("refuses an override for an item that is not in this assignment's key", async () => {
@@ -278,6 +333,21 @@ describe("review workflow", () => {
     expect(getSubmission(queued.id)!.gradingGeneration).toBe(1);
 
     expect(regradeStale(assignment)).toBe(0);
+  });
+
+  it("retryFailed and regradeStale leave earlier attempts the board folds away", () => {
+    const earlierFailed = mariaLopezPaper("failed", 1);
+    const current = mariaLopezPaper("graded", 2);
+    expect(retryFailed(assignment)).toBe(0);
+    expect(getSubmission(earlierFailed)!.status).toBe("failed");
+
+    // Both graded against revision 1; a key edit makes them stale, but only the current one is regraded.
+    updateSubmission(earlierFailed, { status: "graded" });
+    getDb().prepare("UPDATE submissions SET graded_key_revision = 1").run();
+    updateKey(assignment.id, { revision: 2, approvedRevision: 2 });
+    expect(regradeStale(assignment)).toBe(1);
+    expect(getSubmission(current)!.status).toBe("queued");
+    expect(getSubmission(earlierFailed)!.status).toBe("graded");
   });
 
   it("deleteSubmission removes the row, its queued job and its file", async () => {

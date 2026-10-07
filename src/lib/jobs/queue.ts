@@ -8,7 +8,7 @@ import type { WorkerStatus } from "@/lib/types";
 /** Lower runs first: a teacher is watching key extraction; students before regrades before scanned copies. */
 export const PRIORITY = { extractKey: 0, student: 10, regrade: 15, teacher: 20 } as const;
 
-/** What queue.ts needs from the worker that startWorker() stores in the process-wide slot (§4). */
+/** What queue.ts needs from the worker that startWorker() stores in the process-wide globalThis slot. */
 interface WorkerHandle {
   kick(): void;
   status(): WorkerStatus;

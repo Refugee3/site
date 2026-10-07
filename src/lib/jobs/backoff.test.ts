@@ -67,6 +67,12 @@ describe("decideFailure", () => {
     });
   });
 
+  it("row 2: pauses the worker on a billing problem (no credits) instead of failing the paper", () => {
+    expect(decideFailure(makeJob(), aiError("billing", { pauseWorker: true }), LIMITS)).toEqual({
+      action: "pause", resumeAt: NOW + 300_000, reason: "Billing problem — check the plan and credits in the Anthropic Console",
+    });
+  });
+
   it("row 2 wins over the attempt count: a bad key on the last attempt still pauses", () => {
     const job = makeJob({ attempts: 4 });
     expect(decideFailure(job, aiError("auth", { pauseWorker: true }), LIMITS).action).toBe("pause");

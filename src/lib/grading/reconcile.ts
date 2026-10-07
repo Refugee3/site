@@ -28,7 +28,7 @@ type OutputItem = GradingOutput["items"][number];
 type IdentityFields = Pick<Reconciled["fields"], "aiName" | "aiNameConfidence" | "aiSectionRaw" | "aiSectionMatch" | "sectionKey"
   | "studentName" | "nameSource" | "nameKey" | "nameSortKey" | "sectionId" | "sectionSource">;
 
-// Silent caps on AI text (§5.6 rule 6), in characters.
+// Silent caps on AI text, in characters; truncation is not recorded as a repair.
 const CAPS = {
   studentAnswer: 2000,
   itemNote: 1000,
@@ -38,6 +38,7 @@ const CAPS = {
   section: 60,
   excerpt: 300,
   documentNote: 500,
+  repairs: 1000,
   unmatchedWork: 2000,
 } as const;
 
@@ -46,7 +47,7 @@ const WRONG_ASSIGNMENT_MATCHES: ReadonlySet<GradingOutput["document_check"]["mat
 ]);
 
 /**
- * Turns one grading response into the rows and fields to store (§5.6): matches judgments to key
+ * Turns one grading response into the rows and fields to store: matches judgments to key
  * items, repairs inconsistent judgments, resolves identity without overwriting the teacher's
  * edits, and computes flags and status. Throws a retryable `invalid_output` when most items are missing.
  */
@@ -81,7 +82,12 @@ export function reconcileGrading(i: ReconcileInput): Reconciled {
       ...identity.fields,
       documentMatch: output.document_check.match,
       flags,
-      teacherSummary: joinLines(cap(output.teacher_summary, CAPS.teacherSummary), cap(output.document_check.note, CAPS.documentNote)),
+      // The repairs go into the teacher's notes, so the output_repaired flag points at something concrete.
+      teacherSummary: joinLines(
+        cap(output.teacher_summary, CAPS.teacherSummary),
+        cap(output.document_check.note, CAPS.documentNote),
+        repairs.length > 0 ? cap(`Automatic corrections: ${repairs.join("; ")}.`, CAPS.repairs) : "",
+      ),
       integrityNote: output.integrity.grader_directed_text_found ? cap(output.integrity.excerpt, CAPS.excerpt) : "",
       unmatchedWork: cap(output.unmatched_work, CAPS.unmatchedWork),
       overallFeedback: cap(output.overall_feedback, CAPS.overallFeedback),
@@ -120,7 +126,12 @@ function normalizeRef(ref: string): string {
   return ref.replace(/[[\]]/g, "").trim().toUpperCase();
 }
 
-/** Applies the consistency rules of §5.6 in order; every change except rule 3 is recorded as a repair. */
+/**
+ * Applies the consistency rules in order: no answer means not attempted, not attempted means no answer,
+ * a (nearly) correct partial attempt is complete, an attempt with nothing transcribed gets low confidence,
+ * then pages are normalized and text capped. Each fix is recorded as a repair except the benign ones:
+ * promoting a partial attempt to complete, rounding, deduping and sorting pages, and the text caps.
+ */
 function toJudgment(o: OutputItem, label: string, pageCount: number, repairs: string[]): ItemJudgment {
   let { attempt, correctness, confidence } = o;
   const studentAnswer = cap(o.student_answer, CAPS.studentAnswer);
@@ -230,7 +241,7 @@ function judgmentFlags(judgments: ItemJudgment[]): FlagCode[] {
 }
 
 /**
- * Identity flags (§6.5) for a submission's current identity fields. Fields the teacher set raise no
+ * Identity flags for a submission's current identity fields. Fields the teacher set raise no
  * flags, and the name-reading flags only apply when there is a name.
  */
 export function identityFlags(
@@ -288,7 +299,7 @@ export function buildRefusedResult(i: {
   };
 }
 
-/** Flags in FLAG_CODES order without duplicates (§6.5). */
+/** Flags in FLAG_CODES order without duplicates. */
 function sortFlags(flags: FlagCode[]): FlagCode[] {
   const present = new Set(flags);
   return FLAG_CODES.filter((code) => present.has(code));

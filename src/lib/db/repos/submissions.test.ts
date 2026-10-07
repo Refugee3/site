@@ -241,13 +241,24 @@ describe("saveGradingResult", () => {
     expect(getSubmission(s.id)).toMatchObject({ statusNote: null, errorCode: null, errorMessage: null, reviewedAt: null });
   });
 
-  it("drops a matched section that was deleted while grading", () => {
+  it("drops a matched section that was deleted while grading and flags the paper for review", () => {
     const s = gradingSubmission();
     replaceSections(assignment.id, [{ label: "Period 1", aliases: [], canonicalKey: "1" }]);
 
-    expect(saveGradingResult(gradingWrite(s))).toBe(true);
+    expect(saveGradingResult(gradingWrite(s, { fields: { flags: ["section_inferred", "fallback_model"] } }))).toBe(true);
 
-    expect(getSubmission(s.id)).toMatchObject({ sectionId: null, sectionSource: null, sectionKey: "3" });
+    expect(getSubmission(s.id)).toMatchObject({
+      sectionId: null, sectionSource: null, sectionKey: "3", flags: ["section_unmatched", "fallback_model"], status: "needs_review",
+    });
+  });
+
+  it("drops a deleted section without a flag when no sections are left", () => {
+    const s = gradingSubmission();
+    replaceSections(assignment.id, []);
+
+    saveGradingResult(gradingWrite(s, { fields: { sectionSource: "teacher" } }));
+
+    expect(getSubmission(s.id)).toMatchObject({ sectionId: null, sectionSource: null, flags: ["fallback_model"], status: "graded" });
   });
 });
 
@@ -319,12 +330,22 @@ describe("item overrides", () => {
 
     setItemOverride(s.id, items[1].id, { overrideCenti: 50 });
     setItemOverride(s.id, items[1].id, { overrideFeedback: "Good." });
-    expect(listItems(s.id)).toEqual([
-      { submissionId: s.id, itemId: items[1].id, judgment: null, overrideCenti: 50, overrideFeedback: "Good.", updatedAt: T0 },
-    ]);
+    expect(listItems(s.id)).toEqual([{
+      submissionId: s.id, itemId: items[1].id, judgment: null, overrideCenti: 50, overrideFeedback: "Good.",
+      overrideWhatStudentDid: null, updatedAt: T0,
+    }]);
 
-    setItemOverride(s.id, items[1].id, { overrideCenti: null });
-    expect(listItems(s.id)[0]).toMatchObject({ overrideCenti: null, overrideFeedback: "Good." });
+    setItemOverride(s.id, items[1].id, { overrideCenti: null, overrideWhatStudentDid: "You drew the cell." });
+    expect(listItems(s.id)[0]).toMatchObject({ overrideCenti: null, overrideFeedback: "Good.", overrideWhatStudentDid: "You drew the cell." });
+  });
+
+  it("keeps the teacher's \"what you did\" note when a grading result replaces the AI's", () => {
+    const s = gradingSubmission();
+    setItemOverride(s.id, items[0].id, { overrideWhatStudentDid: "You got x = 4." });
+
+    saveGradingResult(gradingWrite(s));
+
+    expect(listItems(s.id)[0]).toMatchObject({ overrideWhatStudentDid: "You got x = 4.", judgment: judgment() });
   });
 
   it("lists items in key order, per submission across the assignment", () => {

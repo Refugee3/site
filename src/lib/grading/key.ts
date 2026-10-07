@@ -1,5 +1,6 @@
 import type { KeyExtraction } from "@/lib/ai/schemas";
 import { formatPoints } from "@/lib/format";
+import { MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { charLength, truncateChars } from "@/lib/grading/text";
 import { sha256Hex } from "@/lib/ids";
 import { ANSWER_TYPES, type AnswerKey, type AnswerType, type KeyItem, type NewKeyItem, type SaveKeyInput } from "@/lib/types";
@@ -17,7 +18,7 @@ const LIMITS = {
   aiNotes: 2000,
   teacherNotes: 4000,
   minPointsCenti: 1,
-  maxPointsCenti: 100_000,
+  maxPointsCenti: MAX_ITEM_POINTS_CENTI,
 } as const;
 const DEFAULT_POINTS_CENTI = 100;
 const ALL_OR_NOTHING_TYPES: ReadonlySet<AnswerType> = new Set(["multiple_choice", "true_false", "matching"]);
@@ -36,7 +37,7 @@ export function isKeyApproved(k: AnswerKey, itemCount: number): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------
-// AI extraction → key items (§5.2 post-processing)
+// AI extraction → key items (post-processing)
 
 /** Turns the AI's extraction into storable key items; `fatal` is the teacher-facing reason the key failed. */
 export function normalizeExtractedKey(
@@ -63,7 +64,7 @@ function extractionFatal(x: KeyExtraction, maxItems: number): string | null {
 function normalizeItems(x: KeyExtraction, pageCount: number): NewKeyItem[] {
   const points = itemPoints(x);
   return x.items.map((item, index): NewKeyItem => {
-    const notes = [truncateChars(item.note.trim(), LIMITS.aiNote)];
+    const notes = [truncateChars(item.note.trim(), LIMITS.aiNote), points[index].note];
     if (points[index].clampedFrom !== null) {
       notes.push(`The key's ${points[index].clampedFrom} points were outside the allowed range and became ${formatPoints(points[index].centi)}.`);
     }
@@ -85,27 +86,84 @@ function normalizeItems(x: KeyExtraction, pageCount: number): NewKeyItem[] {
   });
 }
 
+type ExtractedItem = KeyExtraction["items"][number];
+type ItemPoints = { centi: number; clampedFrom: number | null; note: string };
+/** A part's share of its question's total; no centi when the total could not be split. */
+type GroupShare = { centi?: number; note: string };
+
 /**
- * Item points in centipoints. Missing values default to 1 pt, except that a stated total with no
- * per-item points is split equally (the remainder goes to the last item).
+ * Item points in centipoints. An item's own points win. A total given only for a whole question
+ * (group_points) is split equally across its parts without points, after the parts that have their
+ * own; a stated document total with no item or question values is split equally across all items.
+ * The remainder of a split goes to the last item. Anything else defaults to 1 pt.
  */
-function itemPoints(x: KeyExtraction): Array<{ centi: number; clampedFrom: number | null }> {
+function itemPoints(x: KeyExtraction): ItemPoints[] {
   const count = x.items.length;
   const totalCenti = x.stated_total_points === null ? null : Math.round(x.stated_total_points * 100);
-  const splitTotal = x.items.every((item) => item.points === null) && totalCenti !== null && totalCenti >= count && count > 0;
+  const noValues = x.items.every((item) => item.points === null && item.group_points === null);
+  const splitTotal = noValues && totalCenti !== null && totalCenti >= count && count > 0;
+  const groupShares = splitTotal ? new Map<number, GroupShare>() : groupPointShares(x.items);
 
   return x.items.map((item, index) => {
     let centi: number;
+    let fromValue: number | null; // the unclamped value in points, for the clamp note
+    let note = "";
     if (splitTotal) {
       const share = Math.floor(totalCenti / count);
       centi = index === count - 1 ? totalCenti - share * (count - 1) : share;
+      fromValue = centi / 100;
+    } else if (item.points !== null) {
+      centi = Math.round(item.points * 100);
+      fromValue = item.points;
     } else {
-      centi = item.points === null ? DEFAULT_POINTS_CENTI : Math.round(item.points * 100);
+      const share = groupShares.get(index);
+      centi = share?.centi ?? DEFAULT_POINTS_CENTI;
+      fromValue = centi / 100;
+      note = share?.note ?? "";
     }
     const clamped = clamp(centi, LIMITS.minPointsCenti, LIMITS.maxPointsCenti);
-    const clampedFrom = clamped === centi ? null : splitTotal ? centi / 100 : item.points;
-    return { centi: clamped, clampedFrom };
+    return { centi: clamped, clampedFrom: clamped === centi ? null : fromValue, note };
   });
+}
+
+/**
+ * Each question's group_points split across its parts that have no points (keyed by item index),
+ * less the points of its parts that state their own. Parts with the same group label and total form
+ * one question; an item without a group label is a question of its own. A total too small to give
+ * every open part at least 0.01 pt is not split, and its parts keep the default with a note.
+ */
+function groupPointShares(items: ExtractedItem[]): Map<number, GroupShare> {
+  const groups = new Map<string, number[]>();
+  items.forEach((item, index) => {
+    if (item.points !== null || item.group_points === null) return;
+    const label = item.group_label.trim();
+    const key = label === "" ? `#${index}` : JSON.stringify([label, Math.round(item.group_points * 100)]);
+    groups.set(key, [...(groups.get(key) ?? []), index]);
+  });
+
+  const shares = new Map<number, GroupShare>();
+  for (const open of groups.values()) {
+    const first = items[open[0]];
+    const label = first.group_label.trim();
+    const question = truncateChars(label || first.label.trim(), LIMITS.groupLabel) || String(open[0] + 1);
+    const totalCenti = Math.round((first.group_points ?? 0) * 100);
+    const ownCenti = label === "" ? 0 : items
+      .filter((item) => item.group_label.trim() === label && item.points !== null)
+      .reduce((sum, item) => sum + Math.round((item.points ?? 0) * 100), 0);
+    const remaining = totalCenti - ownCenti;
+
+    if (remaining < open.length) {
+      const note = `Question ${question}'s ${formatPoints(Math.max(totalCenti, 0))} points could not be split across its parts; check these points.`;
+      for (const index of open) shares.set(index, { note });
+      continue;
+    }
+    const share = Math.floor(remaining / open.length);
+    const note = open.length === 1 && ownCenti === 0 ? "" : `Split from question ${question}'s ${formatPoints(totalCenti)} points.`;
+    open.forEach((index, i) => {
+      shares.set(index, { centi: i === open.length - 1 ? remaining - share * (open.length - 1) : share, note });
+    });
+  }
+  return shares;
 }
 
 function cleanAcceptableAnswers(answers: string[]): string[] {
@@ -147,7 +205,7 @@ type SaveKeyRow = SaveKeyInput["items"][number];
 type SavedKeyItem = NewKeyItem & { id: string | null };
 type FieldErrors = Record<string, string[]>;
 
-/** Validates the key editor's rows and merges them with the stored items' provenance (§4.3). */
+/** Validates the key editor's rows and merges them with the stored items' provenance. */
 export function validateSaveKey(
   input: SaveKeyInput,
   current: KeyItem[],

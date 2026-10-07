@@ -1,9 +1,15 @@
 import type { Attempt, Correctness, GradingMode, ItemJudgment, ItemScore, KeyItem, ScoreResult, SubmissionItem } from "@/lib/types";
 
-// All scoring is integer centipoint math (§6). Item scores are rounded once each and then summed,
+// All scoring is integer centipoint math. Item scores are rounded once each and then summed,
 // so the items a teacher sees always add up to the total.
 
 type Quarters = 0 | 1 | 2 | 3 | 4;
+
+/**
+ * The most one key item (and one item override) can be worth: 1000 points. The key_items CHECK
+ * constraint repeats it in SQL. This module only imports types, so client components can import it too.
+ */
+export const MAX_ITEM_POINTS_CENTI = 100_000;
 
 const PARTIAL_CREDIT_QUARTERS: Record<Correctness, Quarters> = {
   correct: 4,
@@ -38,6 +44,11 @@ export function accuracyQuarters(j: Pick<ItemJudgment, "attempt" | "correctness"
 export function roundHalfUpDiv(num: number, den: number): number {
   if (num < 0 || den <= 0) throw new RangeError(`roundHalfUpDiv needs num >= 0 and den > 0 (got ${num}/${den})`);
   return Math.floor((2 * num + den) / (2 * den));
+}
+
+/** `part` as a share of `whole` in tenths of a percent, rounded half up; null when `whole` is 0. */
+export function percentTenths(part: number, whole: number): number | null {
+  return whole > 0 ? roundHalfUpDiv(part * 1000, whole) : null;
 }
 
 /** The accuracy share of the grade in percent: 0 for completion, 100 for accuracy, the weight for blended. */
@@ -102,7 +113,7 @@ export function computeScore(
     items: itemScores,
     earnedCenti,
     maxCenti,
-    percentTenths: maxCenti > 0 ? roundHalfUpDiv(earnedCenti * 1000, maxCenti) : null,
+    percentTenths: percentTenths(earnedCenti, maxCenti),
     completionCenti,
     accuracyCenti,
     totalOverridden,

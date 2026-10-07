@@ -80,7 +80,7 @@ export async function readDataFile(rel: string): Promise<Uint8Array> {
 }
 
 /**
- * Best effort: removals happen after the database commit, so a failure is logged, never thrown (§3).
+ * Best effort: removals happen after the database commit, so a failure is logged, never thrown.
  * A malformed path still throws, because that is a bug rather than an I/O problem.
  */
 export async function removeDataFile(rel: string): Promise<void> {

@@ -42,7 +42,7 @@ export function makeJudgment(o: Partial<ItemJudgment> = {}): ItemJudgment {
 }
 
 export function makeResult(itemId: string, judgment: ItemJudgment | null, overrideCenti: number | null = null): SubmissionItem {
-  return { submissionId: "submission-1", itemId, judgment, overrideCenti, overrideFeedback: null, updatedAt: 0 };
+  return { submissionId: "submission-1", itemId, judgment, overrideCenti, overrideFeedback: null, overrideWhatStudentDid: null, updatedAt: 0 };
 }
 
 export function makeSection(o: Partial<Section> & Pick<Section, "label" | "canonicalKey">): Section {
@@ -58,6 +58,7 @@ export function makeSubmission(o: Partial<Submission> = {}): Submission {
     pdfPath: "files/a/submissions/s.pdf",
     originalFilename: "submission.pdf",
     contentSha256: "sha",
+    clientUploadId: null,
     byteSize: 100,
     pageCount: 1,
     status: "graded",

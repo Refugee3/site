@@ -1,4 +1,4 @@
-// The §11 smoke flow, end to end through the services and the real worker with the fake grader:
+// The smoke flow, end to end through the services and the real worker with the fake grader:
 // signup → assignment with sections → key upload → extraction → save & open → student uploads →
 // receipts → board → override, identity, review → release → released receipt → teacher upload → CSV.
 import { beforeEach, describe, expect, it } from "vitest";
@@ -80,7 +80,8 @@ describe("end-to-end flow with the fake grader", () => {
 
     // Student uploads: one PDF, then a PDF plus a photo.
     tick();
-    const first = await ingestStudentUpload(a.shareCode, [{ filename: "s1.pdf", bytes: await makePdf(2, { label: "s1" }) }]);
+    const uploadId = "e2e-upload-0000000001";
+    const first = await ingestStudentUpload(a.shareCode, [{ filename: "s1.pdf", bytes: await makePdf(2, { label: "s1" }) }], uploadId);
     tick();
     const second = await ingestStudentUpload(a.shareCode, [
       { filename: "s2.pdf", bytes: await makePdf(1, { label: "s2" }) },
@@ -90,9 +91,11 @@ describe("end-to-end flow with the fake grader", () => {
     expect(first.receiptUrl).toMatch(/^\/r\/[A-Za-z0-9_-]{43}$/);
     expect(getReceiptView(tokenOf(first.receiptUrl))).toMatchObject({ phase: "processing", pageCount: 2 });
     expect(getReceiptView(tokenOf(second.receiptUrl))).toMatchObject({ phase: "processing", pageCount: 2 });
-    // A byte-identical replay returns the same receipt.
-    expect(await ingestStudentUpload(a.shareCode, [{ filename: "again.pdf", bytes: await makePdf(2, { label: "s1" }) }]))
+    // The browser re-sending the same upload gets the same receipt; anyone else sending those bytes is refused.
+    expect(await ingestStudentUpload(a.shareCode, [{ filename: "again.pdf", bytes: await makePdf(2, { label: "s1" }) }], uploadId))
       .toEqual({ receiptUrl: first.receiptUrl, duplicate: true });
+    await expect(ingestStudentUpload(a.shareCode, [{ filename: "copy.pdf", bytes: await makePdf(2, { label: "s1" }) }]))
+      .rejects.toMatchObject({ code: "duplicate" });
 
     expect(await drain()).toBe(2);
     const s1 = getSubmissionByReceipt(tokenOf(first.receiptUrl))!;
@@ -124,9 +127,11 @@ describe("end-to-end flow with the fake grader", () => {
     const review = getReviewView(reviewed, a, ORIGIN);
     expect(review.items[0].score).toMatchObject({ earnedCenti: 50, overridden: true });
     expect(review.receiptUrl).toBe(`${ORIGIN}/r/${reviewed.receiptToken}`);
+    expect(review.released).toBe(false);
 
     // Release: the reviewed paper shows its results; a needs_review paper never does.
     a = setFeedbackReleased(a, true);
+    expect(getReviewView(reviewed, a, ORIGIN).released).toBe(true);
     const released = getReceiptView(reviewed.receiptToken)!;
     expect(released.phase).toBe("released");
     expect(released.detectedName).toBe("Maria Lopez");

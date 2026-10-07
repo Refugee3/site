@@ -73,6 +73,16 @@ describe("organizeBoard resubmissions", () => {
     expect(boardOrderIds(groups)).toEqual(["third", "unnamed-a", "unnamed-b", "other-section"]);
   });
 
+  it("never merges a one-word name, since two students may share it", () => {
+    const groups = organizeBoard([
+      paper("maria-a", "Maria", { sectionId: period1.id, createdAt: 1 }),
+      paper("maria-b", "maria", { sectionId: period1.id, createdAt: 2 }),
+      paper("full-1", "Maria Lopez", { sectionId: period1.id, createdAt: 3 }),
+      paper("full-2", "Lopez, Maria", { sectionId: period1.id, createdAt: 4 }),
+    ], SECTIONS);
+    expect(shape(groups)).toEqual([{ key: period1.id, label: "Period 1", rows: ["full-2<full-1", "maria-a", "maria-b"] }]);
+  });
+
   it("does not merge unsectioned papers whose written sections differ", () => {
     const groups = organizeBoard([
       paper("a", "Maria Lopez", { sectionKey: "9", createdAt: 1 }),

@@ -5,7 +5,7 @@ import type { Section } from "@/lib/types";
 
 describe("canonicalSectionKey", () => {
   it.each<[string | null | undefined, string | null]>([
-    // the §6.4 table
+    // spellings students write for a section, and the key each must reduce to
     ["Period 3", "3"],
     ["P3", "3"],
     ["3rd period", "3"],

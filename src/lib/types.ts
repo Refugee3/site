@@ -47,9 +47,9 @@ export type NewKeyItem = Omit<KeyItem, "id" | "assignmentId" | "position">;
 export interface ItemJudgment { attempt: Attempt; correctness: Correctness; legibility: Legibility; confidence: Confidence;
   reviewReason: ItemReviewReason; studentAnswer: string; pages: number[]; whatStudentDid: string; feedback: string; teacherNote: string }
 export interface SubmissionItem { submissionId: string; itemId: string; judgment: ItemJudgment | null; overrideCenti: number | null;
-  overrideFeedback: string | null; updatedAt: number }
+  overrideFeedback: string | null; overrideWhatStudentDid: string | null; updatedAt: number }
 export interface Submission { id: string; assignmentId: string; source: "student" | "teacher"; receiptToken: string; pdfPath: string;
-  originalFilename: string; contentSha256: string; byteSize: number; pageCount: number; status: SubmissionStatus; statusNote: string | null;
+  originalFilename: string; contentSha256: string; clientUploadId: string | null; byteSize: number; pageCount: number; status: SubmissionStatus; statusNote: string | null;
   gradingGeneration: number; gradedKeyRevision: number | null; aiName: string | null; aiNameConfidence: Confidence | null;
   aiSectionRaw: string | null; aiSectionMatch: string | null; studentName: string | null; nameSource: "ai" | "teacher" | null;
   nameKey: string | null; nameSortKey: string; sectionId: string | null; sectionKey: string | null; sectionSource: "ai" | "teacher" | null;
@@ -75,29 +75,28 @@ export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boo
 // ---- view models (produced by src/lib/services/views.ts) ----
 export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
-export interface DashboardView { teacher: Teacher; worker: WorkerStatus | null; assignments: Array<{ id: string; title: string;
+export interface DashboardView { assignments: Array<{ id: string; title: string;
   status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; released: boolean; createdAt: number }> }
 export interface AssignmentHeader { assignment: Assignment; shareUrl: string; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
-  totalPointsCenti: number; counts: StatusCounts; staleCount: number; canOpen: boolean; worker: WorkerStatus | null }
+  totalPointsCenti: number; counts: StatusCounts; canOpen: boolean }
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
 export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
   source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number }
-export interface BoardView { filter: BoardFilter; groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
+export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
   staleCount: number; active: boolean; open: boolean }
 export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean }
 export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore }
 export interface ReviewView { submission: Submission; sections: Section[]; sectionLabel: string | null; items: ReviewItemView[];
-  score: ScoreResult; flags: Array<{ code: FlagCode; severity: "review" | "info"; label: string; description: string }>;
-  stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
-  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }> }
-export interface SettingsView { sectionsText: string; usage: { papers: number; inputTokens: number; outputTokens: number;
+  score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
+  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean }
+export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null } }
 export interface StudentUploadView { code: string; title: string; instructions: string; teacherName: string; status: AssignmentStatus;
   accepting: boolean; maxUploadMb: number; maxPages: number; maxFiles: number }
 export type ReceiptPhase = "processing" | "checked" | "released" | "problem";
 export type ReceiptNotice = "no_name" | "wrong_assignment" | "blank" | "pages_missing";
-export interface ReceiptView { assignmentTitle: string; shareCode: string; submittedAt: number; pageCount: number; phase: ReceiptPhase;
+export interface ReceiptView { assignmentTitle: string; submittedAt: number; pageCount: number; phase: ReceiptPhase;
   pdfUrl: string; detectedName: string | null; detectedSection: string | null; notices: ReceiptNotice[];
   result: null | { earnedCenti: number; maxCenti: number; percentTenths: number | null; overallFeedback: string;
     groups: Array<{ groupLabel: string; items: Array<{ label: string; earnedCenti: number; maxCenti: number; whatStudentDid: string; feedback: string }> }> } }

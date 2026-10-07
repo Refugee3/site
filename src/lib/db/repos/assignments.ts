@@ -3,7 +3,7 @@ import { tx } from "@/lib/db/connection";
 import { all, encodePatch, one, run, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import { newId } from "@/lib/ids";
-import type { Assignment, AssignmentStatus, GradingMode, Section } from "@/lib/types";
+import type { AiUsage, Assignment, AssignmentStatus, GradingMode, Section } from "@/lib/types";
 
 interface AssignmentRow {
   id: string;
@@ -135,6 +135,8 @@ export function listSections(assignmentId: string): Section[] {
 /**
  * Makes the assignment's sections exactly `sections`, in that order. A section whose canonicalKey
  * survives keeps its id (so submissions stay in it); removed sections leave their submissions unsectioned.
+ * A teacher's choice of a removed section no longer stands either (section_source is reset), so the
+ * caller's re-match (rematchSections) places those papers again or flags them as unmatched.
  */
 export function replaceSections(
   assignmentId: string,
@@ -144,7 +146,9 @@ export function replaceSections(
     const existing = new Map(listSections(assignmentId).map((s) => [s.canonicalKey, s]));
     const kept = new Set(sections.map((s) => s.canonicalKey));
     for (const section of existing.values()) {
-      if (!kept.has(section.canonicalKey)) run("DELETE FROM sections WHERE id = ?", section.id);
+      if (kept.has(section.canonicalKey)) continue;
+      run("UPDATE submissions SET section_source = NULL WHERE section_id = ? AND section_source = 'teacher'", section.id);
+      run("DELETE FROM sections WHERE id = ?", section.id);
     }
     sections.forEach((section, sortOrder) => {
       const aliasesJson = JSON.stringify(section.aliases);
@@ -173,4 +177,31 @@ export function latestSectionsForTeacher(teacherId: string): Section[] {
     teacherId,
   );
   return latest ? listSections(latest.id) : [];
+}
+
+/** AI usage of one served model, added up over every call. */
+export interface ModelUsage extends AiUsage {
+  calls: number;
+}
+
+/** Every AI call made for the assignment (grading, regrades, retries, key reading), by the model that answered. */
+export function getAssignmentUsage(assignmentId: string): Record<string, ModelUsage> {
+  const row = one<{ ai_usage_json: string }>("SELECT ai_usage_json FROM assignments WHERE id = ?", assignmentId);
+  return row ? (JSON.parse(row.ai_usage_json) as Record<string, ModelUsage>) : {};
+}
+
+/** Adds one billed AI call to the assignment's running totals (a no-op when the assignment is gone). */
+export function addAssignmentUsage(assignmentId: string, model: string, usage: AiUsage): void {
+  tx(() => {
+    const ledger = getAssignmentUsage(assignmentId);
+    const totals = ledger[model] ?? { calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    ledger[model] = {
+      calls: totals.calls + 1,
+      inputTokens: totals.inputTokens + usage.inputTokens,
+      outputTokens: totals.outputTokens + usage.outputTokens,
+      cacheReadTokens: totals.cacheReadTokens + usage.cacheReadTokens,
+      cacheWriteTokens: totals.cacheWriteTokens + usage.cacheWriteTokens,
+    };
+    run("UPDATE assignments SET ai_usage_json = ? WHERE id = ?", JSON.stringify(ledger), assignmentId);
+  });
 }

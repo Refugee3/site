@@ -1,5 +1,5 @@
 import { UNNAMED_SORT_KEY } from "@/lib/grading/names";
-import type { Section, Submission } from "@/lib/types";
+import { SUBMISSION_STATUSES, type BoardFilter, type Section, type StatusCounts, type Submission, type SubmissionStatus } from "@/lib/types";
 
 export interface BoardGroup {
   key: string;
@@ -12,15 +12,52 @@ type BoardRow = BoardGroup["rows"][number];
 const NO_SECTION = { key: "none", label: "No section" } as const;
 
 /**
- * Groups papers for the board (§6.6): configured sections in order (or, without sections, the
+ * Groups papers for the board: configured sections in order (or, without sections, the
  * spellings students wrote), then "No section"; within a group by surname, then submission time.
- * A student's earlier attempts are folded under their newest paper. Empty groups are dropped.
+ * A student's earlier attempts (same full name, same section) are folded under their newest paper.
+ * Empty groups are dropped.
  */
 export function organizeBoard(submissions: Submission[], sections: Section[]): BoardGroup[] {
   const rows = collapseResubmissions(submissions);
   const groups = sections.length > 0 ? groupBySection(rows, sections) : groupBySectionKey(rows);
   for (const group of groups) group.rows.sort(compareRows);
   return groups.filter((group) => group.rows.length > 0);
+}
+
+/**
+ * The statuses each board filter shows (`all`: every current paper). The one definition behind both
+ * the filter chips' counts and the rows they show, so a chip never counts papers its filter hides.
+ */
+export const BOARD_FILTER_STATUSES: Record<BoardFilter, readonly SubmissionStatus[] | null> = {
+  all: null,
+  needs_review: ["needs_review"],
+  in_progress: ["queued", "grading"],
+  failed: ["failed"],
+  graded: ["graded"],
+};
+
+export function inBoardFilter(filter: BoardFilter, status: SubmissionStatus): boolean {
+  const statuses = BOARD_FILTER_STATUSES[filter];
+  return statuses === null || statuses.includes(status);
+}
+
+/** How many current papers a filter shows, from counts made by countCurrent. */
+export function boardFilterCount(filter: BoardFilter, counts: StatusCounts): number {
+  const statuses = BOARD_FILTER_STATUSES[filter];
+  return statuses === null ? counts.total : statuses.reduce((sum, status) => sum + counts[status], 0);
+}
+
+/** Status counts of the current papers only: an earlier attempt folded under a newer one is not counted. */
+export function countCurrent(groups: BoardGroup[]): StatusCounts {
+  const counts = Object.fromEntries(SUBMISSION_STATUSES.map((status) => [status, 0])) as StatusCounts;
+  counts.total = 0;
+  for (const group of groups) {
+    for (const { current } of group.rows) {
+      counts[current.status]++;
+      counts.total++;
+    }
+  }
+  return counts;
 }
 
 /** Ids of the current papers in board order. */
@@ -40,12 +77,17 @@ export function nextNeedsReview(groups: BoardGroup[], afterId: string): string |
   return null;
 }
 
-/** Papers by the same named student in the same section collapse into one row; unnamed papers never merge. */
+/**
+ * Papers by the same student in the same section collapse into one row. Without student accounts the
+ * written name is the only signal, so only a name of at least two words identifies a student: two
+ * children in one class who both write just "Maria" stay two rows (and two CSV rows). Unnamed papers
+ * never merge either.
+ */
 function collapseResubmissions(submissions: Submission[]): BoardRow[] {
   const rows: BoardRow[] = [];
   const attemptsByIdentity = new Map<string, Submission[]>();
   for (const submission of submissions) {
-    if (submission.nameKey === null) {
+    if (!identifiesStudent(submission.nameKey)) {
       rows.push({ current: submission, earlier: [] });
       continue;
     }
@@ -59,6 +101,11 @@ function collapseResubmissions(submissions: Submission[]): BoardRow[] {
     rows.push({ current, earlier });
   }
   return rows;
+}
+
+/** A name key of two or more words (nameKey joins its words with single spaces). */
+function identifiesStudent(nameKey: string | null): nameKey is string {
+  return nameKey !== null && nameKey.includes(" ");
 }
 
 function identityGroupKey(s: Submission): string {

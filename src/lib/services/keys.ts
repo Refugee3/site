@@ -35,6 +35,7 @@ export async function ingestKeyPdf(a: Assignment, f: UploadedFile): Promise<Answ
         sourceFilename: sanitizeFilename(f.filename),
         sourceSha256: sha256Hex(f.bytes),
         sourcePageCount: pageCount,
+        documentKind: null, // the previous PDF's verdict; this one has not been read yet
         errorMessage: null,
       });
       queueExtraction(a.id);

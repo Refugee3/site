@@ -25,8 +25,9 @@ export type FailureDecision =
   | { action: "pause"; resumeAt: number; reason: string };
 
 /**
- * What to do after a failed AI call (§7). `job.attempts` already counts the current run.
- * Refusals never get here: the handlers turn them into a result of their own.
+ * What to do after a failed AI call. `job.attempts` already counts the current run.
+ * Final refusals never get here: the handlers turn them into a result of their own. A retryable
+ * refusal (the fallback model was unavailable) arrives only while attempts remain and is requeued.
  */
 export function decideFailure(
   job: Job,
@@ -54,6 +55,8 @@ function pauseReason(code: AiErrorCode): string {
       return "API key rejected — check ANTHROPIC_API_KEY";
     case "model_not_found":
       return "Model not found — check ANTHROPIC_MODEL";
+    case "billing":
+      return "Billing problem — check the plan and credits in the Anthropic Console";
     default:
       return `The AI service is unavailable (${code})`;
   }

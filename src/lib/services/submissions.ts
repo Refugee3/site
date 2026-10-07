@@ -10,10 +10,11 @@ import {
 } from "@/lib/db/repos/submissions";
 import { AppError, isAppError } from "@/lib/errors";
 import { IDENTITY_FLAGS, statusFromFlags } from "@/lib/flags";
-import { nextNeedsReview, organizeBoard } from "@/lib/grading/board";
+import { formatPoints } from "@/lib/format";
+import { boardOrderIds, nextNeedsReview, organizeBoard } from "@/lib/grading/board";
 import { cleanName, nameKey, nameSortKey } from "@/lib/grading/names";
 import { identityFlags } from "@/lib/grading/reconcile";
-import { computeScore } from "@/lib/grading/scoring";
+import { computeScore, MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { resolveSection } from "@/lib/grading/sections";
 import { charLength } from "@/lib/grading/text";
 import { newId, newToken, sha256Hex } from "@/lib/ids";
@@ -29,34 +30,45 @@ import {
 
 const MAX_STUDENT_NAME = 120;
 const MAX_OVERALL_FEEDBACK = 2000;
-const MAX_POINTS_CENTI = 100_000;
+const MAX_ITEM_NOTE = 1000;
 const REGRADABLE: ReadonlySet<SubmissionStatus> = new Set(["graded", "needs_review", "failed"]);
 
 // ---------------------------------------------------------------------------------------------
-// Ingest (§8 "Upload validation" steps 6–7)
+// Ingest: the steps after the route's cheap checks (build the PDF, content-hash duplicate checks, atomic
+// file write, then insert and enqueue in one transaction)
 
 interface StoredPdf {
   bytes: Uint8Array;
   pageCount: number;
   contentSha256: string;
+  clientUploadId?: string | null;
 }
 
-/** A student upload through the share link. An exact replay of an earlier student upload returns that receipt. */
-export async function ingestStudentUpload(code: string, files: UploadedFile[]): Promise<{ receiptUrl: string; duplicate: boolean }> {
+/**
+ * A student upload through the share link. `clientUploadId` is the id the browser sends with one
+ * upload (and again when it retries it); only a re-send with the same id gets the earlier receipt back.
+ */
+export async function ingestStudentUpload(
+  code: string,
+  files: UploadedFile[],
+  clientUploadId: string | null = null,
+): Promise<{ receiptUrl: string; duplicate: boolean }> {
   const assignment = getAssignmentByShareCode(code);
   if (!assignment) throw new AppError("not_found", "This assignment link is not valid.");
   assertOpenForStudents(assignment);
 
   const pdf = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
-  const earlier = checkContentSha(assignment.id, pdf.contentSha256, "student");
+  const earlier = checkContentSha(assignment.id, pdf.contentSha256, { source: "student", clientUploadId });
   if (earlier) return studentReplay(earlier);
 
   let submission: Submission;
   try {
-    submission = await storeSubmission(assignment.id, "student", pdf, uploadName(files), assertOpenForStudents);
+    submission = await storeSubmission(assignment.id, "student", { ...pdf, clientUploadId }, uploadName(files), assertOpenForStudents);
   } catch (e) {
-    // A double tap sends the same bytes twice at once: the slower request gets the faster one's receipt.
-    const winner = isAppError(e) && e.code === "duplicate" ? checkContentSha(assignment.id, pdf.contentSha256, "student") : null;
+    // A double tap sends the same upload twice at once: the slower request gets the faster one's receipt.
+    const winner = isAppError(e) && e.code === "duplicate"
+      ? checkContentSha(assignment.id, pdf.contentSha256, { source: "student", clientUploadId })
+      : null;
     if (winner) return studentReplay(winner);
     throw e;
   }
@@ -68,7 +80,7 @@ export async function ingestTeacherUpload(a: Assignment, file: UploadedFile, ori
   assertKeyApproved(a);
   const { pageCount } = await validatePdf(file.bytes, { maxPages: getConfig().maxPages });
   const contentSha256 = sha256Hex(file.bytes);
-  checkContentSha(a.id, contentSha256, "teacher");
+  checkContentSha(a.id, contentSha256, { source: "teacher", clientUploadId: null });
   const submission = await storeSubmission(
     a.id, "teacher", { bytes: file.bytes, pageCount, contentSha256 }, sanitizeFilename(file.filename), assertKeyApproved,
   );
@@ -86,16 +98,24 @@ function assertKeyApproved(a: Assignment): void {
 }
 
 /**
- * Rejects the answer key itself and exact duplicates. Returns the earlier submission when a student
- * re-sends exactly what an earlier student upload contained (a retry after a dropped connection).
+ * Rejects the answer key itself and exact duplicates. Returns the earlier submission when the same
+ * browser re-sends the same upload (a retry after a dropped connection, or a double tap). Anyone else
+ * sending the same bytes, a classmate with a shared PDF for instance, gets `duplicate` and never
+ * another student's receipt.
  */
-function checkContentSha(assignmentId: string, sha: string, source: Submission["source"]): Submission | null {
+function checkContentSha(
+  assignmentId: string,
+  sha: string,
+  upload: { source: Submission["source"]; clientUploadId: string | null },
+): Submission | null {
   if (requireKey(assignmentId).sourceSha256 === sha) {
     throw new AppError("is_answer_key", "This file is the answer key, not a student's paper.");
   }
   const existing = findBySha(assignmentId, sha);
   if (!existing) return null;
-  if (source === "student" && existing.source === "student") return existing;
+  const sameUpload = upload.source === "student" && existing.source === "student" && upload.clientUploadId !== null
+    && existing.clientUploadId === upload.clientUploadId;
+  if (sameUpload) return existing;
   throw new AppError("duplicate", "This exact file was already submitted for this assignment.");
 }
 
@@ -138,6 +158,7 @@ async function storeSubmission(
         pdfPath,
         originalFilename,
         contentSha256: pdf.contentSha256,
+        clientUploadId: pdf.clientUploadId ?? null,
         byteSize: pdf.bytes.byteLength,
         pageCount: pdf.pageCount,
       });
@@ -158,29 +179,41 @@ export function receiptUrl(token: string, origin: string): string {
 // ---------------------------------------------------------------------------------------------
 // Teacher edits
 
-export function saveItemOverride(s: Submission, itemId: string, p: { pointsCenti: number | null; feedback: string | null }): void {
-  assertPoints(p.pointsCenti);
+/**
+ * The teacher's points, feedback and (optionally) "what you did" note for one item; null clears an
+ * override, and an omitted `whatStudentDid` leaves that note as it is. "" hides the note from the student.
+ */
+export function saveItemOverride(
+  s: Submission,
+  itemId: string,
+  p: { pointsCenti: number | null; feedback: string | null; whatStudentDid?: string | null },
+): void {
+  if (p.pointsCenti !== null && !(Number.isInteger(p.pointsCenti) && p.pointsCenti >= 0 && p.pointsCenti <= MAX_ITEM_POINTS_CENTI)) {
+    throw new AppError("validation", `Points must be a number between 0 and ${formatPoints(MAX_ITEM_POINTS_CENTI)} with at most two decimals.`);
+  }
+  const whatStudentDid = p.whatStudentDid === undefined || p.whatStudentDid === null ? p.whatStudentDid : p.whatStudentDid.trim();
+  if (whatStudentDid && charLength(whatStudentDid) > MAX_ITEM_NOTE) {
+    throw new AppError("validation", `Use at most ${MAX_ITEM_NOTE} characters for what the student did.`);
+  }
   tx(() => {
     if (!listKeyItems(s.assignmentId).some((item) => item.id === itemId)) {
       throw new AppError("not_found", "This question is no longer in the answer key.");
     }
-    setItemOverride(s.id, itemId, { overrideCenti: p.pointsCenti, overrideFeedback: p.feedback });
+    setItemOverride(s.id, itemId, { overrideCenti: p.pointsCenti, overrideFeedback: p.feedback, overrideWhatStudentDid: whatStudentDid });
     rescoreSubmission(s.id);
   });
 }
 
+/** The teacher's total for the paper; scoring clamps it to the key's total, so only the shape is checked here. */
 export function setTotalOverride(s: Submission, centi: number | null): void {
-  assertPoints(centi);
+  const maxTotal = MAX_ITEM_POINTS_CENTI * getConfig().maxKeyItems;
+  if (centi !== null && !(Number.isInteger(centi) && centi >= 0 && centi <= maxTotal)) {
+    throw new AppError("validation", "The total must be a number of points, 0 or more, with at most two decimals.");
+  }
   tx(() => {
     updateSubmission(s.id, { totalOverrideCenti: centi });
     rescoreSubmission(s.id);
   });
-}
-
-function assertPoints(centi: number | null): void {
-  if (centi !== null && !(Number.isInteger(centi) && centi >= 0 && centi <= MAX_POINTS_CENTI)) {
-    throw new AppError("validation", "Points must be a number between 0 and 1000 with at most two decimals.");
-  }
 }
 
 /** The teacher's version of the overall feedback; regrades keep it from now on. */
@@ -193,7 +226,11 @@ export function setOverallFeedback(s: Submission, text: string): void {
   updateSubmission(s.id, { overallFeedback, overallFeedbackEdited: true });
 }
 
-/** The teacher sets name and section; both then count as teacher-set, so regrades keep them and they raise no flags. */
+/**
+ * The teacher sets name and section; both then count as teacher-set, so regrades keep them and they
+ * raise no flags. Without configured sections there is no section to choose, so the section is left
+ * as the AI read it (and a section list added later can still place the paper).
+ */
 export function updateIdentity(s: Submission, i: { studentName: string; sectionId: string | null }): void {
   if (charLength(i.studentName.trim()) > MAX_STUDENT_NAME) {
     const message = `Use at most ${MAX_STUDENT_NAME} characters.`;
@@ -207,15 +244,15 @@ export function updateIdentity(s: Submission, i: { studentName: string; sectionI
       throw new AppError("validation", message, { fieldErrors: { sectionId: [message] } });
     }
     const studentName = cleanName(i.studentName);
+    const hasSections = sections.length > 0;
     const identity = {
       studentName,
       nameSource: "teacher" as const,
       nameKey: nameKey(studentName),
       nameSortKey: nameSortKey(studentName),
-      sectionId: i.sectionId,
-      sectionSource: "teacher" as const,
+      ...(hasSections ? { sectionId: i.sectionId, sectionSource: "teacher" as const } : {}),
     };
-    const flags = replaceIdentityFlags(current.flags, identityFlags({ ...current, ...identity }, "teacher", sections.length > 0));
+    const flags = replaceIdentityFlags(current.flags, identityFlags({ ...current, ...identity }, hasSections ? "teacher" : "unconfigured", hasSections));
     updateSubmission(current.id, { ...identity, flags, ...statusAfterFlagChange(current, flags) });
   });
 }
@@ -258,14 +295,23 @@ export function regradeSubmission(s: Submission): void {
   });
 }
 
-/** Regrades every paper graded against an older key revision; returns how many. */
+/**
+ * Regrades every current paper graded against an older key revision; returns how many. Earlier
+ * attempts the board folds under a newer one are left alone (regrading them is a paid call nobody sees).
+ */
 export function regradeStale(a: Assignment): number {
-  return tx(() => requeueAll(a.id, listStaleIds(a.id, requireKey(a.id).revision)));
+  return tx(() => requeueAll(a.id, currentOnly(a.id, listStaleIds(a.id, requireKey(a.id).revision))));
 }
 
-/** Retries every failed paper; returns how many. */
+/** Retries every current paper whose grading failed; returns how many. */
 export function retryFailed(a: Assignment): number {
-  return tx(() => requeueAll(a.id, listIdsByStatus(a.id, ["failed"])));
+  return tx(() => requeueAll(a.id, currentOnly(a.id, listIdsByStatus(a.id, ["failed"]))));
+}
+
+/** The ids that are current papers on the board (not folded earlier attempts), in the given order. */
+export function currentOnly(assignmentId: string, ids: string[]): string[] {
+  const current = new Set(boardOrderIds(organizeBoard(listSubmissions(assignmentId), listSections(assignmentId))));
+  return ids.filter((id) => current.has(id));
 }
 
 function requeueAll(assignmentId: string, submissionIds: string[]): number {
@@ -350,7 +396,7 @@ function replaceIdentityFlags(flags: FlagCode[], identity: FlagCode[]): FlagCode
   return FLAG_CODES.filter((code) => present.has(code));
 }
 
-/** §1.3: graded papers follow their flags; queued, grading and failed papers keep their status. */
+/** Graded papers follow their flags; queued, grading and failed papers keep their status. */
 function statusAfterFlagChange(s: Submission, flags: FlagCode[]): { status?: "graded" | "needs_review" } {
   return s.status === "graded" || s.status === "needs_review" ? { status: statusFromFlags(flags, s.reviewedAt) } : {};
 }

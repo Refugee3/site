@@ -3,7 +3,8 @@ import type { Section } from "@/lib/types";
 
 const MAX_SECTION_LABEL = 60;
 
-// "&.,:;#-_/\()[]'" from §6.4, plus the typographic apostrophes and dashes that phones and word processors produce.
+// Separators ignored in section labels: "&.,:;#-_/\()[]'", plus the typographic apostrophes and dashes that
+// phones and word processors produce.
 const SEPARATORS = /[&.,:;#\-_/\\()[\]'‘’–—]/g;
 const LETTER_THEN_DIGIT = /(\p{L})(\d)/gu;
 const DIGIT_THEN_LETTER = /(\d)(\p{L})/gu;
@@ -28,7 +29,7 @@ const ROMAN_NUMERALS = new Map(
 
 /**
  * A spelling-independent key for a written section, so "Period 3", "P3", "3rd period", "Sec. 003",
- * "Per III" and "third" all become "3" (§6.4). Null when nothing identifying is left.
+ * "Per III" and "third" all become "3". Null when nothing identifying is left.
  */
 export function canonicalSectionKey(raw: string | null | undefined): string | null {
   if (raw == null) return null;
@@ -141,7 +142,7 @@ export function sectionsToText(s: Section[]): string {
 
 export type SectionMatch = { kind: "exact" | "fuzzy" | "hint" | "only"; sectionId: string } | { kind: "none" } | { kind: "unconfigured" };
 
-/** Matches what a student wrote (and the AI's pick from the list) to one configured section (§6.4). */
+/** Matches what a student wrote (and the AI's pick from the list) to one configured section. */
 export function resolveSection(raw: string | null, aiHint: string | null, sections: Section[]): SectionMatch {
   if (sections.length === 0) return { kind: "unconfigured" };
   if (sections.length === 1) return { kind: "only", sectionId: sections[0].id };

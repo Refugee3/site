@@ -3,7 +3,7 @@ import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
   cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, hasActiveJob, pruneFinishedJobs, queueStats,
-  recoverRunningJobs, requeueJob,
+  recoverRunningJobs, requeueJob, requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { updateKey } from "@/lib/db/repos/keys";
 import { seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
@@ -200,6 +200,28 @@ describe("recoverRunningJobs", () => {
   it("returns 0 when nothing is running", () => {
     grade("s1");
     expect(recoverRunningJobs()).toBe(0);
+  });
+});
+
+describe("requeueOrphanedRunningJobs", () => {
+  it("puts back running jobs except the active ones, cancelling those superseded by a queued job", () => {
+    grade("s1");
+    grade("s2");
+    grade("s3", { runAfter: T0 });
+    const active = claimNextJob(T0)!;
+    const orphan = claimNextJob(T0)!;
+    const superseded = claimNextJob(T0)!;
+    grade(superseded.targetId);
+
+    setClockForTests(() => T0 + 5000);
+    expect(requeueOrphanedRunningJobs([active.id])).toBe(2);
+
+    expect(statusOf(active.id)).toBe("running");
+    expect(statusOf(orphan.id)).toBe("queued");
+    expect(statusOf(superseded.id)).toBe("cancelled");
+    expect(db.prepare("SELECT run_after FROM jobs WHERE id = ?").get(orphan.id)).toEqual({ run_after: T0 + 5000 });
+    expect(requeueOrphanedRunningJobs([active.id])).toBe(0);
+    expect(requeueOrphanedRunningJobs([])).toBe(1);
   });
 });
 

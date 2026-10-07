@@ -6,7 +6,8 @@ import { setClockForTests } from "@/lib/clock";
 import { resetConfigForTests } from "@/lib/config";
 import { setDbForTests } from "@/lib/db/connection";
 
-// Only U1 modules are imported here; other units' singletons are reset by deleting their slots (§4).
+// Only the clock, config and db modules are imported here; the other process-wide singletons (grader,
+// rate limits, worker) are reset by deleting their globalThis slots.
 const WORKER_SLOT = Symbol.for("pag.worker");
 const RESETTABLE_SLOTS = [Symbol.for("pag.grader"), Symbol.for("pag.rate"), WORKER_SLOT];
 const slots = globalThis as unknown as Record<symbol, unknown>;

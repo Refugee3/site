@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accuracyQuarters, completionQuarters, computeScore, roundHalfUpDiv } from "@/lib/grading/scoring";
+import { accuracyQuarters, completionQuarters, computeScore, percentTenths, roundHalfUpDiv } from "@/lib/grading/scoring";
 import { makeJudgment, makeKeyItem, makeResult } from "@/lib/grading/test-utils";
 import type { Attempt, Correctness, GradingMode, ItemJudgment, KeyItem, SubmissionItem } from "@/lib/types";
 
@@ -58,7 +58,21 @@ describe("roundHalfUpDiv", () => {
   });
 });
 
-describe("computeScore worked examples (§6.2)", () => {
+describe("percentTenths", () => {
+  it("rounds half up to tenths of a percent", () => {
+    expect(percentTenths(1, 3)).toBe(333);
+    expect(percentTenths(2, 3)).toBe(667);
+    expect(percentTenths(1, 8)).toBe(125);
+    expect(percentTenths(160, 200)).toBe(800);
+    expect(percentTenths(0, 200)).toBe(0);
+  });
+
+  it("is null for an empty key", () => {
+    expect(percentTenths(0, 0)).toBeNull();
+  });
+});
+
+describe("computeScore worked examples", () => {
   it("2 pt item, blended w=40, complete + partially_correct → 160", () => {
     expect(scoreOne({ pointsCenti: 200 }, { attempt: "complete", correctness: "partially_correct" }, blended(40))).toBe(160);
   });

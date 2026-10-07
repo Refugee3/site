@@ -1,8 +1,11 @@
+import zlib from "node:zlib";
 import { PDFDocument } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { isAppError } from "@/lib/errors";
 import { sha256Hex } from "@/lib/ids";
-import { buildSubmissionPdf, sanitizeFilename, sniffKind, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
+import {
+  buildSubmissionPdf, MAX_PDF_DECODED_BYTES, sanitizeFilename, sniffKind, validatePdf, type UploadedFile,
+} from "@/lib/storage/pdf";
 import { ENCRYPTED_PDF, makePdf, TINY_JPEG, TINY_PNG } from "@/test/helpers";
 
 const ascii = (s: string) => new TextEncoder().encode(s);
@@ -25,6 +28,73 @@ async function sizedPdf(sizes: Array<[number, number]>): Promise<Uint8Array> {
   const doc = await PDFDocument.create({ updateMetadata: false });
   for (const size of sizes) doc.addPage(size);
   return doc.save({ addDefaultPage: false });
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(zlib.crc32(typed));
+  return Buffer.concat([length, typed, crc]);
+}
+
+/**
+ * An all-black 1-bit grayscale PNG (a huge one compresses to a few KB). `rawBytes` overrides how much
+ * the image data inflates to, and `extra` adds chunks before the data.
+ */
+function blackPng(width: number, height: number, o: { rawBytes?: number; extra?: Buffer[] } = {}): Uint8Array {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 1; // bit depth
+  header[9] = 0; // grayscale
+  const rows = Buffer.alloc(o.rawBytes ?? (Math.ceil(width / 8) + 1) * height);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    ...(o.extra ?? []),
+    pngChunk("IDAT", zlib.deflateSync(rows, { level: 9 })),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * A one-page PDF whose page object lives in object streams; each entry of `inflatedSizes` is one more
+ * object stream padded so that it inflates to that many bytes.
+ */
+function pdfWithObjectStreams(inflatedSizes: number[]): Uint8Array {
+  const chunks: Buffer[] = [Buffer.from("%PDF-1.5\n", "latin1")];
+  const offsets = new Map<number, number>();
+  let length = chunks[0].length;
+  const add = (data: Buffer | string) => {
+    const chunk = typeof data === "string" ? Buffer.from(data, "latin1") : data;
+    chunks.push(chunk);
+    length += chunk.length;
+  };
+  const object = (n: number, ...parts: Array<Buffer | string>) => {
+    offsets.set(n, length);
+    add(`${n} 0 obj\n`);
+    for (const part of parts) add(part);
+    add("\nendobj\n");
+  };
+  object(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  object(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+  inflatedSizes.forEach((size, index) => {
+    const contained = 3 + index * 2; // the page in the first stream, then filler dictionaries
+    const prefix = `${contained} 0 `;
+    const body = index === 0 ? "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>" : "<< >>";
+    const decoded = Buffer.alloc(Math.max(size, prefix.length + body.length), 0x20);
+    decoded.write(prefix + body, "latin1");
+    const data = zlib.deflateSync(decoded, { level: 9 });
+    object(4 + index * 2, `<< /Type /ObjStm /N 1 /First ${prefix.length} /Filter /FlateDecode /Length ${data.length} >>\nstream\n`, data, "\nendstream");
+  });
+  const size = 4 + inflatedSizes.length * 2;
+  const xrefAt = length;
+  const entries = Array.from({ length: size }, (_, n) =>
+    offsets.has(n) ? `${String(offsets.get(n)).padStart(10, "0")} 00000 n \n` : "0000000000 65535 f \n");
+  add(`xref\n0 ${size}\n${entries.join("")}trailer\n<< /Size ${size} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
+  return Buffer.concat(chunks);
 }
 
 async function pageSizes(bytes: Uint8Array): Promise<Array<[number, number]>> {
@@ -78,6 +148,35 @@ describe("validatePdf", () => {
 
   it("asks for the password protection to be removed", async () => {
     await expect(validatePdf(ENCRYPTED_PDF, OPTS)).rejects.toThrow("Remove the password protection and try again");
+  });
+
+  it("reads object streams within the decompression budget", async () => {
+    expect(await validatePdf(pdfWithObjectStreams([1000]), OPTS)).toEqual({ pageCount: 1 });
+  });
+
+  it("refuses a small file whose object stream would inflate past the budget, without inflating it", async () => {
+    const bomb = pdfWithObjectStreams([MAX_PDF_DECODED_BYTES + 1_000_000]);
+    expect(bomb.length).toBeLessThan(200_000);
+    const started = performance.now();
+    expect(await errorCode(validatePdf(bomb, OPTS))).toBe("invalid_pdf");
+    expect(await errorCode(buildSubmissionPdf([file(TINY_JPEG), file(bomb)], OPTS))).toBe("invalid_pdf");
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("counts the budget across all object streams of a file", async () => {
+    const half = Math.ceil(MAX_PDF_DECODED_BYTES / 2) + 1000;
+    expect(await errorCode(validatePdf(pdfWithObjectStreams([1000, half, half]), OPTS))).toBe("invalid_pdf");
+  });
+
+  it("lets concurrent validations queue up and all finish, including failed ones", async () => {
+    const pdf = await makePdf(1);
+    const results = await Promise.allSettled([
+      ...Array.from({ length: 5 }, () => validatePdf(pdf, OPTS)),
+      validatePdf(ascii("%PDF-1.4 garbage"), OPTS),
+      buildSubmissionPdf([file(TINY_JPEG), file(pdf)], OPTS),
+    ]);
+    expect(results.map((r) => r.status)).toEqual([...Array(5).fill("fulfilled"), "rejected", "fulfilled"]);
+    expect(await validatePdf(pdf, OPTS)).toEqual({ pageCount: 1 });
   });
 });
 
@@ -135,8 +234,79 @@ describe("buildSubmissionPdf", () => {
     expect(await errorCode(buildSubmissionPdf(await parts(), { maxPages: 2 }))).toBe(code);
   });
 
+  it("refuses a PNG that declares too many pixels before decoding it", async () => {
+    const bomb = blackPng(20_000, 20_000);
+    expect(bomb.length).toBeLessThan(100_000);
+    const started = performance.now();
+    await expect(buildSubmissionPdf([file(TINY_JPEG), file(bomb)], OPTS)).rejects.toThrow("File 2 is too large an image");
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
+  it("limits the PNG pixels of one upload together", async () => {
+    const photo = blackPng(5000, 5000); // 25 MP: fine alone, too much twice
+    expect(await errorCode(buildSubmissionPdf([file(photo), file(photo)], OPTS))).toBe("validation");
+    await expect(buildSubmissionPdf([file(photo), file(TINY_JPEG), file(photo)], OPTS)).rejects.toThrow("File 3 is too large");
+  });
+
+  it("accepts a valid PNG made the same way", async () => {
+    expect((await buildSubmissionPdf([file(blackPng(300, 200))], OPTS)).pageCount).toBe(1);
+  });
+
+  it("refuses a small PNG whose image data inflates far past its size, without decoding it", async () => {
+    const bomb = blackPng(10, 10, { rawBytes: 200_000_000 });
+    expect(bomb.length).toBeLessThan(300_000);
+    const started = performance.now();
+    await expect(buildSubmissionPdf([file(bomb)], OPTS)).rejects.toThrow("File 1 could not be read as a photo");
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses animated PNGs and a second image header", async () => {
+    const actl = pngChunk("acTL", Buffer.alloc(8));
+    const ihdr = pngChunk("IHDR", Buffer.from([0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 1, 0, 0, 0, 0]));
+    for (const extra of [[actl], [ihdr]]) {
+      await expect(buildSubmissionPdf([file(blackPng(10, 10, { extra }))], OPTS)).rejects.toThrow("File 1 could not be read as a photo");
+    }
+  });
+
+  it("refuses a PNG without a header chunk", async () => {
+    await expect(buildSubmissionPdf([file(TINY_PNG.subarray(0, 20))], OPTS)).rejects.toThrow("File 1 could not be read as a photo");
+  });
+
   it("tells HEIC uploaders what to do", async () => {
     await expect(buildSubmissionPdf([file(HEIC)], OPTS)).rejects.toThrow("Use the Take photos button or export as JPEG");
+  });
+
+  it("says which file of several is the problem", async () => {
+    const rejection = async (parts: UploadedFile[]) => {
+      const error = await buildSubmissionPdf(parts, OPTS).then(() => null, (e: unknown) => e);
+      if (!isAppError(error)) throw new Error("expected an AppError");
+      return { code: error.code, message: error.message };
+    };
+    const good = await makePdf(1);
+    expect(await rejection([file(good, "a.pdf"), file(ascii("%PDF-1.7\ngarbage"), "broken.pdf"), file(good, "c.pdf")])).toEqual({
+      code: "invalid_pdf",
+      message: "File 2 (broken.pdf): This PDF could not be read. Export or scan it again and retry.",
+    });
+    expect(await rejection([file(TINY_JPEG, "photo1.jpg"), file(ascii("hello"), "fake.pdf")])).toEqual({
+      code: "unsupported_type",
+      message: "File 2 (fake.pdf): Only PDF, JPEG and PNG files can be uploaded.",
+    });
+    expect((await rejection([file(TINY_JPEG), file(ENCRYPTED_PDF, "dir/locked‮.pdf")])).message).toMatch(
+      /^File 2 \(locked\.pdf\): This PDF is password-protected/,
+    );
+    // Messages that already name the file are kept as they are.
+    expect((await rejection([file(TINY_JPEG), file(TINY_PNG.subarray(0, 20), "cut.png")])).message).toBe(
+      "File 2 could not be read as a photo. Retake it or upload a PDF.",
+    );
+  });
+
+  it("keeps the message of a single bad file as it is", async () => {
+    await expect(buildSubmissionPdf([file(ascii("%PDF-1.7\ngarbage"), "broken.pdf")], OPTS)).rejects.toThrow(
+      /^This PDF could not be read\./,
+    );
+    await expect(buildSubmissionPdf([file(ascii("hello"), "fake.pdf")], OPTS)).rejects.toThrow(
+      /^Only PDF, JPEG and PNG files can be uploaded\.$/,
+    );
   });
 });
 

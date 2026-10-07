@@ -4,7 +4,7 @@ import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { getDb, tx } from "@/lib/db/connection";
 import {
-  claimNextJob, completeJob, failJob, pruneFinishedJobs, queueStats, recoverRunningJobs, requeueJob,
+  claimNextJob, completeJob, failJob, pruneFinishedJobs, queueStats, recoverRunningJobs, requeueJob, requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { listProcessingKeysWithoutJob } from "@/lib/db/repos/keys";
 import { deleteExpiredSessions } from "@/lib/db/repos/sessions";
@@ -22,6 +22,10 @@ export interface Worker {
   status(): WorkerStatus;
   /** Claims one runnable job and runs it to the end; false when nothing could be claimed. */
   runOnce(): Promise<boolean>;
+  /** Ids of the jobs this worker is running right now. */
+  inFlightJobIds(): number[];
+  /** Requeues `running` jobs this worker does not run (their outcome was never recorded); returns how many. */
+  recoverOrphans(): number;
 }
 
 type Handler = (job: Job, grader: Grader, signal: AbortSignal) => Promise<HandlerResult>;
@@ -37,14 +41,16 @@ const CRASH_MESSAGES: Record<JobKind, string> = {
 };
 
 const NO_API_KEY = "ANTHROPIC_API_KEY is not set";
+/** After an outcome could not be recorded, the next attempt to put the job back (the database may be busy for a while). */
+const ORPHAN_RETRY_MS = 30_000;
 
 /**
- * The in-process job runner (§7). It applies each handler's result to the jobs table, runs at most
+ * The in-process job runner. It applies each handler's result to the jobs table, runs at most
  * `concurrency` jobs at once, and claims nothing while it has no grader or is paused.
  */
 export function createWorker(o: { grader: Grader | null; concurrency: number; pollMs: number }): Worker {
   // Each running job with the controller that aborts its AI call (on the job timeout, or when the worker stops).
-  const inFlight = new Map<Promise<void>, AbortController>();
+  const inFlight = new Map<Promise<void>, { abort: AbortController; jobId: number }>();
   let running = false;
   let poller: NodeJS.Timeout | null = null;
   let tickScheduled = false;
@@ -66,14 +72,43 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
     const timeout = setTimeout(() => abort.abort(), getConfig().jobTimeoutMs);
     timeout.unref();
     const task: Promise<void> = execute(job, grader, abort.signal)
-      .catch((e: unknown) => console.error(`[worker] could not record the outcome of job ${job.id}`, e))
+      .catch((e: unknown) => {
+        // The job row is still `running`, which blocks later jobs for its paper or key until it is put back.
+        console.error(`[worker] could not record the outcome of job ${job.id}`, e);
+        scheduleOrphanRecovery();
+      })
       .finally(() => {
         clearTimeout(timeout);
         inFlight.delete(task);
         scheduleTick();
       });
-    inFlight.set(task, abort);
+    inFlight.set(task, { abort, jobId: job.id });
     return task;
+  }
+
+  function inFlightJobIds(): number[] {
+    return [...inFlight.values()].map((run) => run.jobId);
+  }
+
+  /** Handlers are idempotent per grading generation and key run, so running an orphaned job again is safe. */
+  function recoverOrphans(): number {
+    const recovered = requeueOrphanedRunningJobs(inFlightJobIds());
+    if (recovered > 0) console.info(`[worker] put back ${recovered} running jobs whose outcome was not recorded`);
+    scheduleTick();
+    return recovered;
+  }
+
+  function scheduleOrphanRecovery(): void {
+    if (!running) return;
+    setTimeout(() => {
+      if (!running) return; // boot recovery handles it after a restart
+      try {
+        recoverOrphans();
+      } catch (e) {
+        console.error("[worker] could not put back orphaned jobs; retrying later", e);
+        scheduleOrphanRecovery();
+      }
+    }, ORPHAN_RETRY_MS).unref();
   }
 
   async function execute(job: Job, grader: Grader, signal: AbortSignal): Promise<void> {
@@ -156,7 +191,7 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
       if (poller) clearInterval(poller);
       poller = null;
       // Stopping never waits on a slow AI call: aborted calls are retried later like any other.
-      for (const abort of inFlight.values()) abort.abort();
+      for (const run of inFlight.values()) run.abort.abort();
       await Promise.allSettled([...inFlight.keys()]);
     },
     kick: scheduleTick,
@@ -177,11 +212,13 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
       await launch(job, o.grader);
       return true;
     },
+    inFlightJobIds,
+    recoverOrphans,
   };
 }
 
 // ---------------------------------------------------------------------------------------------
-// The process-wide worker (§4 "pag.worker"; queue.ts reads the same slot)
+// The process-wide worker (globalThis slot "pag.worker"; queue.ts reads the same slot)
 
 const WORKER_SLOT = Symbol.for("pag.worker");
 const slots = globalThis as unknown as Record<symbol, Worker | undefined>;
@@ -192,7 +229,8 @@ const FINISHED_JOB_RETENTION_MS = 30 * 24 * HOUR_MS;
 /**
  * Called from instrumentation's register(): validates the environment, opens (and migrates) the
  * database, recovers work orphaned by the previous process and starts the worker. Idempotent.
- * Throws on a bad environment, which stops the server from starting.
+ * Throws on a bad environment or an unusable data directory or database; Next only logs a failed
+ * register() and then answers every request with 500, so the caller exits the process instead.
  */
 export async function startWorker(): Promise<void> {
   if (slots[WORKER_SLOT]) return;
@@ -237,7 +275,7 @@ function withMaintenance(worker: Worker): Worker {
     ...worker,
     start() {
       worker.start();
-      timer ??= setInterval(() => void runMaintenance(), HOUR_MS);
+      timer ??= setInterval(() => void runMaintenance(worker), HOUR_MS);
       timer.unref();
     },
     async stop() {
@@ -248,8 +286,9 @@ function withMaintenance(worker: Worker): Worker {
   };
 }
 
-async function runMaintenance(): Promise<void> {
+async function runMaintenance(worker: Worker): Promise<void> {
   try {
+    worker.recoverOrphans(); // backstop for a recovery that was scheduled but could not run
     deleteExpiredSessions(now());
     pruneFinishedJobs(now() - FINISHED_JOB_RETENTION_MS);
     await sweepTmp(HOUR_MS);

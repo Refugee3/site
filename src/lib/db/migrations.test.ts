@@ -41,6 +41,24 @@ describe("migrate", () => {
   it("numbers migrations 1..n in order", () => {
     expect(MIGRATIONS.map((m) => m.version)).toEqual(MIGRATIONS.map((_, i) => i + 1));
   });
+
+  it("upgrades a version-1 database in place, keeping its rows", () => {
+    const db = new Database(":memory:");
+    db.exec(MIGRATIONS[0].sql);
+    db.pragma("user_version = 1");
+    db.prepare("INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1)").run();
+    db.prepare(`INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at)
+                VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1)`).run();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT ai_usage_json FROM assignments WHERE id = 'a1'").get()).toEqual({ ai_usage_json: "{}" });
+    const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+    expect(columns("submission_items")).toContain("override_what_student_did");
+    expect(columns("submissions")).toContain("client_upload_id");
+    db.close();
+  });
 });
 
 describe("schema constraints", () => {
