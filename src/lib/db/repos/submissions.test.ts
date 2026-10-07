@@ -428,6 +428,23 @@ describe("listGuidanceStaleIds", () => {
     expect(listGuidanceStaleIds(assignment.id, 2, "new")).toEqual([]);
   });
 
+  it("excludes papers the teacher corrected: any item override, or a total override", () => {
+    const untouched = graded({ guidanceFingerprint: "old" });
+    const points = graded({ guidanceFingerprint: "old" });
+    setItemOverride(points.id, items[0].id, { overrideCenti: 0 });
+    const feedback = graded({ guidanceFingerprint: "old" });
+    setItemOverride(feedback.id, items[1].id, { overrideFeedback: "Show your work." });
+    const note = graded({ guidanceFingerprint: "old" });
+    setItemOverride(note.id, items[0].id, { overrideWhatStudentDid: "" });
+    const total = graded({ guidanceFingerprint: "old" });
+    updateSubmission(total.id, { totalOverrideCenti: 100 });
+    const cleared = graded({ guidanceFingerprint: "old" });
+    setItemOverride(cleared.id, items[0].id, { overrideCenti: 0 });
+    setItemOverride(cleared.id, items[0].id, { overrideCenti: null });
+
+    expect(listGuidanceStaleIds(assignment.id, 2, "new")).toEqual([untouched.id, cleared.id]);
+  });
+
   it("treats a paper graded before guidance existed (NULL) as graded without guidance", () => {
     const legacy = graded();
     db.prepare("UPDATE submissions SET graded_guidance_fp = NULL WHERE id = ?").run(legacy.id);

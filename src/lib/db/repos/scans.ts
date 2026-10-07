@@ -2,7 +2,7 @@ import { now } from "@/lib/clock";
 import { getAssignment } from "@/lib/db/repos/assignments";
 import { all, encodePatch, one, run, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
-import type { AiUsage, Assignment, Scan, ScanLayout, ScanPageReading, ScanSplitMode, ScanStatus } from "@/lib/types";
+import type { AiUsage, Assignment, PendingScans, Scan, ScanLayout, ScanPageReading, ScanSplitMode, ScanStatus } from "@/lib/types";
 
 export type NewScan = Pick<Scan, "id" | "assignmentId" | "splitMode" | "pagesPerPaper" | "pdfPath" | "originalFilename" | "contentSha256"
   | "byteSize" | "pageCount"> & { status: "splitting" | "review"; layout: ScanLayout | null };
@@ -107,6 +107,21 @@ export function getScanForTeacher(id: string, teacherId: string): { scan: Scan; 
 export function listScans(assignmentId: string): Scan[] {
   return all<ScanRow>("SELECT * FROM scans WHERE assignment_id = ? ORDER BY created_at DESC, rowid DESC", assignmentId)
     .map(scanFromRow);
+}
+
+/** The assignment's scans still waiting on the AI or the teacher; `firstReviewId` is the oldest one in review. */
+export function countPendingScans(assignmentId: string): PendingScans {
+  const counts = all<{ status: ScanStatus; n: number }>(
+    `SELECT status, COUNT(*) AS n FROM scans WHERE assignment_id = ? AND status IN ('splitting', 'review', 'failed')
+     GROUP BY status`,
+    assignmentId,
+  );
+  const count = (status: ScanStatus) => counts.find((row) => row.status === status)?.n ?? 0;
+  const first = one<{ id: string }>(
+    "SELECT id FROM scans WHERE assignment_id = ? AND status = 'review' ORDER BY created_at, rowid LIMIT 1",
+    assignmentId,
+  );
+  return { splitting: count("splitting"), review: count("review"), failed: count("failed"), firstReviewId: first?.id ?? null };
 }
 
 /** The newest scan of this assignment with this content, if any. */

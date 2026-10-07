@@ -1,18 +1,24 @@
+import fs from "node:fs";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiError } from "@/lib/ai/errors";
+import { getGrader, resetGrader } from "@/lib/ai/index";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
-import { resetConfigForTests } from "@/lib/config";
+import { getConfig, resetConfigForTests } from "@/lib/config";
 import { updateLesson } from "@/lib/db/repos/lessons";
 import { setStoredApiKey } from "@/lib/db/repos/settings";
 import { getSubmission, getSubmissionByReceipt, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jobs/test-utils";
+import { createWorker } from "@/lib/jobs/worker";
 import { everyNLayout } from "@/lib/scan-layout";
 import { rotateShareCode, setFeedbackReleased } from "@/lib/services/assignments";
-import { saveApiKey, setStudentUploads } from "@/lib/services/settings";
-import { deleteSubmission, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride } from "@/lib/services/submissions";
+import { removeApiKey, saveApiKey, setStudentUploads } from "@/lib/services/settings";
+import {
+  deleteSubmission, gradeManually, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride,
+} from "@/lib/services/submissions";
 import {
   buildGradesCsv, estimateCostUsd, getAssignmentHeader, getBoardView, getDashboardView, getKeyEditorView, getLessonsView,
   getReceiptView, getReviewView, getScanReviewView, getSettingsView, getStudentUploadView, getTeacherSettingsView, getUploadPageView,
@@ -351,15 +357,48 @@ describe("guidance in the teacher views", () => {
 
   it("shows each item's lesson and whether the paper was graded before the latest guidance", async () => {
     const paper = await gradedPaper("Maria Lopez");
+    const untouched = await gradedPaper("Ben Ode");
     expect(getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).guidanceStale).toBe(false);
 
     saveItemOverride(paper, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit without units." });
 
+    // The paper the teacher just corrected is not told to regrade with its own correction; an untouched paper is.
     const view = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
     expect(view.items.map((item) => item.lesson)).toEqual([
-      { id: expect.any(String), reason: "Half credit without units.", active: true }, null, null,
+      { id: expect.any(String), reason: "Half credit without units.", active: true, sent: true, notSent: null }, null, null,
     ]);
-    expect(view.guidanceStale).toBe(true);
+    expect(view.guidanceStale).toBe(false);
+    expect(getReviewView(getSubmission(untouched.id)!, assignment, ORIGIN).guidanceStale).toBe(true);
+    expect(getBoardView(assignment, "all").guidanceStaleCount).toBe(1);
+  });
+
+  it("says whether each item's lesson is sent to the grader, and why not", async () => {
+    const paper = await gradedPaper("Maria Lopez");
+    const lessonOf = (i: number) => getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).items[i].lesson;
+
+    // The AI's own points (2 of 2), with no reason: nothing to learn.
+    saveItemOverride(paper, items[1].id, { pointsCenti: 200, feedback: null });
+    expect(lessonOf(1)).toMatchObject({ active: true, sent: false, notSent: "agrees" });
+
+    saveItemOverride(paper, items[1].id, { pointsCenti: 200, feedback: null, reason: "Units are optional." });
+    expect(lessonOf(1)).toMatchObject({ sent: true, notSent: null });
+
+    // Points no judgment gives exactly are sent even without a reason.
+    saveItemOverride(paper, items[0].id, { pointsCenti: 75, feedback: null });
+    expect(lessonOf(0)).toMatchObject({ sent: true, notSent: null });
+
+    updateLesson(lessonOf(0)!.id, { active: false });
+    expect(lessonOf(0)).toMatchObject({ active: false, sent: false, notSent: "inactive" });
+  });
+
+  it("keeps no lesson for a paper graded by hand", () => {
+    const paper = seedSubmission(assignment.id, { status: "failed", source: "teacher" });
+    gradeManually(paper);
+
+    saveItemOverride(getSubmission(paper.id)!, items[0].id, { pointsCenti: 100, feedback: null, reason: "Full marks." });
+
+    const view = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    expect(view.items[0]).toMatchObject({ result: { overrideCenti: 100, judgment: null }, lesson: null });
   });
 
   it("lists lessons by key item, newest first, with why any is not sent", () => {
@@ -370,37 +409,45 @@ describe("guidance in the teacher views", () => {
     };
     const onFirst = papers.slice(0, 6).map((paper) => lesson(paper, items[0]));
     const off = lesson(papers[6], items[1], { active: false });
-    const agrees = lesson(papers[5], items[2], { teacherAttempt: "complete", teacherCorrectness: "incorrect", reason: "" });
+    const agrees = lesson(papers[5], items[2], {
+      studentAnswer: "x = 5", teacherAttempt: "complete", teacherCorrectness: "incorrect", reason: "",
+    });
     const unread = lesson(papers[6], items[2], {
       aiAttempt: null, aiCorrectness: null, teacherAttempt: null, teacherCorrectness: null, overrideCenti: null, feedback: "See me.",
     });
+    // Full credit for an answer the AI saw as blank, with no reason: a reading fix, not a ruling on blank answers.
+    const readingFix = lesson(papers[4], items[2], { studentAnswer: "", aiAttempt: "none", aiCorrectness: "no_answer", reason: "" });
 
     const view = getLessonsView(assignment);
 
     expect(view.lessons.map((entry) => [entry.lesson.id, entry.itemLabel, entry.itemPosition, entry.sent, entry.notSent])).toEqual([
       ...[...onFirst].reverse().map((l, i) => [l.id, "1", 0, i < 5, i < 5 ? null : "limit"]),
       [off.id, "2a", 1, false, "inactive"],
+      [readingFix.id, "2b", 2, false, "reading_fix"],
       [unread.id, "2b", 2, false, "no_reading"],
       [agrees.id, "2b", 2, false, "agrees"],
     ]);
     expect(view.lessons[0]).toMatchObject({
-      itemMaxCenti: 100, paperHref: `/teacher/assignments/${assignment.id}/submissions/${papers[5].id}`,
+      itemMaxCenti: 100, paperHref: `/teacher/assignments/${assignment.id}/submissions/${papers[5].id}`, paperDeleted: false,
     });
-    expect(view).toMatchObject({ activeCount: 8, sentCount: 5, hasPreferences: false });
+    expect(view).toMatchObject({ activeCount: 9, sentCount: 5, hasPreferences: false });
   });
 
   it("counts the papers a regrade with the latest guidance would cover, and links lessons only to papers that still exist", async () => {
     const paper = await gradedPaper("Maria Lopez");
+    const untouched = await gradedPaper("Ben Ode");
     saveItemOverride(paper, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit." });
     setGradingPreferences(teacher.id, "Ignore spelling.");
+    // Only the untouched paper: the corrected one is left alone.
     expect(getLessonsView(assignment)).toMatchObject({ guidanceStaleCount: 1, sentCount: 1, activeCount: 1, hasPreferences: true });
+    expect(getReviewView(getSubmission(untouched.id)!, assignment, ORIGIN).guidanceStale).toBe(true);
 
     const [entry] = getLessonsView(assignment).lessons;
     updateLesson(entry.lesson.id, { active: false });
     await deleteSubmission(getSubmission(paper.id)!);
 
     expect(getLessonsView(assignment)).toMatchObject({
-      lessons: [{ sent: false, notSent: "inactive", paperHref: null }], guidanceStaleCount: 0, sentCount: 0, activeCount: 0,
+      lessons: [{ sent: false, notSent: "inactive", paperHref: null, paperDeleted: true }], guidanceStaleCount: 1, sentCount: 0, activeCount: 0,
     });
   });
 });
@@ -427,6 +474,27 @@ describe("upload and scan views", () => {
     });
   });
 
+  it("counts the scans waiting on the AI or the teacher on the dashboard and the board", async () => {
+    const empty = { splitting: 0, review: 0, failed: 0, firstReviewId: null };
+    expect(getDashboardView(teacher).assignments[0].scans).toEqual(empty);
+    expect(getBoardView(assignment, "all")).toMatchObject({ scans: empty, active: false });
+
+    clock += 1000;
+    const older = await seedScan(assignment.id, { pages: 2, status: "review", writeFile: false });
+    clock += 1000;
+    await seedScan(assignment.id, { pages: 3, status: "review", writeFile: false });
+    await seedScan(assignment.id, { pages: 4, status: "failed", writeFile: false });
+    await seedScan(assignment.id, { pages: 5, status: "done", writeFile: false });
+    await seedScan(seedAssignment(teacher.id).id, { pages: 6, status: "review", writeFile: false });
+    const counts = { splitting: 0, review: 2, failed: 1, firstReviewId: older.id };
+    expect(getDashboardView(teacher).assignments.find((a) => a.id === assignment.id)!.scans).toEqual(counts);
+    expect(getBoardView(assignment, "all")).toMatchObject({ scans: counts, active: false });
+
+    // The board polls while a scan is being split, so its papers show up without a reload.
+    await seedScan(assignment.id, { pages: 7, status: "splitting", writeFile: false });
+    expect(getBoardView(assignment, "all")).toMatchObject({ scans: { ...counts, splitting: 1 }, active: true });
+  });
+
   it("describes a scan for review without its stored path, hash or AI accounting", async () => {
     const layout = everyNLayout(6, 3);
     const scan = await seedScan(assignment.id, { pages: 6, status: "review", splitMode: "every", pagesPerPaper: 3, layout });
@@ -451,8 +519,18 @@ describe("getTeacherSettingsView", () => {
     setGradingPreferences(teacher.id, "Ignore spelling.");
     expect(getTeacherSettingsView(teacher)).toEqual({
       apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
-      aiMode: "fake", model: "claude-opus-5-5", studentsCanUpload: true, gradingPreferences: "Ignore spelling.", worker: null,
+      aiMode: "fake", model: "claude-opus-5-5", studentsCanUpload: true, openAssignmentCount: 1, gradingPreferences: "Ignore spelling.",
+      worker: null,
     });
+  });
+
+  it("counts the open assignments of every teacher, which take student uploads as soon as the switch is on", () => {
+    seedAssignment(seedTeacher().id, { status: "open" });
+    seedAssignment(teacher.id, { status: "closed" });
+    seedAssignment(teacher.id);
+    setStudentUploads(false);
+
+    expect(getTeacherSettingsView(teacher)).toMatchObject({ studentsCanUpload: false, openAssignmentCount: 2 });
   });
 
   it("falls back to the server's ANTHROPIC_API_KEY", () => {
@@ -471,6 +549,50 @@ describe("getTeacherSettingsView", () => {
     });
     expect(JSON.stringify(view)).not.toContain(KEY);
     expect(JSON.stringify(view)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("lets the teacher remove a saved key that can't be read, leaving the server's ANTHROPIC_API_KEY in use", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("AI_MODE", "claude");
+    vi.stubEnv("APP_SECRET", "a".repeat(32));
+    resetConfigForTests();
+    await saveApiKey(teacher, KEY, async () => "ok");
+    // The secret changed since the key was saved; grading runs on the server's key meanwhile.
+    vi.stubEnv("APP_SECRET", "b".repeat(32));
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-server-key-0000000000000000");
+    resetConfigForTests();
+    resetGrader();
+    expect(getTeacherSettingsView(teacher).apiKey).toMatchObject({ source: "env", unreadable: true, envKeySet: true });
+    expect(getGrader()?.mode).toBe("claude");
+
+    removeApiKey();
+
+    expect(getTeacherSettingsView(teacher).apiKey).toEqual({
+      source: "env", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: true,
+    });
+    expect(getGrader()?.mode).toBe("claude");
+  });
+
+  it("shows a saved key as unreadable, instead of failing, when the server can't read its secret key file", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    await saveApiKey(teacher, KEY, async () => "ok");
+    resetGrader();
+    // E.g. a bind mount of a missing host file, which Docker creates as a directory.
+    const keyFile = path.join(getConfig().dataDir, "secret.key");
+    fs.rmSync(keyFile);
+    fs.mkdirSync(keyFile);
+    try {
+      expect(getTeacherSettingsView(teacher).apiKey).toEqual({
+        source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: true, envKeySet: false,
+      });
+      expect(getGrader()).toBeNull();
+      expect(createWorker({ grader: getGrader, concurrency: 1, pollMs: 1000 }).status()).toMatchObject({ keyIssue: "missing" });
+    } finally {
+      fs.rmdirSync(keyFile);
+    }
   });
 
   it("says when the saved key can't be decrypted, and falls back like the grader does", () => {

@@ -176,20 +176,49 @@ async function withPdfSlot<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Limits on what extractPageSets may cut, checked after each cut. */
+export interface CutLimits {
+  /** The largest one cut may be. */
+  maxBytesPerSet?: number;
+  /**
+   * The most all cuts together may be. Each cut carries its own copy of every resource its pages use, so pages
+   * sharing one large image or font multiply it by the number of cuts.
+   */
+  maxTotalBytes?: number;
+}
+
+/** extractPageSets stopped at the cut of `sets[index]`: that cut (`limit` "per_set") or the cuts so far ("total") were `bytes` long. */
+export class CutTooLargeError extends Error {
+  constructor(readonly limit: "per_set" | "total", readonly index: number, readonly bytes: number) {
+    super(`Cutting page set ${index + 1} passed the ${limit === "per_set" ? "per-set" : "total"} limit (${bytes} bytes)`);
+    this.name = "CutTooLargeError";
+  }
+}
+
 /**
  * One new PDF per page set (1-based page numbers, in the given order), cut from a stored, already validated
  * PDF such as a scan. Same pages give the same bytes, also across separate loads, so the sha256 of a cut paper
  * is a stable dedupe key. Loading, checking and cutting share one PDF slot, and the parsed source is dropped
  * before returning: a parsed scan costs several times its file size, so no caller keeps one across an await.
- * Throws AppError("invalid_pdf") when the bytes can't be read, RangeError for a page outside the document.
+ * Throws AppError("invalid_pdf") when the bytes can't be read, RangeError for a page outside the document, and
+ * CutTooLargeError as soon as a cut passes `limits` (so memory stays bounded however the pages share resources).
  */
-export async function extractPageSets(bytes: Uint8Array, sets: number[][]): Promise<Uint8Array[]> {
+export async function extractPageSets(bytes: Uint8Array, sets: number[][], limits: CutLimits = {}): Promise<Uint8Array[]> {
   return withPdfSlot(async () => {
     const source = await loadStoredPdf(bytes);
     const pageCount = source.getPageCount();
     for (const set of sets) checkPageSet(set, pageCount);
     const cut: Uint8Array[] = [];
-    for (const set of sets) cut.push(await copyIntoNewPdf(source, set));
+    let total = 0;
+    for (const [index, set] of sets.entries()) {
+      const pdf = await copyIntoNewPdf(source, set);
+      total += pdf.byteLength;
+      if (limits.maxBytesPerSet !== undefined && pdf.byteLength > limits.maxBytesPerSet) {
+        throw new CutTooLargeError("per_set", index, pdf.byteLength);
+      }
+      if (limits.maxTotalBytes !== undefined && total > limits.maxTotalBytes) throw new CutTooLargeError("total", index, total);
+      cut.push(pdf);
+    }
     return cut;
   });
 }

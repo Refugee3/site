@@ -49,7 +49,10 @@ function lessonFromRow(row: LessonRow): Lesson {
 }
 
 /**
- * Creates or refreshes the lesson for (submission, item): the snapshots are replaced, while id, active and
+ * Creates or refreshes the lesson for (submission, item). The teacher's side (teacher_*, override_centi, feedback,
+ * what_student_did) is replaced; the AI's side (student_answer, ai_attempt, ai_correctness) is the first reading and
+ * is kept once there is one, so a later regrade that agrees with the teacher never rewrites the mistake the lesson
+ * teaches (a lesson without a reading, from manual grading, takes the first reading that comes). id, active and
  * created_at are kept. `reason` is set only when given (undefined keeps the stored one; a new lesson gets "").
  */
 export function upsertLesson(l: { assignmentId: string; submissionId: string; itemId: string; reason?: string } & LessonSnapshot): Lesson {
@@ -59,7 +62,9 @@ export function upsertLesson(l: { assignmentId: string; submissionId: string; it
      VALUES (@id, @assignment_id, @item_id, @submission_id, @student_answer, @ai_attempt, @ai_correctness, @teacher_attempt,
        @teacher_correctness, @override_centi, @feedback, @what_student_did, @reason, @at, @at)
      ON CONFLICT (submission_id, item_id) DO UPDATE SET
-       student_answer = excluded.student_answer, ai_attempt = excluded.ai_attempt, ai_correctness = excluded.ai_correctness,
+       student_answer = CASE WHEN lessons.ai_attempt IS NULL THEN excluded.student_answer ELSE lessons.student_answer END,
+       ai_correctness = CASE WHEN lessons.ai_attempt IS NULL THEN excluded.ai_correctness ELSE lessons.ai_correctness END,
+       ai_attempt = CASE WHEN lessons.ai_attempt IS NULL THEN excluded.ai_attempt ELSE lessons.ai_attempt END,
        teacher_attempt = excluded.teacher_attempt, teacher_correctness = excluded.teacher_correctness,
        override_centi = excluded.override_centi, feedback = excluded.feedback, what_student_did = excluded.what_student_did,
        reason = CASE WHEN @set_reason THEN excluded.reason ELSE reason END,
@@ -89,6 +94,12 @@ export function upsertLesson(l: { assignmentId: string; submissionId: string; it
 /** Deletes the lesson for (submission, item), if any; returns how many were deleted. */
 export function deleteLessonFor(submissionId: string, itemId: string): number {
   return run("DELETE FROM lessons WHERE submission_id = ? AND item_id = ?", submissionId, itemId);
+}
+
+/** The lesson for (submission, item), if any. */
+export function getLessonFor(submissionId: string, itemId: string): Lesson | null {
+  const row = one<LessonRow>("SELECT * FROM lessons WHERE submission_id = ? AND item_id = ?", submissionId, itemId);
+  return row ? lessonFromRow(row) : null;
 }
 
 export function getLesson(id: string): Lesson | null {
@@ -126,9 +137,20 @@ const LESSON_COLUMNS: ColumnMap<LessonPatch> = {
   active: ["active", toBit],
 };
 
-/** Throws AppError("not_found") when the lesson does not exist. */
+/** Bumps updated_at (a content change). Throws AppError("not_found") when the lesson does not exist. */
 export function updateLesson(id: string, patch: Partial<LessonPatch>): Lesson {
   const row = updateRow<LessonRow>("lessons", { id }, encodePatch(patch, LESSON_COLUMNS));
+  if (!row) throw new AppError("not_found", "Lesson not found.");
+  return lessonFromRow(row);
+}
+
+/**
+ * Turns the lesson on or off without touching updated_at, which orders lessons as the time of their last
+ * content change ("newest" for the grader): off and on again changes nothing the grader is sent.
+ * Throws AppError("not_found") when the lesson does not exist.
+ */
+export function setLessonActiveRow(id: string, active: boolean): Lesson {
+  const row = one<LessonRow>("UPDATE lessons SET active = ? WHERE id = ? RETURNING *", toBit(active), id);
   if (!row) throw new AppError("not_found", "Lesson not found.");
   return lessonFromRow(row);
 }

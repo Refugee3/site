@@ -1,10 +1,10 @@
 import { getConfig } from "@/lib/config";
 import {
-  getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
+  countOpenAssignments, getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
 } from "@/lib/db/repos/assignments";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
-import { listScans } from "@/lib/db/repos/scans";
+import { countPendingScans, listScans } from "@/lib/db/repos/scans";
 import { getAppSettings } from "@/lib/db/repos/settings";
 import {
   countByStatus, countSubmissions, getSubmissionByReceipt, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
@@ -50,6 +50,7 @@ export function getDashboardView(t: Teacher): DashboardView {
         keyStatus: key.status,
         keyApproved: approved,
         counts: currentCounts(a.id),
+        scans: countPendingScans(a.id),
         released: a.feedbackReleasedAt !== null,
         createdAt: a.createdAt,
       };
@@ -87,6 +88,7 @@ export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
   const submissions = listSubmissions(a.id);
   const board = organizeBoard(submissions, listSections(a.id));
   const current = new Set(boardOrderIds(board));
+  const scans = countPendingScans(a.id);
   const groups = board
     .map((group) => ({
       key: group.key,
@@ -97,10 +99,11 @@ export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
   return {
     groups,
     counts: countCurrent(board),
+    scans,
     staleCount: listStaleIds(a.id, revision).filter((id) => current.has(id)).length,
     guidanceStaleCount: listGuidanceStaleIds(a.id, revision, loadGuidance(a).fingerprint).filter((id) => current.has(id)).length,
-    // Polls while anything is being graded, including a regraded earlier attempt.
-    active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
+    // Polls while anything is being graded, including a regraded earlier attempt, or a scan is being split.
+    active: submissions.some((s) => s.status === "queued" || s.status === "grading") || scans.splitting > 0,
     open: studentsCanUpload && a.status === "open",
     studentsCanUpload,
   };
@@ -149,6 +152,7 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
   const score = scoreOf(s, a, items, results);
   const resultByItem = new Map(results.map((result) => [result.itemId, result]));
   const lessonByItem = new Map(listLessonsForSubmission(s.id).map((lesson) => [lesson.itemId, lesson]));
+  const guidance = loadGuidance(a, items);
 
   const groups = organizeBoard(listSubmissions(a.id), sections);
   // An earlier attempt has no row of its own; it navigates from the row of its newest attempt.
@@ -165,12 +169,17 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
       const lesson = lessonByItem.get(item.id);
       return {
         item, result: resultByItem.get(item.id) ?? null, score: score.items[i],
-        lesson: lesson ? { id: lesson.id, reason: lesson.reason, active: lesson.active } : null,
+        lesson: lesson
+          ? {
+            id: lesson.id, reason: lesson.reason, active: lesson.active, sent: guidance.sentIds.includes(lesson.id),
+            notSent: guidance.notSent[lesson.id] ?? null,
+          }
+          : null,
       };
     }),
     score,
     stale: isStale(s, key.revision),
-    guidanceStale: isGuidanceStale(s, key.revision, loadGuidance(a, items).fingerprint),
+    guidanceStale: isGuidanceStale(s, key.revision, guidance.fingerprint, results),
     pdfUrl: `/api/teacher/submissions/${s.id}/pdf`,
     receiptUrl: receiptUrl(s.receiptToken, origin),
     prevId: index > 0 ? rows[index - 1].current.id : null,
@@ -200,6 +209,7 @@ export function getLessonsView(a: Assignment): LessonsView {
       sent: sent.has(lesson.id),
       notSent: guidance.notSent[lesson.id] ?? null,
       paperHref: lesson.submissionId ? `/teacher/assignments/${a.id}/submissions/${lesson.submissionId}` : null,
+      paperDeleted: lesson.submissionId === null,
     })));
   return {
     lessons: views,
@@ -279,6 +289,7 @@ export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
     aiMode: cfg.aiMode,
     model: cfg.model,
     studentsCanUpload: settings.studentsCanUpload,
+    openAssignmentCount: countOpenAssignments(),
     gradingPreferences: getGradingPreferences(t.id),
     worker: getWorkerStatus(),
   };

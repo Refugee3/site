@@ -186,7 +186,9 @@ describe("grading with the teacher's guidance", () => {
       preferences: "Ignore spelling.",
       lessons: [expect.objectContaining({ itemId: items[0].id, studentAnswer: "co2", reason: "Lowercase is fine." })],
     });
-    const fingerprint = guidanceFingerprint(renderGuidance(inputs[0].guidance, items));
+    // The fingerprint is of the guidance rendered with the items in id order (see loadGuidance).
+    const byId = [...items].sort((a, b) => (a.id < b.id ? -1 : 1));
+    const fingerprint = guidanceFingerprint(renderGuidance(inputs[0].guidance, byId));
     expect(fingerprint).not.toBe("");
     expect(getSubmission(id)!.gradedGuidanceFp).toBe(fingerprint);
     expect(getSubmission(earlier)!.gradedGuidanceFp).toBe(guidanceFingerprint(renderGuidance({ preferences: "Ignore spelling.", lessons: [] }, items)));
@@ -734,6 +736,54 @@ describe("API key changes", () => {
 
     await vi.waitFor(() => expect(["graded", "needs_review"]).toContain(getSubmission(id)!.status));
     expect(getWorkerStatus()).toMatchObject({ state: "running", reason: null, keyIssue: null });
+  });
+
+  it("does not pause for a rejected key that was replaced while its call was running: the job runs again on the new key", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = await uploadPaper();
+    const gate = deferred<void>();
+    const called = deferred<void>();
+    const oldKey = scriptedGrader({
+      gradeSubmission: async () => {
+        called.resolve();
+        await gate.promise;
+        throw authError(); // the teacher revoked the old key after saving the new one
+      },
+    });
+    const newKey = scriptedGrader();
+    let current: Grader = oldKey;
+    const worker = createWorker({ grader: () => current, concurrency: 1, pollMs: 1000 });
+    const run = worker.runOnce();
+    await called.promise;
+
+    // What saving a key does: the next getGrader() builds a new grader, and the worker resumes.
+    current = newKey;
+    worker.resume();
+    clock += 1000;
+    gate.resolve();
+    await run;
+
+    worker.start();
+    expect(worker.status()).toMatchObject({ state: "running", reason: null, keyIssue: null });
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 1000, paused: 0 }]);
+    await worker.stop();
+    expect(await worker.runOnce()).toBe(true);
+    expect(["graded", "needs_review"]).toContain(getSubmission(id)!.status);
+  });
+
+  it("reports a missing key instead of failing when the grader can't be built", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const worker = createWorker({
+      grader: () => {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      },
+      concurrency: 1,
+      pollMs: 1000,
+    });
+    worker.start();
+
+    expect(worker.status()).toMatchObject({ state: "paused", reason: "No Anthropic API key. Add one in Settings.", aiMode: "claude", keyIssue: "missing" });
+    await worker.stop();
   });
 
   it("does not report the key for other pauses, and resume() leaves ordinary backoffs alone", async () => {

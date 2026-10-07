@@ -113,6 +113,34 @@ describe("splitting a scan with the fake reader", () => {
     expect(getScan(scan.id)).toMatchObject({ status: "review", pagesRead: 25 });
   });
 
+  it("tells the AI how the page before each later chunk was read", async () => {
+    await queuedScan(25);
+    const calls: ReadScanInput[] = [];
+
+    await drainQueue(recordingReader(calls));
+
+    expect(calls[0].previousPage).toBeNull();
+    // Page 20 of three-page papers is page 2 of the seventh paper.
+    expect(calls[1].previousPage).toEqual({ page: 20, kind: "student_work", studentName: null, worksheetPage: 2, pageMarker: "2 of 3" });
+  });
+
+  it("describes no page before a chunk when the AI skipped that page", async () => {
+    await queuedScan(25);
+    const calls: ReadScanInput[] = [];
+    const skipsLastPage = scriptedGrader({
+      async readScanPages(input, options) {
+        calls.push(input);
+        const result = await instantFake.readScanPages(input, options);
+        return calls.length === 1 ? { ...result, output: { pages: result.output.pages.slice(0, -1) } } : result;
+      },
+    });
+
+    await drainQueue(skipsLastPage);
+
+    expect(calls.map((c) => c.firstPage)).toEqual([1, 21]);
+    expect(calls[1].previousPage).toBeNull();
+  });
+
   it("fails the scan when its file is missing", async () => {
     const scan = await seedScan(assignment.id, { pages: 3, writeFile: false });
     enqueueSplitScan(scan.id, assignment.id);

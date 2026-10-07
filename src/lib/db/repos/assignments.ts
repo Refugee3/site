@@ -97,6 +97,11 @@ export function listAssignmentsForTeacher(teacherId: string): Assignment[] {
   ).map(assignmentFromRow);
 }
 
+/** Open assignments of every teacher: they take student uploads whenever the app-wide switch is on. */
+export function countOpenAssignments(): number {
+  return one<{ n: number }>("SELECT COUNT(*) AS n FROM assignments WHERE status = 'open'")!.n;
+}
+
 type AssignmentPatch = Pick<Assignment, "title" | "instructions" | "status" | "gradingMode" | "accuracyWeight" | "shareCode"
   | "maxSubmissions" | "feedbackReleasedAt">;
 

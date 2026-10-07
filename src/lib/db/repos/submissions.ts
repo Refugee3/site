@@ -521,14 +521,20 @@ export function listStaleIds(assignmentId: string, revision: number): string[] {
 }
 
 /**
- * Graded papers not reviewed yet, graded at key revision `revision` (key-stale ones are listed by listStaleIds),
- * whose guidance fingerprint differs from `fingerprint` (NULL, from before guidance existed, counts as "").
+ * Graded papers not reviewed yet and not corrected by the teacher (no item or total override: a paper the teacher
+ * corrected was checked by them, and its corrections are the lessons), graded at key revision `revision`
+ * (key-stale ones are listed by listStaleIds), whose guidance fingerprint differs from `fingerprint` (NULL, from
+ * before guidance existed, counts as ""). The same predicate as isGuidanceStale.
  */
 export function listGuidanceStaleIds(assignmentId: string, revision: number, fingerprint: string): string[] {
   return all<{ id: string }>(
     `SELECT id FROM submissions
      WHERE assignment_id = ? AND status IN ('graded', 'needs_review') AND reviewed_at IS NULL
        AND graded_key_revision = ? AND coalesce(graded_guidance_fp, '') <> ?
+       AND total_override_centi IS NULL
+       AND NOT EXISTS (SELECT 1 FROM submission_items si WHERE si.submission_id = submissions.id
+                       AND (si.override_centi IS NOT NULL OR si.override_feedback IS NOT NULL
+                            OR si.override_what_student_did IS NOT NULL))
      ORDER BY created_at, rowid`,
     assignmentId, revision, fingerprint,
   ).map((row) => row.id);

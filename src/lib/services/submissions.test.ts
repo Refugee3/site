@@ -6,6 +6,7 @@ import { getConfig } from "@/lib/config";
 import { getDb } from "@/lib/db/connection";
 import { listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { updateKey } from "@/lib/db/repos/keys";
+import { listLessons } from "@/lib/db/repos/lessons";
 import { countSubmissions, getSubmission, getSubmissionByReceipt, listItems, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
@@ -405,7 +406,7 @@ describe("review workflow", () => {
     expect(getSubmission(earlierFailed)!.status).toBe("graded");
   });
 
-  it("regradeWithGuidance requeues only current, unreviewed papers graded with other guidance against the current key", async () => {
+  it("regradeWithGuidance requeues only current, unreviewed, uncorrected papers graded with other guidance against the current key", async () => {
     let minute = 0;
     /** A graded paper the teacher named `name` (regrades keep it), submitted a minute after the previous one. */
     const named = async (name: string, label: string) => {
@@ -421,10 +422,16 @@ describe("review workflow", () => {
     const keyStale = await named("Cy Moss", "cy");
     const fresh = await named("Dee Park", "dee");
     const ana = await named("Ana Ruiz", "ana-2");
+    const corrected = await named("Eve Lund", "eve");
+    const totalSet = await named("Fay Ng", "fay");
     expect(regradeWithGuidance(assignment)).toBe(0); // everything was graded with the current (empty) guidance
 
     updateSubmission(reviewed.id, { reviewedAt: T0 });
     getDb().prepare("UPDATE submissions SET graded_key_revision = 0 WHERE id = ?").run(keyStale.id);
+    // Papers the teacher corrected (their correction becomes a lesson) count as checked: a regrade would re-judge
+    // the items the teacher accepted on them.
+    saveItemOverride(corrected, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit without units." });
+    setTotalOverride(totalSet, 250);
     setGradingPreferences(assignment.teacherId, "Ignore spelling.");
 
     expect(regradeWithGuidance(assignment)).toBe(2);
@@ -432,7 +439,10 @@ describe("review workflow", () => {
       expect(getSubmission(id)).toMatchObject({ status: "queued", gradingGeneration: 2 });
       expect(jobRows(id).at(-1)).toMatchObject({ status: "queued", priority: PRIORITY.regrade });
     }
-    for (const id of [anaEarlier.id, reviewed.id, keyStale.id]) expect(getSubmission(id)!.gradingGeneration).toBe(1);
+    for (const id of [anaEarlier.id, reviewed.id, keyStale.id, corrected.id, totalSet.id]) {
+      expect(getSubmission(id)!.gradingGeneration).toBe(1);
+    }
+    expect(getSubmission(corrected.id)!.status).toBe("graded");
 
     await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
     const { fingerprint } = loadGuidance(assignment);
@@ -450,6 +460,16 @@ describe("review workflow", () => {
     expect(getSubmission(s.id)).toBeNull();
     expect(jobRows(s.id)).toMatchObject([{ status: "cancelled" }]);
     expect(storedFiles(assignment)).toEqual([]);
+  });
+
+  it("deleteSubmission keeps the lessons from the teacher's corrections on the paper, no longer linked to it", async () => {
+    const s = await gradedPaper();
+    saveItemOverride(s, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit without units." });
+
+    await deleteSubmission(getSubmission(s.id)!);
+
+    expect(listLessons(assignment.id)).toEqual([expect.objectContaining({ submissionId: null, reason: "Half credit without units." })]);
+    expect(loadGuidance(assignment).sentIds).toHaveLength(1);
   });
 });
 

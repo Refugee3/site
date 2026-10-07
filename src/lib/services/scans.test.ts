@@ -115,6 +115,30 @@ describe("changing the split", () => {
     expect(() => splitScanEvery(every, 0)).toThrow(expect.objectContaining({ code: "validation" }));
   });
 
+  it("splitScanEvery keeps the AI's proposal of a scan it read, so the teacher can go back to it", async () => {
+    const scan = await reviewScan(6, 2);
+    const ai: ScanLayout = [
+      { startsPaper: true, dropped: false }, { startsPaper: false, dropped: false }, { startsPaper: false, dropped: false },
+      { startsPaper: true, dropped: false }, { startsPaper: false, dropped: false }, { startsPaper: false, dropped: true },
+    ];
+    const read = updateScan(scan.id, { splitMode: "auto", pagesPerPaper: null, readings: ai.map(() => null), layout: ai, proposedLayout: ai });
+
+    const every = splitScanEvery(read, 3);
+    expect(every).toMatchObject({ splitMode: "every", pagesPerPaper: 3, layout: everyNLayout(6, 3), proposedLayout: ai });
+    // And again with another N.
+    expect(splitScanEvery(every, 2)).toMatchObject({ layout: everyNLayout(6, 2), proposedLayout: ai });
+  });
+
+  it("retryScanWithAi lets the AI split a scan that is in review", async () => {
+    const scan = await reviewScan(6, 2);
+    expect(scan.readings).toEqual([]);
+
+    const retried = retryScanWithAi(scan);
+
+    expect(retried).toMatchObject({ status: "splitting", splitMode: "auto", layout: null, proposedLayout: null });
+    expect(jobRows(scan.id)).toMatchObject([{ kind: "split_scan", status: "queued" }]);
+  });
+
   it("retryScanWithAi starts the AI split over", async () => {
     const scan = await reviewScan(6, 2);
 
@@ -212,6 +236,23 @@ describe("createPapersFromScan", () => {
     expect(countSubmissions(assignment.id)).toBe(0);
   });
 
+  it("refuses, before holding them all, papers that together pass the budget because their pages share one large stream", async () => {
+    vi.stubEnv("MAX_SCAN_MB", "1");
+    resetConfigForTests();
+    const bytes = await pdfSharingOneStream(8, 600_000);
+    const scan = await ingestScan(assignment, { filename: "template.pdf", bytes }, { mode: "every", pagesPerPaper: 1 });
+    expect(scan.byteSize).toBeLessThan(700_000);
+
+    await expect(createPapersFromScan(assignment, scan, scan.layout!)).rejects.toMatchObject({
+      code: "too_large",
+      message: "The papers cut from this scan would take more than 1 MB: its pages share large images or fonts, and every paper "
+        + "needs its own copy. Scan the paper stack instead (a scanner gives each page its own image), or upload each student's "
+        + "paper on its own.",
+    });
+    expect(getScan(scan.id)!.status).toBe("review");
+    expect(countSubmissions(assignment.id)).toBe(0);
+  });
+
   it("puts the scan back to review when its file is gone", async () => {
     const scan = await reviewScan(4, 2);
     fs.rmSync(path.join(getConfig().dataDir, scan.pdfPath));
@@ -228,8 +269,21 @@ describe("createPapersFromScan", () => {
 
     updateScan(scan.id, { status: "splitting" });
     await expect(createPapersFromScan(assignment, scan, scan.layout!)).rejects.toMatchObject({
-      code: "invalid_state", message: "These papers are already being created.",
+      code: "invalid_state", message: "The AI is still splitting this scan.",
     });
+  });
+
+  it.each([
+    ["creating", "These papers are already being created."],
+    ["done", "Papers were already created from this scan."],
+    ["failed", "This scan couldn't be split."],
+  ] as const)("says why a scan that is %s can't make papers (a stale tab)", async (status, message) => {
+    const scan = await reviewScan(4, 2);
+    updateScan(scan.id, { status });
+
+    await expect(createPapersFromScan(assignment, scan, scan.layout!)).rejects.toMatchObject({ code: "invalid_state", message });
+    expect(getScan(scan.id)!.status).toBe(status);
+    expect(countSubmissions(assignment.id)).toBe(0);
   });
 });
 
@@ -253,6 +307,14 @@ describe("deleteScan", () => {
     expect(stored(scan)).toBe(true);
   });
 });
+
+/** `pages` pages that all reference one incompressible stream of `bytes` bytes (as pages share an image or a template). */
+async function pdfSharingOneStream(pages: number, bytes: number): Promise<Uint8Array> {
+  const doc = await PDFDocument.create({ updateMetadata: false });
+  const stream = doc.context.register(doc.context.stream(randomBytes(bytes)));
+  for (let i = 0; i < pages; i++) doc.addPage([612, 792]).node.set(PDFName.of("PieceInfo"), stream);
+  return doc.save();
+}
 
 /** `pages` pages; page `heavy` carries an incompressible 1.2 MiB stream that copying a page brings along. */
 async function pdfWithHeavyPage(pages: number, heavy: number): Promise<Uint8Array> {

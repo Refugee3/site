@@ -12,7 +12,7 @@ import { requireKey } from "@/lib/services/key-state";
 import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
-import { extractPageSets, sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
+import { CutTooLargeError, extractPageSets, sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, Scan, ScanLayout, ScanSplitMode, ScanStatus } from "@/lib/types";
 
 // One scan of a whole class's papers: split (by the AI, or every N pages), checked by the teacher, then
@@ -78,20 +78,24 @@ function readPagesPerPaper(n: number | null): number {
   return n;
 }
 
-/** Replaces the split with one paper every `pagesPerPaper` pages; a running AI split is discarded (new generation). */
+/**
+ * Replaces the split with one paper every `pagesPerPaper` pages; a running AI split is discarded (new generation).
+ * The AI's proposal, when it made one, is kept, so the teacher can still go back to it on the review page.
+ */
 export function splitScanEvery(scan: Scan, pagesPerPaper: number): Scan {
   const n = readPagesPerPaper(pagesPerPaper);
   return tx(() => {
     const current = requireScan(scan.id, ["splitting", "review", "failed"]);
     cancelQueuedJobs("split_scan", current.id);
     const layout = everyNLayout(current.pageCount, n);
-    // The readings stay: they still name the students on the review page.
+    // The readings stay: they still name the students on the review page. A scan the AI never read has no proposal
+    // of its own; like one uploaded to be split every N pages, its proposal is that split.
     return updateScan(current.id, {
       splitGeneration: current.splitGeneration + 1,
       splitMode: "every",
       pagesPerPaper: n,
       layout,
-      proposedLayout: layout,
+      proposedLayout: current.readings.length > 0 ? current.proposedLayout : layout,
       status: "review",
       errorMessage: null,
       statusNote: null,
@@ -140,7 +144,7 @@ export async function createPapersFromScan(a: Assignment, scan: Scan, layout: Sc
   const current = tx(() => {
     const latest = getScan(scan.id);
     if (!latest) throw scanGone();
-    if (latest.status !== "review") throw new AppError("invalid_state", CREATING_MESSAGE);
+    if (latest.status !== "review") throw new AppError("invalid_state", STATUS_REFUSAL[latest.status]);
     assertKeyApproved(a);
     return updateScan(latest.id, { status: "creating", layout });
   });
@@ -156,15 +160,24 @@ export async function createPapersFromScan(a: Assignment, scan: Scan, layout: Sc
 }
 
 async function storePapers(a: Assignment, scan: Scan, papers: number[][]): Promise<{ created: number; duplicates: number }> {
-  const { maxUploadBytes } = getConfig();
-  // One parse of the scan for all papers; its bytes are not kept past the cut.
-  const pdfs = await extractPageSets(await readDataFile(scan.pdfPath), papers);
-  pdfs.forEach((pdf, i) => {
-    if (pdf.byteLength > maxUploadBytes) {
-      throw new AppError("too_large", `Paper ${i + 1} (pages ${formatPageRanges(papers[i])}) is ${(pdf.byteLength / MIB).toFixed(1)} MB; `
+  const { maxUploadBytes, maxScanBytes } = getConfig();
+  // All cuts are held until they are stored. Cut from a scan whose pages each carry their own image, they add up
+  // to about the scan's size; pages sharing one large image or font would multiply it, so the total is capped too.
+  const maxTotalBytes = Math.max(maxScanBytes, 2 * scan.byteSize);
+  let pdfs: Uint8Array[];
+  try {
+    // One parse of the scan for all papers; its bytes are not kept past the cut.
+    pdfs = await extractPageSets(await readDataFile(scan.pdfPath), papers, { maxBytesPerSet: maxUploadBytes, maxTotalBytes });
+  } catch (e) {
+    if (!(e instanceof CutTooLargeError)) throw e;
+    if (e.limit === "per_set") {
+      throw new AppError("too_large", `Paper ${e.index + 1} (pages ${formatPageRanges(papers[e.index])}) is ${(e.bytes / MIB).toFixed(1)} MB; `
         + `papers can be at most ${maxUploadBytes / MIB} MB. Rescan at a lower resolution.`);
     }
-  });
+    throw new AppError("too_large", `The papers cut from this scan would take more than ${Math.round(maxTotalBytes / MIB)} MB: `
+      + "its pages share large images or fonts, and every paper needs its own copy. Scan the paper stack instead (a scanner "
+      + "gives each page its own image), or upload each student's paper on its own.");
+  }
   const shas = pdfs.map((pdf) => sha256Hex(pdf));
   assertRoomFor(a.id, new Set(shas.filter((sha) => !findBySha(a.id, sha))).size);
 

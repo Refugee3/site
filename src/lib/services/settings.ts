@@ -30,19 +30,22 @@ export function setStudentUploads(enabled: boolean): void {
 
 /**
  * Checks the pasted key with Anthropic, then stores it encrypted and switches grading over to it at once.
- * A key Anthropic rejects is not saved; one that couldn't be checked is saved as unverified. Returns the
- * warning to show instead of the plain success message, if any.
+ * A key Anthropic rejects is not saved. One that couldn't be checked, or that can't use the model, is saved as
+ * unverified, until a call made with it succeeds (confirmKeyOnSuccess). Returns the warning to show instead of the
+ * plain success message, if any.
  */
 export async function saveApiKey(teacher: Teacher, raw: string, check: KeyChecker = checkApiKey): Promise<{ warning: string | null }> {
   const input = normalizeApiKeyInput(raw);
   if (!input.ok) throw apiKeyError(input.error);
+  // Before the check, so a server that can't store a key (a damaged secret.key) says so without calling Anthropic.
+  const ciphertext = encryptSecret(input.key, "anthropic-api-key");
   // The network call runs outside any transaction.
   const result = await check(input.key);
   if (result === "rejected") throw apiKeyError(KEY_REJECTED);
   setStoredApiKey({
-    ciphertext: encryptSecret(input.key, "anthropic-api-key"),
+    ciphertext,
     masked: maskApiKey(input.key),
-    check: result === "unreachable" ? "unverified" : "verified",
+    check: result === "ok" ? "verified" : "unverified",
     setBy: teacher.id,
   });
   switchToCurrentKey();

@@ -1,5 +1,6 @@
+import { randomBytes } from "node:crypto";
 import zlib from "node:zlib";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, PDFName } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { isAppError } from "@/lib/errors";
 import { sha256Hex } from "@/lib/ids";
@@ -208,6 +209,23 @@ describe("extractPageSets", () => {
     expect(await extractPageSets(await makePdf(2), [])).toEqual([]);
   });
 
+  it("stops as soon as a cut, or all cuts so far, pass the limits: a resource shared by every page is copied into each cut", async () => {
+    const shared = await pdfSharingOneStream(10, 100_000);
+    expect(shared.byteLength).toBeLessThan(120_000);
+    const everyPage = Array.from({ length: 10 }, (_, i) => [i + 1]);
+
+    const all = await extractPageSets(shared, everyPage);
+    expect(all.every((pdf) => pdf.byteLength > 100_000)).toBe(true);
+
+    await expect(extractPageSets(shared, everyPage, { maxTotalBytes: 350_000 })).rejects.toMatchObject({
+      name: "CutTooLargeError", limit: "total", index: 3, bytes: all.slice(0, 4).reduce((sum, pdf) => sum + pdf.byteLength, 0),
+    });
+    await expect(extractPageSets(shared, everyPage, { maxBytesPerSet: 50_000, maxTotalBytes: 10_000_000 })).rejects.toMatchObject({
+      name: "CutTooLargeError", limit: "per_set", index: 0, bytes: all[0].byteLength,
+    });
+    expect(await extractPageSets(shared, everyPage, { maxBytesPerSet: 200_000, maxTotalBytes: 2_000_000 })).toEqual(all);
+  });
+
   it.each([
     ["page 0", [[0]]],
     ["a page past the end", [[1], [2, 4]]],
@@ -379,3 +397,11 @@ describe("sanitizeFilename", () => {
     expect(name).toBe("😀".repeat(200));
   });
 });
+
+/** `pages` pages that all reference one incompressible stream of `bytes` bytes (as pages share an image or a template). */
+async function pdfSharingOneStream(pages: number, bytes: number): Promise<Uint8Array> {
+  const doc = await PDFDocument.create({ updateMetadata: false });
+  const stream = doc.context.register(doc.context.stream(randomBytes(bytes)));
+  for (let i = 0; i < pages; i++) doc.addPage([612, 792]).node.set(PDFName.of("PieceInfo"), stream);
+  return doc.save();
+}

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
-  deleteLesson, deleteLessonFor, getLesson, getLessonForTeacher, listLessons, listLessonsForSubmission, updateLesson, upsertLesson,
+  deleteLesson, deleteLessonFor, getLesson, getLessonForTeacher, listLessons, listLessonsForSubmission, setLessonActiveRow, updateLesson,
+  upsertLesson,
   type LessonSnapshot,
 } from "@/lib/db/repos/lessons";
 import { deleteSubmissionRow } from "@/lib/db/repos/submissions";
@@ -52,19 +53,41 @@ describe("upsertLesson", () => {
     expect(getLesson(lesson.id)).toEqual(lesson);
   });
 
-  it("refreshes the snapshots of the same paper and item, keeping id, active, created_at and (when not given) the reason", () => {
+  it("refreshes the teacher's side of the same paper and item, keeping id, active, created_at and (when not given) the reason", () => {
     const first = upsert({ reason: "Lowercase is fine." });
     updateLesson(first.id, { active: false });
     setClockForTests(() => T0 + 5);
 
-    const second = upsert({ studentAnswer: "CO2", overrideCenti: null, teacherAttempt: "partial", teacherCorrectness: "minor_error" });
+    const second = upsert({
+      overrideCenti: null, teacherAttempt: "partial", teacherCorrectness: "minor_error", feedback: null, whatStudentDid: "You wrote co2.",
+    });
 
     expect(second).toEqual({
-      ...first, studentAnswer: "CO2", overrideCenti: null, teacherAttempt: "partial", teacherCorrectness: "minor_error",
-      reason: "Lowercase is fine.", active: false, updatedAt: T0 + 5,
+      ...first, overrideCenti: null, teacherAttempt: "partial", teacherCorrectness: "minor_error", feedback: null,
+      whatStudentDid: "You wrote co2.", reason: "Lowercase is fine.", active: false, updatedAt: T0 + 5,
     });
     expect(upsert({ reason: "" }).reason).toBe("");
     expect(listLessons(assignment.id)).toHaveLength(1);
+  });
+
+  it("keeps the AI's first reading (answer and judgment) when the paper is read again", () => {
+    const first = upsert();
+
+    // A regrade that now agrees with the teacher must not rewrite the mistake the lesson teaches.
+    const second = upsert({ studentAnswer: "CO2", aiAttempt: "complete", aiCorrectness: "correct", feedback: "Fine." });
+
+    expect(second).toEqual({ ...first, feedback: "Fine." });
+  });
+
+  it("takes the first reading a lesson without one gets (a manually graded paper graded by the AI later)", () => {
+    upsert({ studentAnswer: "", aiAttempt: null, aiCorrectness: null });
+
+    expect(upsert({ studentAnswer: "co2", aiAttempt: "complete", aiCorrectness: "incorrect" })).toMatchObject({
+      studentAnswer: "co2", aiAttempt: "complete", aiCorrectness: "incorrect",
+    });
+    expect(upsert({ studentAnswer: "CO2", aiAttempt: "complete", aiCorrectness: "correct" })).toMatchObject({
+      studentAnswer: "co2", aiAttempt: "complete", aiCorrectness: "incorrect",
+    });
   });
 
   it("keeps one lesson per paper and item", () => {
@@ -118,6 +141,16 @@ describe("updateLesson and deletion", () => {
     expect(updateLesson(lesson.id, { active: false })).toMatchObject({ reason: "Units are optional here.", active: false });
     expect(updateLesson(lesson.id, { active: true }).active).toBe(true);
     expect(() => updateLesson("missing", { active: false })).toThrow(expect.objectContaining({ code: "not_found" }));
+  });
+
+  it("turns a lesson off and on without bumping updated_at", () => {
+    const lesson = upsert({ reason: "Units are optional here." });
+    setClockForTests(() => T0 + 9);
+
+    expect(setLessonActiveRow(lesson.id, false)).toEqual({ ...lesson, active: false });
+    expect(setLessonActiveRow(lesson.id, true)).toEqual(lesson);
+    expect(getLesson(lesson.id)).toEqual(lesson);
+    expect(() => setLessonActiveRow("missing", false)).toThrow(expect.objectContaining({ code: "not_found" }));
   });
 
   it("deletes by id or by paper and item", () => {

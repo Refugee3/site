@@ -69,8 +69,8 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
   let pauseReason: string | null = null;
   let pauseCode: AiErrorCode | null = null;
 
-  function pauseState(): string | null {
-    if (currentGrader() === null) return NO_API_KEY;
+  function pauseState(grader: Grader | null): string | null {
+    if (grader === null) return NO_API_KEY;
     return isPaused() ? pauseReason : null;
   }
 
@@ -79,7 +79,20 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
   }
 
   function claim(): Job | null {
-    return pauseState() === null ? claimNextJob(now()) : null;
+    return pauseState(currentGrader()) === null ? claimNextJob(now()) : null;
+  }
+
+  /**
+   * currentGrader(), or null when it can't be built: for the status report, which must never fail (the teacher
+   * layout and /api/health show it), and for recording an outcome.
+   */
+  function currentGraderOrNull(): Grader | null {
+    try {
+      return currentGrader();
+    } catch (e) {
+      console.error("[worker] could not build the grader", e);
+      return null;
+    }
   }
 
   function launch(job: Job, grader: Grader): Promise<void> {
@@ -135,10 +148,11 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
       recoverFromCrash(job, e);
       return;
     }
-    apply(job, result);
+    apply(job, result, grader);
   }
 
-  function apply(job: Job, result: HandlerResult): void {
+  /** `grader` is the one the job ran on. */
+  function apply(job: Job, result: HandlerResult, grader: Grader): void {
     switch (result.kind) {
       case "done":
         completeJob(job.id);
@@ -152,6 +166,12 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         failJob(job.id, result.error);
         return;
       case "pause":
+        if (grader !== currentGraderOrNull()) {
+          // The job ran on a key that was replaced meanwhile (the teacher saved a new one): its failure says nothing
+          // about the current key, so it runs again now on that one, and nothing is paused.
+          requeueJob(job.id, { runAfter: now(), error: result.reason, refundAttempt: true });
+          return;
+        }
         // Marked paused, so a key fix (resume) runs it at once while ordinary backoffs keep their run_after.
         requeueJob(job.id, { runAfter: result.resumeAt, error: result.reason, refundAttempt: true, paused: true });
         pausedUntil = result.resumeAt;
@@ -216,8 +236,8 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     },
     kick: scheduleTick,
     status() {
-      const reason = running ? pauseState() : null;
-      const grader = currentGrader();
+      const grader = currentGraderOrNull();
+      const reason = running ? pauseState(grader) : null;
       return {
         state: !running ? "stopped" : reason !== null ? "paused" : "running",
         reason,

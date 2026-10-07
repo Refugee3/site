@@ -230,18 +230,21 @@ describe("end-to-end flow with the fake grader", () => {
     // The teacher gives no credit and says why: a lesson the grader is sent from now on.
     saveItemOverride(getSubmission(corrected.id)!, item.id, { pointsCenti: 0, feedback: null, reason: "That's the textbook's sentence, not an answer." });
     const lessons = getLessonsView(a);
-    expect(lessons).toMatchObject({ sentCount: 1, activeCount: 1, guidanceStaleCount: 3 });
+    // The two papers the teacher hasn't corrected were graded before it; the corrected one is left alone.
+    expect(lessons).toMatchObject({ sentCount: 1, activeCount: 1, guidanceStaleCount: 2 });
     expect(lessons.lessons[0].lesson).toMatchObject({ teacherAttempt: "none", teacherCorrectness: "no_answer" });
-    expect(getBoardView(a, "all").guidanceStaleCount).toBe(3);
+    expect(getBoardView(a, "all").guidanceStaleCount).toBe(2);
+    const correctedFp = getSubmission(corrected.id)!.gradedGuidanceFp;
 
     // Regrading with the latest corrections: the other paper's identical answer now follows the ruling.
-    expect(regradeWithGuidance(a)).toBe(3);
-    expect(await drain()).toBe(3);
+    expect(regradeWithGuidance(a)).toBe(2);
+    expect(await drain()).toBe(2);
     expect(answers(other.id).get(item.id)).toMatchObject({
       attempt: "none", correctness: "no_answer", teacherNote: "Practice grader: followed your ruling on this answer.",
     });
     const { fingerprint } = loadGuidance(a);
-    for (const p of papers) expect(getSubmission(p.id)!.gradedGuidanceFp).toBe(fingerprint);
+    for (const p of papers) expect(getSubmission(p.id)!.gradedGuidanceFp).toBe(p.id === corrected.id ? correctedFp : fingerprint);
+    expect(correctedFp).not.toBe(fingerprint);
     expect(getBoardView(a, "all").guidanceStaleCount).toBe(0);
     expect(listItems(corrected.id).find((r) => r.itemId === item.id)!.overrideCenti).toBe(0);
   });

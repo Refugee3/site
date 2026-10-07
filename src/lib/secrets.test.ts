@@ -1,12 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getConfig, resetConfigForTests } from "@/lib/config";
 import { decryptSecret, encryptSecret, type SecretPurpose } from "@/lib/secrets";
 
 const PURPOSE: SecretPurpose = "anthropic-api-key";
 const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+const DAMAGED = "The server's secret key file (DATA_DIR/secret.key) is damaged, so API keys can't be saved. "
+  + "Ask whoever runs this server to restore it from a backup or set APP_SECRET.";
 const TOKEN_SHAPE = /^v1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]+$/;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function keyFile(): string {
   return path.join(getConfig().dataDir, "secret.key");
@@ -115,11 +121,73 @@ describe("encryptSecret and decryptSecret", () => {
     expect(fs.existsSync(keyFile())).toBe(false);
   });
 
-  it("refuses to encrypt with a damaged key file, and decrypts nothing with it", () => {
+  it.each([
+    ["a truncated", Buffer.alloc(31, 1)],
+    ["an empty", Buffer.alloc(0)],
+  ])("refuses to encrypt with %s key file, with a message for whoever runs the server, and decrypts nothing with it", (_name, bytes) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const token = encryptSecret(KEY, PURPOSE);
-    fs.writeFileSync(keyFile(), Buffer.alloc(31, 1));
+    fs.writeFileSync(keyFile(), bytes);
 
-    expect(() => encryptSecret(KEY, PURPOSE)).toThrow("DATA_DIR/secret.key is damaged; restore it from a backup or set APP_SECRET");
+    expect(() => encryptSecret(KEY, PURPOSE)).toThrow(expect.objectContaining({ code: "internal", message: DAMAGED }));
+    expect(error).toHaveBeenCalledWith(`[secrets] ${DAMAGED}`);
     expect(decryptSecret(token, PURPOSE)).toBeNull();
+  });
+
+  it("returns null, logging only the error code, when the key file can't be read", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const token = encryptSecret(KEY, PURPOSE);
+    // E.g. a bind mount of a missing host file, which Docker creates as a directory.
+    fs.rmSync(keyFile());
+    fs.mkdirSync(keyFile());
+    try {
+      expect(decryptSecret(token, PURPOSE)).toBeNull();
+      expect(error).toHaveBeenCalledWith("[secrets] can't read DATA_DIR/secret.key (EISDIR)");
+    } finally {
+      fs.rmdirSync(keyFile());
+    }
+  });
+});
+
+describe("creating the key file", () => {
+  it("leaves no key file behind when writing it fails, so the next save creates a whole one", () => {
+    vi.spyOn(fs, "writeSync").mockImplementationOnce(() => {
+      throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+    });
+
+    expect(() => encryptSecret(KEY, PURPOSE)).toThrow(expect.objectContaining({ code: "ENOSPC" }));
+    expect(fs.existsSync(keyFile())).toBe(false);
+    expect(fs.readdirSync(path.join(getConfig().dataDir, "tmp"))).toEqual([]);
+
+    vi.restoreAllMocks();
+    const token = encryptSecret(KEY, PURPOSE);
+    expect(fs.statSync(keyFile()).size).toBe(32);
+    expect(decryptSecret(token, PURPOSE)).toBe(KEY);
+  });
+
+  it("creates the key file in place on a filesystem without hard links", () => {
+    vi.spyOn(fs, "linkSync").mockImplementation(() => {
+      throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    });
+
+    const token = encryptSecret(KEY, PURPOSE);
+
+    expect(fs.statSync(keyFile()).size).toBe(32);
+    expect(fs.readdirSync(path.join(getConfig().dataDir, "tmp"))).toEqual([]);
+    expect(decryptSecret(token, PURPOSE)).toBe(KEY);
+  });
+
+  it("uses the key file another process created first", () => {
+    const theirs = Buffer.alloc(32, 9);
+    const link = fs.linkSync;
+    vi.spyOn(fs, "linkSync").mockImplementationOnce((from, to) => {
+      fs.writeFileSync(keyFile(), theirs); // the other process wins the race
+      link(from, to);
+    });
+
+    const token = encryptSecret(KEY, PURPOSE);
+
+    expect(fs.readFileSync(keyFile())).toEqual(theirs);
+    expect(decryptSecret(token, PURPOSE)).toBe(KEY);
   });
 });

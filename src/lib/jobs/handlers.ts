@@ -1,5 +1,5 @@
 import { AiError, classifySdkError, type AiErrorCode } from "@/lib/ai/errors";
-import type { AiCallMeta, Grader } from "@/lib/ai/grader";
+import type { AiCallMeta, Grader, ScanPreviousPage } from "@/lib/ai/grader";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
@@ -304,6 +304,7 @@ export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSig
         {
           assignmentTitle: assignment.title, sections, items, keyPageCount,
           chunkPdf: chunk.pdf, firstPage: chunk.pages[0], chunkPageCount: chunk.pages.length, totalPages: scan.pageCount,
+          previousPage: previousPage(readings, chunk.pages[0]),
         },
         { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
       );
@@ -328,6 +329,13 @@ export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSig
   const layout = proposeLayout(readings.filter((r) => r !== null), { keyPageCount });
   updateSplittingScan(run.scanId, run.generation, { status: "review", layout, proposedLayout: layout, statusNote: null });
   return DONE;
+}
+
+/** The reading of the scan page before `firstPage` (1-based), so the AI can judge whether the chunk's first page continues it. */
+function previousPage(readings: Array<ScanPageReading | null>, firstPage: number): ScanPreviousPage | null {
+  const r = firstPage > 1 ? readings[firstPage - 2] : null;
+  if (!r || !r.reported) return null;
+  return { page: firstPage - 1, kind: r.kind, studentName: r.studentName, worksheetPage: r.worksheetPage, pageMarker: r.pageMarker };
 }
 
 /**

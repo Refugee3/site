@@ -1,6 +1,6 @@
 import { tx } from "@/lib/db/connection";
 import {
-  deleteLesson as deleteLessonRow, deleteLessonFor, updateLesson, upsertLesson,
+  deleteLesson as deleteLessonRow, deleteLessonFor, getLesson, getLessonFor, setLessonActiveRow, updateLesson, upsertLesson,
 } from "@/lib/db/repos/lessons";
 import { getItem } from "@/lib/db/repos/submissions";
 import { getGradingPreferences, setGradingPreferences } from "@/lib/db/repos/teachers";
@@ -18,8 +18,11 @@ const SNAPSHOT_LIMITS = { studentAnswer: 2000, feedback: 2000, whatStudentDid: 1
 
 /**
  * Brings the item's lesson in line with its overrides; call it inside the transaction that saved them.
- * Any override keeps a lesson (snapshots taken now, never recomputed); clearing all three deletes it.
- * A string `reason` is stored (trimmed); null or undefined keeps the stored reason.
+ * Any override keeps a lesson; clearing all three deletes it. The AI's reading (answer and judgment) is the one
+ * the lesson first recorded, never recomputed: after a regrade the AI may agree with the teacher, and the lesson
+ * would stop teaching the mistake it corrects. The teacher's side follows every save, ruled against that reading.
+ * An answer the AI never read (a paper graded by hand) keeps no lesson: there is no mistake to learn from, and the
+ * grader would never be sent it. A string `reason` is stored (trimmed); null or undefined keeps the stored reason.
  */
 export function syncLessonForItem(s: Submission, a: Assignment, item: KeyItem, reason: string | null | undefined): void {
   const row = getItem(s.id, item.id);
@@ -27,18 +30,25 @@ export function syncLessonForItem(s: Submission, a: Assignment, item: KeyItem, r
     deleteLessonFor(s.id, item.id);
     return;
   }
-  const judgment = row.judgment;
-  const ai = judgment ? { attempt: judgment.attempt, correctness: judgment.correctness } : null;
+  const stored = getLessonFor(s.id, item.id);
+  const reading = stored && stored.aiAttempt !== null && stored.aiCorrectness !== null
+    ? { studentAnswer: stored.studentAnswer, attempt: stored.aiAttempt, correctness: stored.aiCorrectness }
+    : row.judgment;
+  if (!reading) {
+    deleteLessonFor(s.id, item.id);
+    return;
+  }
+  const ai = { attempt: reading.attempt, correctness: reading.correctness };
   const teacher = row.overrideCenti !== null ? intendedJudgment({ targetCenti: row.overrideCenti, item, mode: a, ai }) : ai;
   upsertLesson({
     assignmentId: a.id,
     submissionId: s.id,
     itemId: item.id,
-    studentAnswer: truncateChars(judgment?.studentAnswer ?? "", SNAPSHOT_LIMITS.studentAnswer),
-    aiAttempt: ai?.attempt ?? null,
-    aiCorrectness: ai?.correctness ?? null,
-    teacherAttempt: teacher?.attempt ?? null,
-    teacherCorrectness: teacher?.correctness ?? null,
+    studentAnswer: truncateChars(reading.studentAnswer, SNAPSHOT_LIMITS.studentAnswer),
+    aiAttempt: ai.attempt,
+    aiCorrectness: ai.correctness,
+    teacherAttempt: teacher.attempt,
+    teacherCorrectness: teacher.correctness,
     overrideCenti: row.overrideCenti,
     feedback: clipOrNull(row.overrideFeedback, SNAPSHOT_LIMITS.feedback),
     whatStudentDid: clipOrNull(row.overrideWhatStudentDid, SNAPSHOT_LIMITS.whatStudentDid),
@@ -64,14 +74,30 @@ export function updateLessonReason(lesson: Lesson, reason: string): Lesson {
   return updateLesson(lesson.id, { reason: readLessonReason(reason) });
 }
 
-/** A lesson that is off stays on the Lessons tab but is not sent to the grader. */
+/**
+ * A lesson that is off stays on the Lessons tab but is not sent to the grader. Its place among the lessons
+ * (by last content change) stays, so turning it off and on again leaves the guidance exactly as it was.
+ */
 export function setLessonActive(lesson: Lesson, active: boolean): Lesson {
-  return updateLesson(lesson.id, { active });
+  return setLessonActiveRow(lesson.id, active);
 }
 
-/** The grader stops using it; the overrides on the paper stay as they are. */
-export function deleteLesson(lesson: Lesson): void {
-  deleteLessonRow(lesson.id);
+/**
+ * The grader stops using it; the overrides on the paper stay as they are. Only a lesson whose paper was deleted is
+ * deleted: one whose paper still exists is turned off instead, because the paper keeps the corrections it came from
+ * and the next save of that question would bring a deleted lesson back (a lesson that is off stays off). Returns
+ * whether it was deleted.
+ */
+export function deleteLesson(lesson: Lesson): { deleted: boolean } {
+  return tx(() => {
+    const current = getLesson(lesson.id);
+    if (current && current.submissionId !== null) {
+      setLessonActiveRow(current.id, false);
+      return { deleted: false };
+    }
+    deleteLessonRow(lesson.id);
+    return { deleted: true };
+  });
 }
 
 /**

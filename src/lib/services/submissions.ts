@@ -336,8 +336,9 @@ export function regradeStale(a: Assignment): number {
 }
 
 /**
- * Regrades the current papers not reviewed yet that were graded before the teacher's latest lessons or
- * preferences; returns how many. Reviewed papers are left alone: the teacher already checked them.
+ * Regrades the current papers not reviewed or corrected yet that were graded before the teacher's latest lessons
+ * or preferences; returns how many. Reviewed and corrected papers are left alone: the teacher already checked
+ * them, and a regrade would re-judge the items they accepted (one can still be regraded on its own).
  */
 export function regradeWithGuidance(a: Assignment): number {
   return tx(() => {

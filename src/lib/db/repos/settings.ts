@@ -43,6 +43,18 @@ export function setStoredApiKey(k: { ciphertext: string; masked: string; check: 
   );
 }
 
+/**
+ * Marks the saved key confirmed once a call made with it succeeded. Only while that key (by its ciphertext) is still
+ * the saved one and unconfirmed, so a call still running with an older key never vouches for a newer one.
+ */
+export function markStoredApiKeyVerified(ciphertext: string): boolean {
+  return run(
+    `UPDATE app_settings SET api_key_check = 'verified', updated_at = ?
+     WHERE id = 1 AND api_key_ciphertext = ? AND api_key_check = 'unverified'`,
+    now(), ciphertext,
+  ) > 0;
+}
+
 export function clearStoredApiKey(): void {
   run(
     `UPDATE app_settings SET api_key_ciphertext = NULL, api_key_masked = NULL, api_key_check = NULL,

@@ -1,11 +1,14 @@
+import fs from "node:fs";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { KeyCheck } from "@/lib/ai";
 import { createFakeGrader } from "@/lib/ai/fake";
 import { getGrader, setGraderForTests } from "@/lib/ai/index";
 import { setClockForTests } from "@/lib/clock";
-import { resetConfigForTests } from "@/lib/config";
+import { getConfig, resetConfigForTests } from "@/lib/config";
 import { getAppSettings } from "@/lib/db/repos/settings";
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
+import { attemptWithData } from "@/lib/http/action-result";
 import { decryptSecret } from "@/lib/secrets";
 import {
   removeApiKey, saveApiKey, saveGradingPreferences, setStudentUploads, studentUploadsEnabled, UPLOADS_OFF_MESSAGE, type KeyChecker,
@@ -63,11 +66,12 @@ describe("saveApiKey", () => {
     expect(decryptSecret(settings.apiKeyCiphertext!, "anthropic-api-key")).toBe(KEY);
   });
 
-  it("saves a key whose model isn't available, with a warning naming the model", async () => {
+  it("saves a key whose model isn't available, with a warning naming the model, as not confirmed yet", async () => {
     expect(await saveApiKey(teacher, KEY, checker("model_unavailable"))).toEqual({
       warning: "Key saved. It works, but the model claude-opus-5-5 isn't available to it, so grading will pause until it is.",
     });
-    expect(getAppSettings().apiKeyCheck).toBe("verified");
+    // Settings keeps saying so after a reload, until a call with the key succeeds.
+    expect(getAppSettings().apiKeyCheck).toBe("unverified");
   });
 
   it("saves a key that couldn't be checked as unverified, with a warning", async () => {
@@ -96,6 +100,20 @@ describe("saveApiKey", () => {
     const check = checker("ok");
     await expect(saveApiKey(teacher, raw, check)).rejects.toMatchObject({
       code: "validation", message, extra: { fieldErrors: { apiKey: [message] } },
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(getAppSettings().apiKeyCiphertext).toBeNull();
+  });
+
+  it("tells the teacher what the server needs when its secret key file is damaged, without asking Anthropic", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(path.join(getConfig().dataDir, "secret.key"), Buffer.alloc(0));
+    const check = checker("ok");
+
+    expect(await attemptWithData(() => saveApiKey(teacher, KEY, check))).toEqual({
+      ok: false,
+      error: "The server's secret key file (DATA_DIR/secret.key) is damaged, so API keys can't be saved. "
+        + "Ask whoever runs this server to restore it from a backup or set APP_SECRET.",
     });
     expect(check).not.toHaveBeenCalled();
     expect(getAppSettings().apiKeyCiphertext).toBeNull();

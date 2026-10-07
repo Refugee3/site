@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
-import { clearStoredApiKey, getAppSettings, setStoredApiKey, setStudentsCanUpload } from "@/lib/db/repos/settings";
+import {
+  clearStoredApiKey, getAppSettings, markStoredApiKeyVerified, setStoredApiKey, setStudentsCanUpload,
+} from "@/lib/db/repos/settings";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
@@ -52,6 +54,21 @@ describe("app settings", () => {
       studentsCanUpload: true, apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
       apiKeySetAt: null, updatedAt: T0 + 9,
     });
+  });
+
+  it("confirm an unverified key only while it is still the saved one", () => {
+    const teacher = seedTeacher();
+    expect(markStoredApiKeyVerified(STORED.ciphertext)).toBe(false);
+
+    setStoredApiKey({ ...STORED, check: "unverified", setBy: teacher.id });
+    setClockForTests(() => T0 + 5);
+    // A call still running with an older key doesn't vouch for this one.
+    expect(markStoredApiKeyVerified("v1.older.key.ct")).toBe(false);
+    expect(getAppSettings()).toMatchObject({ apiKeyCheck: "unverified", updatedAt: T0 });
+
+    expect(markStoredApiKeyVerified(STORED.ciphertext)).toBe(true);
+    expect(getAppSettings()).toMatchObject({ apiKeyCiphertext: STORED.ciphertext, apiKeyCheck: "verified", apiKeySetAt: T0, updatedAt: T0 + 5 });
+    expect(markStoredApiKeyVerified(STORED.ciphertext)).toBe(false);
   });
 
   it("keep the saved key when the teacher who saved it is deleted", () => {
