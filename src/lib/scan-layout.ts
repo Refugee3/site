@@ -86,6 +86,19 @@ export function describePapers(
   });
 }
 
+/**
+ * The name in a paper's heading. A scan the AI never read (split every N pages) has no names yet: they are read when
+ * each paper is graded, so it shows none rather than "No name found" (null).
+ */
+export function paperNameLabel(paper: Pick<ProposedPaper, "name">, namesRead: boolean): string | null {
+  return paper.name ?? (namesRead ? "No name found" : null);
+}
+
+/** The AI's own split of the scan, if it made one: a scan split every N pages without an AI run has none. */
+export function aiProposedLayout(scan: { readings: unknown[]; proposedLayout: ScanLayout | null }): ScanLayout | null {
+  return scan.readings.length > 0 ? scan.proposedLayout : null;
+}
+
 /** Marks or unmarks a page as the start of a paper; a left-out page stays as it is. */
 export function toggleStart(layout: ScanLayout, index: number): ScanLayout {
   return layout.map((page, i) => (i === index && !page.dropped ? { ...page, startsPaper: !page.startsPaper } : page));

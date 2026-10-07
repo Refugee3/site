@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
-import { setStoredApiKey } from "@/lib/db/repos/settings";
+import { getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
 import { encryptSecret } from "@/lib/secrets";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 import { maskApiKey, normalizeApiKeyInput, resolveApiKey } from "./api-key";
@@ -60,7 +60,7 @@ describe("resolveApiKey", () => {
     useEnv({ ANTHROPIC_API_KEY: "sk-ant-env-key-0000000000000000" });
     useTestDb();
     saveKey(encryptSecret(SAVED_KEY, "anthropic-api-key"));
-    expect(resolveApiKey()).toEqual({ source: "app", key: SAVED_KEY });
+    expect(resolveApiKey()).toEqual({ source: "app", key: SAVED_KEY, ciphertext: getAppSettings().apiKeyCiphertext });
   });
 
   it("falls through when the saved key can't be decrypted, and logs no key material", () => {

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
-import { clearStoredApiKey, setStoredApiKey } from "@/lib/db/repos/settings";
+import { clearStoredApiKey, getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
 import { encryptSecret } from "@/lib/secrets";
 import { seedTeacher, useTestDb } from "@/test/helpers";
+import type { MessageRunner } from "./claude";
 import { createFakeGrader } from "./fake";
-import { checkApiKey, getGrader, resetGrader, setGraderForTests } from "./index";
+import { checkApiKey, confirmKeyOnSuccess, getGrader, resetGrader, setGraderForTests } from "./index";
+import { makeMessage } from "./test-utils";
 
 // The test setup runs with AI_MODE=fake and an empty ANTHROPIC_API_KEY, and deletes the slot after each test.
 // Claude-mode graders are built (constructing an SDK client sends nothing) but never called.
@@ -95,6 +97,36 @@ describe("resetGrader", () => {
     expect(getGrader()).toBeNull(); // memoized until reset
     resetGrader();
     expect(getGrader()?.mode).toBe("claude");
+  });
+});
+
+describe("confirmKeyOnSuccess", () => {
+  it("confirms the saved key after its first successful call, not after a failed one", async () => {
+    useTestDb();
+    const ciphertext = encryptSecret("sk-ant-api03-saved-key-0000000000", "anthropic-api-key");
+    setStoredApiKey({ ciphertext, masked: "sk-ant-…0000", check: "unverified", setBy: seedTeacher().id });
+    const answers = [new Error("overloaded"), makeMessage({ text: "{}" }), makeMessage({ text: "{}" })];
+    const calls: unknown[] = [];
+    const scripted: MessageRunner = async (params) => {
+      calls.push(params);
+      const next = answers.shift()!;
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    const runner = confirmKeyOnSuccess(scripted, ciphertext);
+    const params = {} as Parameters<MessageRunner>[0];
+
+    await expect(runner(params, {})).rejects.toThrow("overloaded");
+    expect(getAppSettings().apiKeyCheck).toBe("unverified");
+
+    expect(await runner(params, {})).toMatchObject({ id: "msg_test" });
+    expect(getAppSettings().apiKeyCheck).toBe("verified");
+
+    // Once per grader: a key saved again as unverified (the grader is rebuilt then) is not confirmed by this one.
+    setStoredApiKey({ ciphertext, masked: "sk-ant-…0000", check: "unverified", setBy: seedTeacher().id });
+    await runner(params, {});
+    expect(getAppSettings().apiKeyCheck).toBe("unverified");
+    expect(calls).toHaveLength(3);
   });
 });
 

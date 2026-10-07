@@ -148,6 +148,59 @@ describe("proposeLayout", () => {
     expect(starts(layout)).toEqual([1, 3]);
   });
 
+  it("keeps a first name alone, an initial, or a near reading of the same name on an unsure page", () => {
+    // A name line on every page: page 2 reads "Maria", worksheet page 2, and the model says it continues (medium).
+    const twoPapers = proposeLayout([
+      reading({ studentName: "Maria Garcia", startsNewPaper: true, confidence: "high", worksheetPage: 1 }),
+      reading({ studentName: "Maria", worksheetPage: 2 }),
+      reading({ studentName: "Ben Cho", startsNewPaper: true, confidence: "high", worksheetPage: 1, pageMarker: "1 of 2" }),
+      reading({ studentName: "Ben", worksheetPage: 2, pageMarker: "2 of 2" }),
+    ], { keyPageCount: 2 });
+    expect(starts(twoPapers)).toEqual([1, 3]);
+    expect(starts(proposeLayout([
+      reading({ studentName: "Jayden Smith", startsNewPaper: true, confidence: "high" }),
+      reading({ studentName: "Jaydon Smith", worksheetPage: 2, confidence: "low" }),
+      reading({ studentName: "J. Smith" }),
+    ], { keyPageCount: null }))).toEqual([1]);
+  });
+
+  it("starts a paper on a clearly different name even with a later-page marker, unless the names share a word", () => {
+    // "2 of 2" does not say whose page it is.
+    expect(starts(proposeLayout([
+      reading({ studentName: "Ana Ruiz", startsNewPaper: true }), reading({ studentName: "Ben Cho", pageMarker: "2 of 2" }),
+    ], { keyPageCount: null }))).toEqual([1, 2]);
+    // The same first name with another surname on a page that continues the worksheet is a misread surname...
+    expect(starts(proposeLayout([
+      reading({ studentName: "Maria Garcia", startsNewPaper: true }), reading({ studentName: "Maria Gomez", worksheetPage: 2 }),
+    ], { keyPageCount: null }))).toEqual([1]);
+    // ...but without that evidence it is another student.
+    expect(starts(proposeLayout([
+      reading({ studentName: "Maria Garcia", startsNewPaper: true }), reading({ studentName: "Maria Gomez" }),
+    ], { keyPageCount: null }))).toEqual([1, 2]);
+  });
+
+  it("continues the paper on an unsure start that shows its name on a later worksheet page", () => {
+    // The first page of a chunk, read alone: page 3 of Gus's paper with "Name: Gus" on it, reported as a start.
+    const readings = [
+      reading({ studentName: "Gus Park", startsNewPaper: true, confidence: "high", worksheetPage: 1 }),
+      reading({ studentName: "Gus Park", worksheetPage: 2, confidence: "high" }),
+      reading({ studentName: "Gus Park", startsNewPaper: true, confidence: "low", worksheetPage: 3 }),
+      reading({ studentName: "Hana Lee", startsNewPaper: true, confidence: "high", worksheetPage: 1 }),
+    ];
+    expect(starts(proposeLayout(readings, { keyPageCount: 3 }))).toEqual([1, 4]);
+    // A start the model is sure of, one without a later-page sign, or one with another name is still followed.
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], confidence: "high" }], { keyPageCount: 3 }))).toEqual([1, 3]);
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], worksheetPage: null }], { keyPageCount: 3 }))).toEqual([1, 3]);
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], worksheetPage: 1 }], { keyPageCount: 3 }))).toEqual([1, 3]);
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], studentName: "Hana Lee" }], { keyPageCount: 3 })))
+      .toEqual([1, 3]);
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], studentName: null, pageMarker: "3 of 3" }],
+      { keyPageCount: 3 }))).toEqual([1, 3]);
+    // A "3 of 3" marker counts as the later-page sign too.
+    expect(starts(proposeLayout([readings[0], readings[1], { ...readings[2], worksheetPage: null, pageMarker: "3 of 3" }],
+      { keyPageCount: 3 }))).toEqual([1]);
+  });
+
   it("takes the paper's name from its first named page", () => {
     const layout = proposeLayout([
       reading({ startsNewPaper: true }), reading({ studentName: "Ana Ruiz" }), reading({ studentName: "Ben Cho" }),
@@ -201,19 +254,29 @@ describe("proposeLayout", () => {
 });
 
 describe("keyPageCountHint", () => {
-  it("uses the answer key PDF's page count", () => {
-    expect(keyPageCountHint({ sourcePageCount: 3, documentKind: "answer_key" }, [{ page: 1 }])).toBe(3);
+  it("uses a blank worksheet's page count", () => {
     expect(keyPageCountHint({ sourcePageCount: 2, documentKind: "blank_worksheet" }, [])).toBe(2);
+    expect(keyPageCountHint({ sourcePageCount: 3, documentKind: "blank_worksheet" }, [{ page: 1 }, { page: 2 }])).toBe(3);
   });
 
-  it("falls back to the highest item page when the PDF is not the worksheet or there is none", () => {
+  it("uses the highest item page when the items are spread over several pages of the key", () => {
+    // A filled-in three-page worksheet.
+    expect(keyPageCountHint({ sourcePageCount: 3, documentKind: "answer_key" }, [{ page: 1 }, { page: 2 }, { page: 3 }])).toBe(3);
+    expect(keyPageCountHint({ sourcePageCount: 4, documentKind: "answer_key" }, [{ page: 2 }, { page: 1 }, { page: null }])).toBe(2);
     expect(keyPageCountHint({ sourcePageCount: 5, documentKind: "student_work" }, [{ page: 1 }, { page: 2 }, { page: null }])).toBe(2);
-    expect(keyPageCountHint({ sourcePageCount: 5, documentKind: "unrelated" }, [{ page: 4 }])).toBe(4);
     expect(keyPageCountHint({ sourcePageCount: null, documentKind: null }, [{ page: 2 }, { page: 1 }])).toBe(2);
+  });
+
+  it("is null for an answer key with every item on one page, which may be a list of answers for a longer worksheet", () => {
+    // A one-page answer list for a three-page worksheet must not say papers have one page.
+    expect(keyPageCountHint({ sourcePageCount: 1, documentKind: "answer_key" }, [{ page: 1 }, { page: 1 }, { page: 1 }])).toBeNull();
+    expect(keyPageCountHint({ sourcePageCount: 3, documentKind: "answer_key" }, [{ page: 1 }])).toBeNull();
+    expect(keyPageCountHint({ sourcePageCount: 5, documentKind: "unrelated" }, [{ page: 4 }])).toBeNull();
   });
 
   it("is null when nothing tells", () => {
     expect(keyPageCountHint({ sourcePageCount: null, documentKind: null }, [{ page: null }])).toBeNull();
     expect(keyPageCountHint({ sourcePageCount: 0, documentKind: "answer_key" }, [])).toBeNull();
+    expect(keyPageCountHint({ sourcePageCount: 0, documentKind: "blank_worksheet" }, [])).toBeNull();
   });
 });

@@ -45,6 +45,53 @@ export function nameKey(name: string | null): string | null {
   return words.length > 0 ? words.sort().join(" ") : null;
 }
 
+/**
+ * Whether two name readings are clearly different students. They are the same when every word of the shorter
+ * name pairs up with a word of the other: the same word, an initial of it ("J" and "Jayden"), or a near spelling
+ * (one letter off in words of 4 to 6 letters, two in longer words; words of 3 letters or fewer must be equal).
+ * So a first name alone ("Maria" for "Maria Garcia"), an added middle name, or a slightly different reading of
+ * the handwriting ("Jayden" and "Jaydon") is not a new student. A null or wordless name never differs.
+ */
+export function namesDiffer(a: string | null, b: string | null): boolean {
+  const wordsA = nameWords(a ?? "");
+  const wordsB = nameWords(b ?? "");
+  if (wordsA.length === 0 || wordsB.length === 0) return false;
+  const [fewer, more] = wordsA.length <= wordsB.length ? [wordsA, wordsB] : [wordsB, wordsA];
+  const unused = [...more];
+  for (const word of fewer) {
+    const exact = unused.indexOf(word);
+    const at = exact >= 0 ? exact : unused.findIndex((other) => wordsMatch(word, other));
+    if (at < 0) return true;
+    unused.splice(at, 1);
+  }
+  return false;
+}
+
+/** Whether the two names have a word in common, exactly ("Maria Garcia" and "Maria Lopez"). */
+export function namesShareWord(a: string | null, b: string | null): boolean {
+  const wordsB = new Set(nameWords(b ?? ""));
+  return nameWords(a ?? "").some((word) => wordsB.has(word));
+}
+
+function wordsMatch(a: string, b: string): boolean {
+  if (a.length === 1 || b.length === 1) return a[0] === b[0];
+  const shorter = Math.min(a.length, b.length);
+  return editDistance(a, b) <= (shorter <= 3 ? 0 : shorter <= 6 ? 1 : 2);
+}
+
+/** Levenshtein distance (names are short, so the full table is cheap). */
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
 /** Sorts by surname, then given names: "Lopez, Maria" → "lopez maria"; unnamed papers get "~" and sort last. */
 export function nameSortKey(name: string | null): string {
   if (name === null) return UNNAMED_SORT_KEY;

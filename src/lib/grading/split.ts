@@ -1,6 +1,6 @@
 import { AiError } from "@/lib/ai/errors";
 import type { ScanPages } from "@/lib/ai/schemas";
-import { cleanName, nameKey } from "@/lib/grading/names";
+import { cleanName, nameKey, namesDiffer, namesShareWord } from "@/lib/grading/names";
 import { truncateChars } from "@/lib/grading/text";
 import type { AnswerKey, KeyItem, ScanLayout, ScanPageKind, ScanPageReading } from "@/lib/types";
 
@@ -64,9 +64,11 @@ export function parsePageMarker(marker: string | null): { page: number; of: numb
 
 /**
  * Groups the readings into papers. Blank, cover and answer-key pages are left out. A confident reading
- * (the model's own start, or high confidence) is always followed; an unsure page starts a new paper when
- * it shows a different name, a first-page marker, a worksheet restart, or (with the key's page count as a
- * hint) when the current paper already has the worksheet's length and nothing says the page continues it.
+ * (the model's own start, or high confidence) is followed, except that an unsure start showing the current
+ * paper's name on a later worksheet page continues the paper (a name line on every page, read at the edge
+ * of a chunk). An unsure page starts a new paper when it shows a clearly different name (namesDiffer), a
+ * first-page marker, a worksheet restart, or (with the key's page count as a hint) when the current paper
+ * already has the worksheet's length and nothing says the page continues it.
  */
 export function proposeLayout(readings: ScanPageReading[], o: { keyPageCount: number | null }): ScanLayout {
   let prev: ScanPageReading | null = null;
@@ -93,14 +95,19 @@ function startsPaper(
   prev: ScanPageReading,
   paper: { currentName: string | null; length: number; keyPageCount: number | null },
 ): boolean {
-  if (r.startsNewPaper) return true;
-  if (r.confidence === "high") return false;
   const name = readingNameKey(r);
   const markerPage = parsePageMarker(r.pageMarker)?.page;
-  if (name !== null && paper.currentName !== null && name !== paper.currentName) return true;
+  const laterPage = (markerPage ?? 0) > 1 || (r.worksheetPage ?? 0) > 1;
+  const named = name !== null && paper.currentName !== null;
+  const sameName = named && !namesDiffer(name, paper.currentName);
+  if (r.startsNewPaper) return r.confidence === "high" || !(sameName && laterPage);
+  if (r.confidence === "high") return false;
+  // A later-page marker does not say whose page it is, so a clearly different name still starts a paper,
+  // unless the names share a word (then the page is taken as a misreading of the same student's name).
+  if (named && namesDiffer(name, paper.currentName) && !(laterPage && namesShareWord(name, paper.currentName))) return true;
   if (markerPage === 1) return true;
   if (r.worksheetPage === 1 && prev.worksheetPage !== null && (markerPage ?? 1) === 1) return true;
-  const continues = (markerPage ?? 0) > 1 || (r.worksheetPage ?? 0) > 1 || (name !== null && name === paper.currentName);
+  const continues = laterPage || sameName;
   return paper.keyPageCount !== null && paper.length >= paper.keyPageCount && !continues;
 }
 
@@ -108,9 +115,13 @@ function readingNameKey(r: ScanPageReading): string | null {
   return nameKey(cleanName(r.studentName));
 }
 
-/** How many pages a student's paper usually has: the answer key's page count, else the highest page an item is on. */
+/**
+ * How many pages a student's paper usually has, when the key tells: a blank worksheet's page count, or the
+ * highest page an item is on when the items are spread over several pages (a filled-in worksheet). Otherwise
+ * null: a key whose items are all on one page may be a separate list of answers for a longer worksheet.
+ */
 export function keyPageCountHint(key: Pick<AnswerKey, "sourcePageCount" | "documentKind">, items: Pick<KeyItem, "page">[]): number | null {
-  if (key.documentKind !== "student_work" && key.documentKind !== "unrelated" && key.sourcePageCount) return key.sourcePageCount;
-  const pages = items.flatMap((item) => (item.page === null ? [] : [item.page]));
-  return pages.length > 0 ? Math.max(...pages) : null;
+  if (key.documentKind === "blank_worksheet" && key.sourcePageCount) return key.sourcePageCount;
+  const pages = new Set(items.flatMap((item) => (item.page === null ? [] : [item.page])));
+  return pages.size > 1 ? Math.max(...pages) : null;
 }

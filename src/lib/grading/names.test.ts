@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanName, nameKey, nameSortKey } from "@/lib/grading/names";
+import { cleanName, nameKey, namesDiffer, namesShareWord, nameSortKey } from "@/lib/grading/names";
 
 describe("cleanName", () => {
   it.each<[string | null, string | null]>([
@@ -66,5 +66,53 @@ describe("nameSortKey", () => {
   it("sorts unnamed papers after every name", () => {
     const keys = [nameSortKey(null), nameSortKey("Zoe Young"), nameSortKey("Adam Abbott")];
     expect([...keys].sort()).toEqual(["abbott adam", "young zoe", "~"]);
+  });
+});
+
+describe("namesDiffer", () => {
+  it.each<[string, string]>([
+    ["Maria Garcia", "Maria"], // a first name alone
+    ["Maria Garcia", "Garcia, Maria"],
+    ["Maria Garcia", "Maria Elena Garcia"], // an added middle name
+    ["Jayden Smith", "Jaydon Smith"], // one letter off
+    ["Christopher Lee", "Christophe Lee"],
+    ["Alexandra Ng", "Alexsandre Ng"], // two letters off in a long word
+    ["J. Smith", "Jayden Smith"], // an initial
+    ["MARÍA O'BRIEN", "maria obrien"],
+  ])("treats %s and %s as the same student", (a, b) => {
+    expect(namesDiffer(a, b)).toBe(false);
+    expect(namesDiffer(b, a)).toBe(false);
+  });
+
+  it.each<[string, string]>([
+    ["Ana Ruiz", "Ben Cho"],
+    ["Maria Garcia", "Maria Lopez"],
+    ["Ben Cho", "Ken Cho"], // short words must match exactly
+    ["Ana", "Ava"],
+    ["Jayden Smith", "Jordan Smith"],
+    ["K. Smith", "Jayden Smith"],
+    ["Maria Garcia", "Mario Gonzalez"],
+  ])("treats %s and %s as different students", (a, b) => {
+    expect(namesDiffer(a, b)).toBe(true);
+    expect(namesDiffer(b, a)).toBe(true);
+  });
+
+  it("never calls a missing name different", () => {
+    expect(namesDiffer(null, "Ana Ruiz")).toBe(false);
+    expect(namesDiffer("Ana Ruiz", null)).toBe(false);
+    expect(namesDiffer("—", "Ana Ruiz")).toBe(false);
+  });
+
+  it("works on name keys as well as names", () => {
+    expect(namesDiffer(nameKey("Maria Garcia"), nameKey("Maria"))).toBe(false);
+    expect(namesDiffer(nameKey("Ana Ruiz"), nameKey("Ben Cho"))).toBe(true);
+  });
+});
+
+describe("namesShareWord", () => {
+  it("is true only for a word in common", () => {
+    expect(namesShareWord("Maria Garcia", "maría Lopez")).toBe(true);
+    expect(namesShareWord("Ana Ruiz", "Ben Cho")).toBe(false);
+    expect(namesShareWord(null, "Ben Cho")).toBe(false);
   });
 });

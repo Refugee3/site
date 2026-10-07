@@ -77,8 +77,11 @@ export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason:
   /** Grading can't run because there is no key at all, or Anthropic rejected the key in use. */
   keyIssue: "missing" | "rejected" | null }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
+/** Scans still waiting: being split by the AI, split and waiting for the teacher's check, or failed to split. */
+export interface PendingScans { splitting: number; review: number; failed: number; firstReviewId: string | null }
 export interface DashboardView { assignments: Array<{ id: string; title: string;
-  status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; released: boolean; createdAt: number }>;
+  status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans;
+  released: boolean; createdAt: number }>;
   studentsCanUpload: boolean }
 export interface AssignmentHeader { assignment: Assignment; shareUrl: string; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
   totalPointsCenti: number; counts: StatusCounts; canOpen: boolean; studentsCanUpload: boolean }
@@ -87,11 +90,12 @@ export interface BoardRow { submissionId: string; displayName: string; status: S
   source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number }
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
-  staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean }
+  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean }
 export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean;
   studentsCanUpload: boolean }
 export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore;
-  lesson: { id: string; reason: string; active: boolean } | null }
+  /** `sent`: the grader is sent it now; otherwise `notSent` says why (as on the Lessons tab). */
+  lesson: { id: string; reason: string; active: boolean; sent: boolean; notSent: LessonNotSentReason | null } | null }
 export interface ReviewView { submission: Submission; sections: Section[]; sectionLabel: string | null; items: ReviewItemView[];
   score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
   earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean }
@@ -130,21 +134,29 @@ export interface Lesson { id: string; assignmentId: string; itemId: string; subm
   aiAttempt: Attempt | null; aiCorrectness: Correctness | null; teacherAttempt: Attempt | null; teacherCorrectness: Correctness | null;
   overrideCenti: number | null; feedback: string | null; whatStudentDid: string | null; reason: string; active: boolean;
   createdAt: number; updatedAt: number }
-/** A lesson as sent to the grader (fields already truncated by toGuidanceLesson). */
+/**
+ * A lesson as sent to the grader (fields already truncated by toGuidanceLesson). `exact` is null when the teacher kept
+ * the AI's points, else whether the teacher's ruling scores exactly `overrideCenti` under the assignment's current scoring.
+ */
 export interface GuidanceLesson { itemId: string; studentAnswer: string; aiAttempt: Attempt | null; aiCorrectness: Correctness | null;
-  teacherAttempt: Attempt | null; teacherCorrectness: Correctness | null; reason: string; feedback: string | null; whatStudentDid: string | null }
+  teacherAttempt: Attempt | null; teacherCorrectness: Correctness | null; overrideCenti: number | null; exact: boolean | null;
+  reason: string; feedback: string | null; whatStudentDid: string | null }
 /** `lessons` in recency order (newest first), already selected and capped. */
 export interface GradingGuidance { preferences: string; lessons: GuidanceLesson[] }
-export type LessonNotSentReason = "inactive" | "agrees" | "no_reading" | "limit" | "unknown_item";
+/** `reading_fix`: the AI could not read the answer (blank, illegible, cannot judge) and the teacher gave no reason. */
+export type LessonNotSentReason = "inactive" | "agrees" | "no_reading" | "reading_fix" | "limit" | "unknown_item";
 
 // ---- v2: view models ----
 export type ApiKeySource = "app" | "env" | "none";
 export interface TeacherSettingsView {
   apiKey: { source: ApiKeySource; masked: string | null; check: "verified" | "unverified" | null; setAt: number | null;
     setByName: string | null; unreadable: boolean; envKeySet: boolean };
-  aiMode: "claude" | "fake"; model: string; studentsCanUpload: boolean; gradingPreferences: string; worker: WorkerStatus | null }
+  aiMode: "claude" | "fake"; model: string; studentsCanUpload: boolean;
+  /** Assignments (of every teacher) left open: they take student uploads again as soon as the switch is turned on. */
+  openAssignmentCount: number; gradingPreferences: string; worker: WorkerStatus | null }
+/** `paperDeleted`: the paper the correction was made on was deleted (`paperHref` is then null); the lesson can be deleted. */
 export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: number; itemMaxCenti: number; sent: boolean;
-  notSent: LessonNotSentReason | null; paperHref: string | null }
+  notSent: LessonNotSentReason | null; paperHref: string | null; paperDeleted: boolean }
 export interface LessonsView { lessons: LessonView[] /* key order, then newest first */; activeCount: number; sentCount: number;
   guidanceStaleCount: number; hasPreferences: boolean }
 export interface ScanSummary { id: string; status: ScanStatus; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null }

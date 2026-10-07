@@ -1,6 +1,7 @@
 import { getConfig } from "@/lib/config";
+import { markStoredApiKeyVerified } from "@/lib/db/repos/settings";
 import { resolveApiKey } from "./api-key";
-import { createClaudeGrader, createSdkKeyChecker, createSdkRunner, type KeyCheck } from "./claude";
+import { createClaudeGrader, createSdkKeyChecker, createSdkRunner, type KeyCheck, type MessageRunner } from "./claude";
 import { createFakeGrader } from "./fake";
 import type { Grader } from "./grader";
 
@@ -46,5 +47,27 @@ function graderFromConfig(): Grader | null {
   if (cfg.aiMode === "fake") return createFakeGrader();
   const resolved = resolveApiKey();
   if (resolved === null) return null;
-  return createClaudeGrader(createSdkRunner(cfg, resolved.source === "app" ? resolved.key : undefined), cfg);
+  if (resolved.source === "env") return createClaudeGrader(createSdkRunner(cfg), cfg);
+  return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), cfg);
+}
+
+/**
+ * Settings shows a saved key that couldn't be confirmed when it was saved (Anthropic unreachable, or the model not
+ * available to it) as "Not confirmed yet"; the first call made with it that succeeds confirms it.
+ */
+export function confirmKeyOnSuccess(runner: MessageRunner, ciphertext: string): MessageRunner {
+  let confirmed = false;
+  return async (params, o) => {
+    const message = await runner(params, o);
+    if (!confirmed) {
+      confirmed = true;
+      try {
+        markStoredApiKeyVerified(ciphertext);
+      } catch (e) {
+        // Only the badge in Settings depends on it; the answer the call paid for is kept.
+        console.error("[ai] couldn't mark the saved API key as confirmed", e);
+      }
+    }
+    return message;
+  };
 }

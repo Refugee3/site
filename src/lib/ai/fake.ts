@@ -89,7 +89,7 @@ function fakeKey(pageCount: number): KeyExtraction {
         note: "The key shows no drawing for this item, so this expected answer was proposed by the AI." }),
       item({ label: "5", answer_type: "long_answer", prompt: "Explain why leaves look green.",
         expected_answer: "Chlorophyll absorbs red and blue light and reflects green light.",
-        grading_criteria: "Full credit names chlorophyll and explains that green light is reflected.", points: 3, page: page(2) }),
+        grading_criteria: "Full credit names chlorophyll and explains that green light is reflected.", points: 3, page: page(3) }),
     ],
     stated_total_points: 10,
     notes: "Fake AI mode: these items are samples and were not read from the uploaded PDF.",

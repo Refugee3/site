@@ -6,7 +6,8 @@ import { decryptSecret } from "@/lib/secrets";
 // The Anthropic API key: one saved in the app (encrypted at rest) wins over ANTHROPIC_API_KEY.
 // The plaintext leaves this module only towards the SDK client; it is never logged.
 
-export type ResolvedApiKey = { source: "app"; key: string } | { source: "env" };
+/** `ciphertext` identifies the saved key (see markStoredApiKeyVerified) without the plaintext. */
+export type ResolvedApiKey = { source: "app"; key: string; ciphertext: string } | { source: "env" };
 
 const KEY_FORMAT = /^sk-ant-[A-Za-z0-9_-]{16,300}$/;
 const MASK_PREFIX = "sk-ant-";
@@ -16,7 +17,7 @@ export function resolveApiKey(): ResolvedApiKey | null {
   const { apiKeyCiphertext } = getAppSettings();
   if (apiKeyCiphertext !== null) {
     const key = decryptSecret(apiKeyCiphertext, "anthropic-api-key");
-    if (key !== null) return { source: "app", key };
+    if (key !== null) return { source: "app", key, ciphertext: apiKeyCiphertext };
     console.warn("[ai] the saved API key can't be decrypted");
   }
   return getConfig().hasApiKey ? { source: "env" } : null;

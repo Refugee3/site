@@ -123,7 +123,7 @@ describe("fake grader rulings", () => {
   function ruling(o: Partial<GuidanceLesson>): GuidanceLesson {
     return {
       itemId: "item-0", studentAnswer: "", aiAttempt: "complete", aiCorrectness: "correct", teacherAttempt: "complete",
-      teacherCorrectness: "minor_error", reason: "", feedback: null, whatStudentDid: null, ...o,
+      teacherCorrectness: "minor_error", overrideCenti: null, exact: null, reason: "", feedback: null, whatStudentDid: null, ...o,
     };
   }
 
@@ -167,7 +167,7 @@ describe("fake scan reading", () => {
   function scanInput(o: Partial<ReadScanInput> = {}): ReadScanInput {
     return {
       assignmentTitle: "Quiz", sections: [makeSection({ label: "Period 1" }), makeSection({ id: "s2", label: "Period 2" })], items: [],
-      keyPageCount: 3, chunkPdf: pdf("scan chunk"), firstPage: 1, chunkPageCount: 9, totalPages: 12, ...o,
+      keyPageCount: 3, chunkPdf: pdf("scan chunk"), firstPage: 1, chunkPageCount: 9, totalPages: 12, previousPage: null, ...o,
     };
   }
 

@@ -1,4 +1,4 @@
-import type { AiUsage, Assignment, GradingGuidance, KeyItem, Section } from "@/lib/types";
+import type { AiUsage, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
 import type { GradingOutput, KeyExtraction, ScanPages } from "./schemas";
 
 export interface AiCallMeta {
@@ -42,6 +42,17 @@ export interface ReadScanInput {
   firstPage: number;
   chunkPageCount: number;
   totalPages: number;
+  /** How the scan page just before the chunk was read, when it was; the chunk's first page is judged against it. */
+  previousPage: ScanPreviousPage | null;
+}
+
+export interface ScanPreviousPage {
+  /** 1-based page in the scan (firstPage - 1). */
+  page: number;
+  kind: ScanPageKind;
+  studentName: string | null;
+  worksheetPage: number | null;
+  pageMarker: string | null;
 }
 
 export interface CallOptions {

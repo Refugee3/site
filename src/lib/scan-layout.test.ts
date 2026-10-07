@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  aiProposedLayout,
   describePapers,
   droppedReason,
   everyNLayout,
   expectedPagesPerPaper,
   formatPageRanges,
+  paperNameLabel,
   papersFromLayout,
   SCAN_STATUS_LABEL,
   sameLayout,
@@ -115,6 +117,26 @@ describe("describePapers", () => {
   it("does not count a name without letters as a second name", () => {
     const papers = describePapers([start, keep], [reading({ studentName: "Ana" }), reading({ studentName: "123" })], o);
     expect(papers[0].flags).toEqual([]);
+  });
+});
+
+describe("paperNameLabel", () => {
+  it("says no name was found only when the AI read the scan", () => {
+    expect(paperNameLabel({ name: "Ana Ruiz" }, true)).toBe("Ana Ruiz");
+    expect(paperNameLabel({ name: null }, true)).toBe("No name found");
+    // Split every N pages without an AI run: names are read when each paper is graded.
+    for (const paper of describePapers(everyNLayout(7, 3), [], { keyPageCount: null, maxPagesPerPaper: 40 })) {
+      expect(paperNameLabel(paper, false)).toBeNull();
+    }
+  });
+});
+
+describe("aiProposedLayout", () => {
+  it("is the stored proposal only for a scan the AI read", () => {
+    const ai: ScanLayout = [start, keep, start];
+    expect(aiProposedLayout({ readings: [reading(), reading(), reading()], proposedLayout: ai })).toEqual(ai);
+    expect(aiProposedLayout({ readings: [reading()], proposedLayout: null })).toBeNull();
+    expect(aiProposedLayout({ readings: [], proposedLayout: everyNLayout(3, 1) })).toBeNull();
   });
 });
 
