@@ -1,18 +1,26 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiError } from "@/lib/ai/errors";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
+import { resetConfigForTests } from "@/lib/config";
+import { updateLesson } from "@/lib/db/repos/lessons";
+import { setStoredApiKey } from "@/lib/db/repos/settings";
 import { getSubmission, getSubmissionByReceipt, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
+import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jobs/test-utils";
+import { everyNLayout } from "@/lib/scan-layout";
 import { rotateShareCode, setFeedbackReleased } from "@/lib/services/assignments";
+import { saveApiKey, setStudentUploads } from "@/lib/services/settings";
 import { deleteSubmission, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride } from "@/lib/services/submissions";
 import {
-  buildGradesCsv, estimateCostUsd, getAssignmentHeader, getBoardView, getDashboardView, getReceiptView, getReviewView,
-  getSettingsView, getStudentUploadView,
+  buildGradesCsv, estimateCostUsd, getAssignmentHeader, getBoardView, getDashboardView, getKeyEditorView, getLessonsView,
+  getReceiptView, getReviewView, getScanReviewView, getSettingsView, getStudentUploadView, getTeacherSettingsView, getUploadPageView,
 } from "@/lib/services/views";
 import type { AiUsage, Assignment, KeyItem, Submission, SubmissionStatus, Teacher } from "@/lib/types";
-import { makePdf, seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
+import {
+  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson, seedScan, seedSubmission, seedTeacher, useTestDb,
+} from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
 const ORIGIN = "https://school.test";
@@ -25,6 +33,7 @@ beforeEach(() => {
   clock = T0;
   setClockForTests(() => clock);
   useTestDb();
+  enableStudentUploads();
   teacher = seedTeacher({ displayName: "Ms. Rivera" });
   assignment = seedAssignment(teacher.id, { status: "open", title: "Unit 4: Ratios & Rates!" });
   items = seedApprovedKey(assignment.id, [
@@ -234,6 +243,7 @@ describe("teacher views", () => {
     expect(header).toEqual({
       assignment, shareUrl: `${ORIGIN}/s/${assignment.shareCode}`, keyStatus: "ready", keyApproved: true, itemCount: 3,
       totalPointsCenti: 400, counts: { queued: 0, grading: 0, graded: 1, needs_review: 0, failed: 0, total: 1 }, canOpen: false,
+      studentsCanUpload: true,
     });
   });
 
@@ -288,5 +298,188 @@ describe("getStudentUploadView", () => {
       accepting: true, maxUploadMb: 20, maxPages: 40, maxFiles: 20,
     });
     expect(getStudentUploadView("ZZZZZZ")).toBeNull();
+  });
+});
+
+describe("with student uploads turned off", () => {
+  beforeEach(() => {
+    setStudentUploads(false);
+  });
+
+  it("an open assignment accepts nothing, and nothing offers to open one", async () => {
+    const draft = seedAssignment(teacher.id);
+    seedApprovedKey(draft.id, [{ label: "1" }]);
+
+    expect(getStudentUploadView(assignment.shareCode)).toMatchObject({ status: "open", accepting: false });
+    expect(getBoardView(assignment, "all")).toMatchObject({ open: false, studentsCanUpload: false });
+    expect(getAssignmentHeader(draft, ORIGIN)).toMatchObject({ keyApproved: true, canOpen: false, studentsCanUpload: false });
+    expect(getDashboardView(teacher).studentsCanUpload).toBe(false);
+    expect(getKeyEditorView(assignment).studentsCanUpload).toBe(false);
+  });
+
+  it("receipts keep working but don't ask the student to submit again", async () => {
+    enableStudentUploads();
+    const paper = await gradedPaper("Maria Lopez");
+    setStudentUploads(false);
+
+    expect(getReceiptView(paper.receiptToken)).toMatchObject({ phase: "checked", canResubmit: false });
+    enableStudentUploads();
+    expect(getReceiptView(paper.receiptToken)!.canResubmit).toBe(true);
+  });
+
+  it("offers to open a draft with an approved key again once they are on", () => {
+    const draft = seedAssignment(teacher.id);
+    seedApprovedKey(draft.id, [{ label: "1" }]);
+    enableStudentUploads();
+    expect(getAssignmentHeader(draft, ORIGIN)).toMatchObject({ canOpen: true, studentsCanUpload: true });
+  });
+});
+
+describe("guidance in the teacher views", () => {
+  it("counts the current, unreviewed papers graded before the latest guidance on the board", async () => {
+    await gradedPaper("Maria Lopez", "maria-1");
+    await gradedPaper("Maria Lopez", "maria-2");
+    const flagged = await gradedPaper(null);
+    expect(getBoardView(assignment, "all").guidanceStaleCount).toBe(0);
+
+    setGradingPreferences(teacher.id, "Ignore spelling.");
+    // Maria's earlier attempt is folded under her newest one and is not counted.
+    expect(getBoardView(assignment, "all").guidanceStaleCount).toBe(2);
+    markReviewed(getSubmission(flagged.id)!);
+    expect(getBoardView(assignment, "all").guidanceStaleCount).toBe(1);
+  });
+
+  it("shows each item's lesson and whether the paper was graded before the latest guidance", async () => {
+    const paper = await gradedPaper("Maria Lopez");
+    expect(getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).guidanceStale).toBe(false);
+
+    saveItemOverride(paper, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit without units." });
+
+    const view = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    expect(view.items.map((item) => item.lesson)).toEqual([
+      { id: expect.any(String), reason: "Half credit without units.", active: true }, null, null,
+    ]);
+    expect(view.guidanceStale).toBe(true);
+  });
+
+  it("lists lessons by key item, newest first, with why any is not sent", () => {
+    const papers = Array.from({ length: 7 }, () => seedSubmission(assignment.id, { status: "graded" }));
+    const lesson = (paper: Submission, item: KeyItem, o: Partial<Parameters<typeof seedLesson>[0]> = {}) => {
+      clock += 1000;
+      return seedLesson({ assignmentId: assignment.id, submissionId: paper.id, itemId: item.id, reason: "A reason.", ...o });
+    };
+    const onFirst = papers.slice(0, 6).map((paper) => lesson(paper, items[0]));
+    const off = lesson(papers[6], items[1], { active: false });
+    const agrees = lesson(papers[5], items[2], { teacherAttempt: "complete", teacherCorrectness: "incorrect", reason: "" });
+    const unread = lesson(papers[6], items[2], {
+      aiAttempt: null, aiCorrectness: null, teacherAttempt: null, teacherCorrectness: null, overrideCenti: null, feedback: "See me.",
+    });
+
+    const view = getLessonsView(assignment);
+
+    expect(view.lessons.map((entry) => [entry.lesson.id, entry.itemLabel, entry.itemPosition, entry.sent, entry.notSent])).toEqual([
+      ...[...onFirst].reverse().map((l, i) => [l.id, "1", 0, i < 5, i < 5 ? null : "limit"]),
+      [off.id, "2a", 1, false, "inactive"],
+      [unread.id, "2b", 2, false, "no_reading"],
+      [agrees.id, "2b", 2, false, "agrees"],
+    ]);
+    expect(view.lessons[0]).toMatchObject({
+      itemMaxCenti: 100, paperHref: `/teacher/assignments/${assignment.id}/submissions/${papers[5].id}`,
+    });
+    expect(view).toMatchObject({ activeCount: 8, sentCount: 5, hasPreferences: false });
+  });
+
+  it("counts the papers a regrade with the latest guidance would cover, and links lessons only to papers that still exist", async () => {
+    const paper = await gradedPaper("Maria Lopez");
+    saveItemOverride(paper, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit." });
+    setGradingPreferences(teacher.id, "Ignore spelling.");
+    expect(getLessonsView(assignment)).toMatchObject({ guidanceStaleCount: 1, sentCount: 1, activeCount: 1, hasPreferences: true });
+
+    const [entry] = getLessonsView(assignment).lessons;
+    updateLesson(entry.lesson.id, { active: false });
+    await deleteSubmission(getSubmission(paper.id)!);
+
+    expect(getLessonsView(assignment)).toMatchObject({
+      lessons: [{ sent: false, notSent: "inactive", paperHref: null }], guidanceStaleCount: 0, sentCount: 0, activeCount: 0,
+    });
+  });
+});
+
+describe("upload and scan views", () => {
+  it("describes the upload page with the scans, newest first", async () => {
+    const view = getUploadPageView(assignment);
+    expect(view).toEqual({
+      keyApproved: true, keyPageCount: null, scans: [], maxUploadMb: 20, maxPages: 40, maxScanMb: 100, maxScanPages: 200,
+      studentsCanUpload: true,
+    });
+
+    const older = await seedScan(assignment.id, { pages: 4 });
+    clock += 1000;
+    const newer = await seedScan(assignment.id, { pages: 6, status: "done" });
+    seedApprovedKey(assignment.id, [{ label: "1", page: 1 }, { label: "2", page: 2 }]);
+
+    expect(getUploadPageView(assignment)).toMatchObject({
+      keyPageCount: 2,
+      scans: [
+        { id: newer.id, status: "done", originalFilename: "scan.pdf", pageCount: 6, createdAt: newer.createdAt, createdCount: null },
+        { id: older.id, status: "splitting", pageCount: 4 },
+      ],
+    });
+  });
+
+  it("describes a scan for review without its stored path, hash or AI accounting", async () => {
+    const layout = everyNLayout(6, 3);
+    const scan = await seedScan(assignment.id, { pages: 6, status: "review", splitMode: "every", pagesPerPaper: 3, layout });
+    seedSubmission(assignment.id);
+    const limited = { ...assignment, maxSubmissions: 4 };
+
+    const view = getScanReviewView(scan, limited);
+
+    expect(view).toMatchObject({
+      pdfUrl: `/api/teacher/scans/${scan.id}/pdf`, keyApproved: true, keyPageCount: null, maxPagesPerPaper: 40, remainingSubmissions: 3,
+      scan: { id: scan.id, status: "review", splitMode: "every", pagesPerPaper: 3, pageCount: 6, layout, proposedLayout: layout },
+    });
+    for (const hidden of ["pdfPath", "contentSha256", "aiModel", "usage"]) expect(view.scan).not.toHaveProperty(hidden);
+    expect(getScanReviewView(scan, { ...assignment, maxSubmissions: 1 }).remainingSubmissions).toBe(0);
+  });
+});
+
+describe("getTeacherSettingsView", () => {
+  const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz-a1b2";
+
+  it("shows no key, the student switch and the teacher's preferences", () => {
+    setGradingPreferences(teacher.id, "Ignore spelling.");
+    expect(getTeacherSettingsView(teacher)).toEqual({
+      apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
+      aiMode: "fake", model: "claude-opus-5-5", studentsCanUpload: true, gradingPreferences: "Ignore spelling.", worker: null,
+    });
+  });
+
+  it("falls back to the server's ANTHROPIC_API_KEY", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-server-key-0000000000000000");
+    resetConfigForTests();
+    expect(getTeacherSettingsView(teacher).apiKey).toMatchObject({ source: "env", masked: null, envKeySet: true });
+  });
+
+  it("shows a saved key only masked, with who saved it and when", async () => {
+    await saveApiKey(teacher, KEY, async () => "unreachable");
+
+    const view = getTeacherSettingsView(seedTeacher());
+
+    expect(view.apiKey).toEqual({
+      source: "app", masked: "sk-ant-…a1b2", check: "unverified", setAt: T0, setByName: "Ms. Rivera", unreadable: false, envKeySet: false,
+    });
+    expect(JSON.stringify(view)).not.toContain(KEY);
+    expect(JSON.stringify(view)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("says when the saved key can't be decrypted, and falls back like the grader does", () => {
+    setStoredApiKey({ ciphertext: "v1.AAAA.AAAA.AAAA", masked: "sk-ant-…a1b2", check: "verified", setBy: teacher.id });
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-server-key-0000000000000000");
+    resetConfigForTests();
+
+    expect(getTeacherSettingsView(teacher).apiKey).toEqual({
+      source: "env", masked: null, check: null, setAt: null, setByName: null, unreadable: true, envKeySet: true,
+    });
   });
 });

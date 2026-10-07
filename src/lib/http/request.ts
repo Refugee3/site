@@ -68,14 +68,22 @@ export async function formFiles(fd: FormData, field: string, max: number): Promi
   return Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
 }
 
-/** Run by every upload handler after its cheap checks: the body within budget, its files, and their summed size within MAX_UPLOAD_MB. */
-export async function readUploadedFiles(req: Request, field: string, maxFiles: number): Promise<UploadedFile[]> {
-  const { maxUploadBytes } = getConfig();
-  const fd = await readLimitedFormData(req, maxUploadBytes + MULTIPART_OVERHEAD_BYTES);
+/**
+ * Run by every upload handler after its cheap checks: the body within budget, its files, and their summed
+ * size within `maxBytes` (MAX_UPLOAD_MB unless given, e.g. MAX_SCAN_MB for a whole-class scan).
+ */
+export async function readUploadedFiles(
+  req: Request,
+  field: string,
+  maxFiles: number,
+  o: { maxBytes?: number } = {},
+): Promise<UploadedFile[]> {
+  const maxBytes = o.maxBytes ?? getConfig().maxUploadBytes;
+  const fd = await readLimitedFormData(req, maxBytes + MULTIPART_OVERHEAD_BYTES);
   const files = await formFiles(fd, field, maxFiles);
   const totalBytes = files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
-  if (totalBytes > maxUploadBytes) {
-    throw new AppError("too_large", `Uploads can be at most ${maxUploadBytes / 1_048_576} MB in total.`);
+  if (totalBytes > maxBytes) {
+    throw new AppError("too_large", `Uploads can be at most ${maxBytes / 1_048_576} MB in total.`);
   }
   return files;
 }

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { AppError } from "@/lib/errors";
 import {
-  checkCodeLookup, checkLogin, checkSignup, checkStudentUpload, countCodeLookupMiss, countStudentSubmission, hit,
+  checkApiKeySave, checkCodeLookup, checkLogin, checkSignup, checkStudentUpload, countCodeLookupMiss, countStudentSubmission, hit,
   resetRateLimitsForTests,
 } from "@/lib/http/rate-limit";
 
@@ -223,5 +223,20 @@ describe("checkSignup", () => {
   it("does not count refunded attempts (anything but a wrong code) against the code budget", () => {
     for (let i = 0; i < 100; i++) checkSignup(`ip-${i}`).refund();
     expect(() => checkSignup("203.0.113.7")).not.toThrow();
+  });
+});
+
+describe("checkApiKeySave", () => {
+  it("allows 10 key checks per teacher per hour, counting every attempt", () => {
+    const error = refusalAfter(10, () => checkApiKeySave("teacher-1"));
+    expect(error).toMatchObject({
+      code: "rate_limited", message: "Too many key checks. Try again in 60 minutes.", extra: { retryAfterMs: 60 * MINUTE },
+    });
+    expect(() => checkApiKeySave("teacher-2")).not.toThrow();
+
+    clock += 45 * MINUTE;
+    expect(() => checkApiKeySave("teacher-1")).toThrow("Try again in 15 minutes.");
+    clock += 15 * MINUTE;
+    expect(() => checkApiKeySave("teacher-1")).not.toThrow();
   });
 });

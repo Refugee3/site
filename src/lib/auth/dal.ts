@@ -3,13 +3,15 @@ import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import { now } from "@/lib/clock";
 import { getAssignmentForTeacher } from "@/lib/db/repos/assignments";
+import { getLessonForTeacher } from "@/lib/db/repos/lessons";
+import { getScanForTeacher } from "@/lib/db/repos/scans";
 import { findSessionTeacher } from "@/lib/db/repos/sessions";
 import { getSubmissionForTeacher } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
 import { isId } from "@/lib/ids";
 import { RETURN_TO_HEADER, safeNextPath, TEACHER_HOME } from "@/lib/auth/next-path";
 import { SESSION_COOKIE, sessionTokenHash } from "@/lib/auth/session";
-import type { Assignment, Submission, Teacher } from "@/lib/types";
+import type { Assignment, Lesson, Scan, Submission, Teacher } from "@/lib/types";
 
 // The data access layer is the auth boundary (authentication.md): every teacher page, action and route
 // handler goes through it, because layouts are not re-checked on navigation. src/proxy.ts checks nothing;
@@ -44,6 +46,18 @@ export async function requireOwnedSubmission(id: string): Promise<{ teacher: Tea
   return { teacher, ...owned };
 }
 
+export async function requireOwnedLesson(id: string): Promise<{ teacher: Teacher; assignment: Assignment; lesson: Lesson }> {
+  const teacher = await requireTeacher();
+  const owned = findOwnedLesson(id, teacher) ?? notFound();
+  return { teacher, ...owned };
+}
+
+export async function requireOwnedScan(id: string): Promise<{ teacher: Teacher; assignment: Assignment; scan: Scan }> {
+  const teacher = await requireTeacher();
+  const owned = findOwnedScan(id, teacher) ?? notFound();
+  return { teacher, ...owned };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Route handlers: they answer with JSON errors (401, 404) and never redirect.
 
@@ -71,6 +85,12 @@ export function ownedSubmissionOr404(id: string, teacher: Teacher): { assignment
   return owned;
 }
 
+export function ownedScanOr404(id: string, teacher: Teacher): { assignment: Assignment; scan: Scan } {
+  const owned = findOwnedScan(id, teacher);
+  if (!owned) throw notFoundError();
+  return owned;
+}
+
 function notFoundError(): AppError {
   return new AppError("not_found", "Not found.");
 }
@@ -83,4 +103,12 @@ function findOwnedAssignment(id: string, teacher: Teacher): Assignment | null {
 
 function findOwnedSubmission(id: string, teacher: Teacher): { assignment: Assignment; submission: Submission } | null {
   return typeof id === "string" && isId(id) ? getSubmissionForTeacher(id, teacher.id) : null;
+}
+
+function findOwnedLesson(id: string, teacher: Teacher): { assignment: Assignment; lesson: Lesson } | null {
+  return typeof id === "string" && isId(id) ? getLessonForTeacher(id, teacher.id) : null;
+}
+
+function findOwnedScan(id: string, teacher: Teacher): { assignment: Assignment; scan: Scan } | null {
+  return typeof id === "string" && isId(id) ? getScanForTeacher(id, teacher.id) : null;
 }

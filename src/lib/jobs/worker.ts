@@ -1,17 +1,20 @@
 import { getGrader } from "@/lib/ai";
+import type { AiErrorCode } from "@/lib/ai/errors";
 import type { Grader } from "@/lib/ai/grader";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { getDb, tx } from "@/lib/db/connection";
 import {
-  claimNextJob, completeJob, failJob, pruneFinishedJobs, queueStats, recoverRunningJobs, requeueJob, requeueOrphanedRunningJobs,
+  claimNextJob, completeJob, failJob, pruneFinishedJobs, queueStats, recoverRunningJobs, releasePausedJobs, requeueJob,
+  requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { listProcessingKeysWithoutJob } from "@/lib/db/repos/keys";
+import { listSplittingScansWithoutJob, resetCreatingScans } from "@/lib/db/repos/scans";
 import { deleteExpiredSessions } from "@/lib/db/repos/sessions";
 import { listQueuedWithoutJob, resetGradingToQueued } from "@/lib/db/repos/submissions";
 import { nextRunAfter } from "@/lib/jobs/backoff";
-import { failTarget, handleExtractKey, handleGradeSubmission, type HandlerResult } from "@/lib/jobs/handlers";
-import { enqueueExtractKey, enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
+import { failTarget, handleExtractKey, handleGradeSubmission, handleSplitScan, type HandlerResult } from "@/lib/jobs/handlers";
+import { enqueueExtractKey, enqueueGrade, enqueueSplitScan, PRIORITY } from "@/lib/jobs/queue";
 import { ensureDataDirs, sweepTmp } from "@/lib/storage/files";
 import type { Job, JobKind, WorkerStatus } from "@/lib/types";
 
@@ -26,6 +29,8 @@ export interface Worker {
   inFlightJobIds(): number[];
   /** Requeues `running` jobs this worker does not run (their outcome was never recorded); returns how many. */
   recoverOrphans(): number;
+  /** Ends a pause and makes the jobs it deferred runnable now: the API key changed. */
+  resume(): void;
 }
 
 type Handler = (job: Job, grader: Grader, signal: AbortSignal) => Promise<HandlerResult>;
@@ -33,22 +38,28 @@ type Handler = (job: Job, grader: Grader, signal: AbortSignal) => Promise<Handle
 const HANDLERS: Record<JobKind, Handler> = {
   extract_key: handleExtractKey,
   grade_submission: handleGradeSubmission,
+  split_scan: handleSplitScan,
 };
 
 const CRASH_MESSAGES: Record<JobKind, string> = {
   extract_key: "Internal error while reading the answer key.",
   grade_submission: "Internal error while processing this paper.",
+  split_scan: "Internal error while reading the scan.",
 };
 
-const NO_API_KEY = "ANTHROPIC_API_KEY is not set";
+const NO_API_KEY = "No Anthropic API key. Add one in Settings.";
 /** After an outcome could not be recorded, the next attempt to put the job back (the database may be busy for a while). */
 const ORPHAN_RETRY_MS = 30_000;
 
 /**
  * The in-process job runner. It applies each handler's result to the jobs table, runs at most
- * `concurrency` jobs at once, and claims nothing while it has no grader or is paused.
+ * `concurrency` jobs at once, and claims nothing while it has no grader or is paused. Given a function, it
+ * asks it for the grader every time, so a key saved in Settings is used without a restart; running jobs
+ * finish on the grader they started with.
  */
-export function createWorker(o: { grader: Grader | null; concurrency: number; pollMs: number }): Worker {
+export function createWorker(o: { grader: Grader | null | (() => Grader | null); concurrency: number; pollMs: number }): Worker {
+  const given = o.grader;
+  const currentGrader = typeof given === "function" ? given : () => given;
   // Each running job with the controller that aborts its AI call (on the job timeout, or when the worker stops).
   const inFlight = new Map<Promise<void>, { abort: AbortController; jobId: number }>();
   let running = false;
@@ -56,10 +67,15 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
   let tickScheduled = false;
   let pausedUntil = 0;
   let pauseReason: string | null = null;
+  let pauseCode: AiErrorCode | null = null;
 
   function pauseState(): string | null {
-    if (o.grader === null) return NO_API_KEY;
-    return now() < pausedUntil ? pauseReason : null;
+    if (currentGrader() === null) return NO_API_KEY;
+    return isPaused() ? pauseReason : null;
+  }
+
+  function isPaused(): boolean {
+    return now() < pausedUntil;
   }
 
   function claim(): Job | null {
@@ -136,9 +152,11 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
         failJob(job.id, result.error);
         return;
       case "pause":
-        requeueJob(job.id, { runAfter: result.resumeAt, error: result.reason, refundAttempt: true });
+        // Marked paused, so a key fix (resume) runs it at once while ordinary backoffs keep their run_after.
+        requeueJob(job.id, { runAfter: result.resumeAt, error: result.reason, refundAttempt: true, paused: true });
         pausedUntil = result.resumeAt;
         pauseReason = result.reason;
+        pauseCode = result.code;
         console.warn(`[worker] paused until ${new Date(result.resumeAt).toISOString()}: ${result.reason}`);
         return;
     }
@@ -159,12 +177,14 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
 
   function tick(): void {
     tickScheduled = false;
-    if (!running || o.grader === null) return;
+    if (!running) return;
     try {
+      const grader = currentGrader();
+      if (grader === null) return;
       while (inFlight.size < o.concurrency) {
         const job = claim();
         if (!job) break;
-        void launch(job, o.grader);
+        void launch(job, grader);
       }
     } catch (e) {
       console.error("[worker] could not claim a job", e);
@@ -197,23 +217,33 @@ export function createWorker(o: { grader: Grader | null; concurrency: number; po
     kick: scheduleTick,
     status() {
       const reason = running ? pauseState() : null;
+      const grader = currentGrader();
       return {
         state: !running ? "stopped" : reason !== null ? "paused" : "running",
         reason,
         // getGrader() only returns null in claude mode without an API key.
-        aiMode: o.grader?.mode ?? "claude",
+        aiMode: grader?.mode ?? "claude",
+        keyIssue: grader === null ? "missing" : isPaused() && pauseCode === "auth" ? "rejected" : null,
         ...queueStats(),
       };
     },
     async runOnce() {
-      if (o.grader === null) return false;
+      const grader = currentGrader();
+      if (grader === null) return false;
       const job = claim();
       if (!job) return false;
-      await launch(job, o.grader);
+      await launch(job, grader);
       return true;
     },
     inFlightJobIds,
     recoverOrphans,
+    resume() {
+      pausedUntil = 0;
+      pauseReason = null;
+      pauseCode = null;
+      releasePausedJobs(now());
+      scheduleTick();
+    },
   };
 }
 
@@ -237,7 +267,7 @@ export async function startWorker(): Promise<void> {
   const cfg = getConfig();
   getDb();
   // Taking the slot before the first await makes a concurrent second call return early.
-  const worker = withMaintenance(createWorker({ grader: getGrader(), concurrency: cfg.concurrency, pollMs: POLL_MS }));
+  const worker = withMaintenance(createWorker({ grader: getGrader, concurrency: cfg.concurrency, pollMs: POLL_MS }));
   slots[WORKER_SLOT] = worker;
   try {
     await ensureDataDirs();
@@ -251,19 +281,27 @@ export async function startWorker(): Promise<void> {
   worker.start();
 }
 
-/** Boot recovery: only one instance runs, so anything running or grading now was left by a dead process. */
+/**
+ * Boot recovery: only one instance runs, so anything running, grading or creating papers now was left by a
+ * dead process. A restart is also how an ANTHROPIC_API_KEY fix arrives, so jobs a pause deferred run at once.
+ */
 function recoverOrphanedWork(): void {
   tx(() => {
     const jobs = recoverRunningJobs();
     const papers = resetGradingToQueued();
+    const scans = resetCreatingScans();
     const unqueuedPapers = listQueuedWithoutJob();
     for (const s of unqueuedPapers) {
       enqueueGrade(s.id, s.assignmentId, s.source === "student" ? PRIORITY.student : PRIORITY.teacher);
     }
     const unqueuedKeys = listProcessingKeysWithoutJob();
     for (const assignmentId of unqueuedKeys) enqueueExtractKey(assignmentId);
-    if (jobs + papers + unqueuedPapers.length + unqueuedKeys.length > 0) {
-      console.info(`[worker] recovered ${jobs} jobs and ${papers} papers; re-queued ${unqueuedPapers.length} papers and ${unqueuedKeys.length} keys`);
+    const unqueuedScans = listSplittingScansWithoutJob();
+    for (const scan of unqueuedScans) enqueueSplitScan(scan.id, scan.assignmentId);
+    releasePausedJobs(now());
+    if (jobs + papers + scans + unqueuedPapers.length + unqueuedKeys.length + unqueuedScans.length > 0) {
+      console.info(`[worker] recovered ${jobs} jobs, ${papers} papers and ${scans} scans; `
+        + `re-queued ${unqueuedPapers.length} papers, ${unqueuedKeys.length} keys and ${unqueuedScans.length} scans`);
     }
   });
 }

@@ -1,0 +1,161 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { KeyCheck } from "@/lib/ai";
+import { createFakeGrader } from "@/lib/ai/fake";
+import { getGrader, setGraderForTests } from "@/lib/ai/index";
+import { setClockForTests } from "@/lib/clock";
+import { resetConfigForTests } from "@/lib/config";
+import { getAppSettings } from "@/lib/db/repos/settings";
+import { getGradingPreferences } from "@/lib/db/repos/teachers";
+import { decryptSecret } from "@/lib/secrets";
+import {
+  removeApiKey, saveApiKey, saveGradingPreferences, setStudentUploads, studentUploadsEnabled, UPLOADS_OFF_MESSAGE, type KeyChecker,
+} from "@/lib/services/settings";
+import type { Teacher } from "@/lib/types";
+import { seedTeacher, useTestDb } from "@/test/helpers";
+
+const T0 = 1_700_000_000_000;
+const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789-a1b2";
+let teacher: Teacher;
+
+beforeEach(() => {
+  setClockForTests(() => T0);
+  useTestDb();
+  teacher = seedTeacher();
+});
+
+function checker(result: KeyCheck) {
+  return vi.fn<KeyChecker>(async () => result);
+}
+
+/** A stand-in worker in the process-wide slot, so the service's resumeWorker() reaches it. */
+function registerWorker() {
+  const resume = vi.fn();
+  (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("pag.worker")] = {
+    kick: () => {}, status: () => null, resume, stop: async () => {},
+  };
+  return resume;
+}
+
+describe("the student switch", () => {
+  it("starts off and can be turned on and off", () => {
+    expect(studentUploadsEnabled()).toBe(false);
+    setStudentUploads(true);
+    expect(studentUploadsEnabled()).toBe(true);
+    setStudentUploads(false);
+    expect(studentUploadsEnabled()).toBe(false);
+  });
+
+  it("tells students to hand in their paper", () => {
+    expect(UPLOADS_OFF_MESSAGE).toBe("Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.");
+  });
+});
+
+describe("saveApiKey", () => {
+  it("checks the trimmed key, stores it encrypted and masked, and says nothing more when it works", async () => {
+    const check = checker("ok");
+
+    expect(await saveApiKey(teacher, `  ${KEY}\n`, check)).toEqual({ warning: null });
+
+    expect(check).toHaveBeenCalledWith(KEY);
+    const settings = getAppSettings();
+    expect(settings).toMatchObject({ apiKeyMasked: "sk-ant-…a1b2", apiKeyCheck: "verified", apiKeySetBy: teacher.id, apiKeySetAt: T0 });
+    expect(settings.apiKeyCiphertext).not.toContain(KEY);
+    expect(decryptSecret(settings.apiKeyCiphertext!, "anthropic-api-key")).toBe(KEY);
+  });
+
+  it("saves a key whose model isn't available, with a warning naming the model", async () => {
+    expect(await saveApiKey(teacher, KEY, checker("model_unavailable"))).toEqual({
+      warning: "Key saved. It works, but the model claude-opus-5-5 isn't available to it, so grading will pause until it is.",
+    });
+    expect(getAppSettings().apiKeyCheck).toBe("verified");
+  });
+
+  it("saves a key that couldn't be checked as unverified, with a warning", async () => {
+    expect(await saveApiKey(teacher, KEY, checker("unreachable"))).toEqual({
+      warning: "Key saved, but Anthropic couldn't be reached to check it. If the key is wrong, grading will pause and say so.",
+    });
+    expect(getAppSettings()).toMatchObject({ apiKeyCheck: "unverified", apiKeyMasked: "sk-ant-…a1b2" });
+  });
+
+  it("saves nothing when Anthropic rejects the key", async () => {
+    const message = "Anthropic rejected this key. Check that you copied all of it and that it hasn't been revoked.";
+    const resume = registerWorker();
+
+    await expect(saveApiKey(teacher, KEY, checker("rejected"))).rejects.toMatchObject({
+      code: "validation", message, extra: { fieldErrors: { apiKey: [message] } },
+    });
+    expect(getAppSettings()).toMatchObject({ apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null });
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["", "Paste your API key."],
+    ["sk-ant-admin01-abcdefghijklmnopqrstuvwxyz", "That's an Admin API key. Use a regular API key from Console → API keys."],
+    ["sk-ant-api03 with spaces in it", "That doesn't look like an Anthropic API key. It starts with sk-ant- and has no spaces."],
+  ])("refuses %j before asking Anthropic", async (raw, message) => {
+    const check = checker("ok");
+    await expect(saveApiKey(teacher, raw, check)).rejects.toMatchObject({
+      code: "validation", message, extra: { fieldErrors: { apiKey: [message] } },
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(getAppSettings().apiKeyCiphertext).toBeNull();
+  });
+
+  it("drops the memoized grader and resumes the worker, so grading switches to the new key at once", async () => {
+    const forced = createFakeGrader({ delayMs: 0 });
+    setGraderForTests(forced);
+    const resume = registerWorker();
+
+    await saveApiKey(teacher, KEY, checker("ok"));
+
+    expect(getGrader()).not.toBe(forced);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a server without any key a Claude grader", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(getGrader()).toBeNull();
+
+    await saveApiKey(teacher, KEY, checker("ok"));
+
+    // Built, never called: nothing touches the network.
+    expect(getGrader()?.mode).toBe("claude");
+  });
+});
+
+describe("removeApiKey", () => {
+  it("clears the saved key, drops the grader and resumes the worker", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    await saveApiKey(teacher, KEY, checker("ok"));
+    expect(getGrader()).not.toBeNull();
+    const resume = registerWorker();
+
+    removeApiKey();
+
+    expect(getAppSettings()).toMatchObject({
+      apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null, apiKeySetAt: null,
+    });
+    expect(getGrader()).toBeNull();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("saveGradingPreferences", () => {
+  it("stores the trimmed text, up to 4000 characters", () => {
+    saveGradingPreferences(teacher, "  Ignore spelling.\n");
+    expect(getGradingPreferences(teacher.id)).toBe("Ignore spelling.");
+
+    saveGradingPreferences(teacher, "é".repeat(4000));
+    expect(getGradingPreferences(teacher.id)).toHaveLength(4000);
+  });
+
+  it("refuses more than 4000 characters", () => {
+    const message = "Use at most 4000 characters.";
+    expect(() => saveGradingPreferences(teacher, "x".repeat(4001))).toThrow(expect.objectContaining({
+      code: "validation", message, extra: { fieldErrors: { gradingPreferences: [message] } },
+    }));
+    expect(getGradingPreferences(teacher.id)).toBe("");
+  });
+});

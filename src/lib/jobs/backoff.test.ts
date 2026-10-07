@@ -9,7 +9,8 @@ const LIMITS = { now: NOW, maxTokens: 64_000, maxTokensCeiling: 128_000, rand: (
 function makeJob(o: Partial<Job> = {}): Job {
   return {
     id: 1, kind: "grade_submission", targetId: "s1", assignmentId: "a1", status: "running", priority: 10, attempts: 1,
-    maxAttempts: 4, runAfter: NOW, maxTokens: null, lastError: null, createdAt: NOW, updatedAt: NOW, finishedAt: null, ...o,
+    maxAttempts: 4, runAfter: NOW, maxTokens: null, lastError: null, createdAt: NOW, updatedAt: NOW, finishedAt: null, paused: false,
+    ...o,
   };
 }
 
@@ -58,18 +59,18 @@ describe("decideFailure", () => {
     });
   });
 
-  it("row 2: pauses the worker for 5 minutes on a rejected key or an unknown model", () => {
+  it("row 2: pauses the worker for 5 minutes on a rejected key or an unknown model, with the error code", () => {
     expect(decideFailure(makeJob(), aiError("auth", { pauseWorker: true }), LIMITS)).toEqual({
-      action: "pause", resumeAt: NOW + 300_000, reason: "API key rejected — check ANTHROPIC_API_KEY",
+      action: "pause", resumeAt: NOW + 300_000, reason: "Anthropic rejected the API key. Replace it in Settings.", code: "auth",
     });
     expect(decideFailure(makeJob(), aiError("model_not_found", { pauseWorker: true }), LIMITS)).toEqual({
-      action: "pause", resumeAt: NOW + 300_000, reason: "Model not found — check ANTHROPIC_MODEL",
+      action: "pause", resumeAt: NOW + 300_000, reason: "Model not found — check ANTHROPIC_MODEL", code: "model_not_found",
     });
   });
 
   it("row 2: pauses the worker on a billing problem (no credits) instead of failing the paper", () => {
     expect(decideFailure(makeJob(), aiError("billing", { pauseWorker: true }), LIMITS)).toEqual({
-      action: "pause", resumeAt: NOW + 300_000, reason: "Billing problem — check the plan and credits in the Anthropic Console",
+      action: "pause", resumeAt: NOW + 300_000, reason: "Billing problem — check the plan and credits in the Anthropic Console", code: "billing",
     });
   });
 
@@ -100,6 +101,22 @@ describe("decideFailure", () => {
     expect(decideFailure(makeJob(), aiError("request_too_large"), LIMITS)).toEqual({ action: "fail", message: "This PDF is too large for the AI." });
     expect(decideFailure(makeJob({ attempts: 4 }), aiError("invalid_output", { retryable: true }), LIMITS)).toEqual({
       action: "fail", message: "The AI returned an unusable answer several times.",
+    });
+  });
+
+  it("points a failed scan split to splitting every N pages", () => {
+    const split = (o: Partial<Job>) => makeJob({ kind: "split_scan", ...o });
+    expect(decideFailure(split({ maxTokens: 128_000 }), aiError("max_tokens", { retryable: true }), LIMITS)).toEqual({
+      action: "fail", message: "The AI's answer was too long. Split the scan every N pages instead.",
+    });
+    expect(decideFailure(split({}), aiError("request_too_large"), LIMITS)).toEqual({
+      action: "fail", message: "Part of this scan is too large for the AI. Split it every N pages instead.",
+    });
+    expect(decideFailure(split({ attempts: 4 }), aiError("invalid_output", { retryable: true }), LIMITS)).toEqual({
+      action: "fail", message: "The AI returned an unusable answer several times. Split the scan every N pages instead.",
+    });
+    expect(decideFailure(split({ attempts: 4 }), aiError("overloaded", { retryable: true }), LIMITS)).toEqual({
+      action: "fail", message: "The AI service failed (overloaded). Try again or split the scan every N pages.",
     });
   });
 });

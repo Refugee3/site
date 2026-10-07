@@ -7,17 +7,22 @@ import { getDb } from "@/lib/db/connection";
 import { listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { updateKey } from "@/lib/db/repos/keys";
 import { countSubmissions, getSubmission, getSubmissionByReceipt, listItems, updateSubmission } from "@/lib/db/repos/submissions";
+import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { sha256Hex } from "@/lib/ids";
 import { PRIORITY } from "@/lib/jobs/queue";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
+import { loadGuidance } from "@/lib/services/guidance";
+import { setStudentUploads } from "@/lib/services/settings";
 import {
   deleteSubmission, gradeManually, ingestStudentUpload, ingestTeacherUpload, markReviewed, regradeStale, regradeSubmission,
-  retryFailed, saveItemOverride, setOverallFeedback, setTotalOverride, updateIdentity,
+  regradeWithGuidance, retryFailed, saveItemOverride, setOverallFeedback, setTotalOverride, storeTeacherPaper, updateIdentity,
 } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, Submission } from "@/lib/types";
-import { makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, TINY_JPEG, useTestDb } from "@/test/helpers";
+import {
+  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, TINY_JPEG, useTestDb,
+} from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
 const ORIGIN = "https://school.test";
@@ -28,6 +33,7 @@ let items: KeyItem[];
 beforeEach(() => {
   setClockForTests(() => T0);
   useTestDb();
+  enableStudentUploads();
   assignment = seedAssignment(seedTeacher().id, { status: "open" });
   items = seedApprovedKey(assignment.id, [{ label: "1" }, { label: "2", pointsCenti: 200 }]);
 });
@@ -92,6 +98,17 @@ describe("ingestStudentUpload", () => {
 
   it("rejects an unknown share code", async () => {
     await expect(ingestStudentUpload("ZZZZZZ", [await pdfFile("maria")])).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("refuses every upload while student uploads are turned off, before looking up the code", async () => {
+    setStudentUploads(false);
+    const closed = {
+      code: "closed", message: "Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.",
+    };
+    await expect(ingestStudentUpload(assignment.shareCode, [await pdfFile("maria")])).rejects.toMatchObject(closed);
+    await expect(ingestStudentUpload("ZZZZZZ", [await pdfFile("maria")])).rejects.toMatchObject(closed);
+    expect(countSubmissions(assignment.id)).toBe(0);
+    expect(storedFiles(assignment)).toEqual([]);
   });
 
   it("returns the earlier receipt when the same browser sends the same upload again", async () => {
@@ -176,7 +193,45 @@ describe("ingestTeacherUpload", () => {
   it("rejects a copy of any earlier paper", async () => {
     const file = await pdfFile("maria");
     await ingestStudentUpload(assignment.shareCode, [file]);
-    await expect(ingestTeacherUpload(assignment, file, ORIGIN)).rejects.toMatchObject({ code: "duplicate" });
+    await expect(ingestTeacherUpload(assignment, file, ORIGIN)).rejects.toMatchObject({
+      code: "duplicate", message: "This exact file was already submitted for this assignment.",
+    });
+  });
+
+  it("works while student uploads are turned off", async () => {
+    setStudentUploads(false);
+    const result = await ingestTeacherUpload(assignment, await pdfFile("scan"), ORIGIN);
+    expect(getSubmission(result.submissionId)).toMatchObject({ source: "teacher", status: "queued" });
+  });
+});
+
+describe("storeTeacherPaper", () => {
+  async function paper(label: string) {
+    const bytes = await makePdf(2, { label });
+    return { bytes, pageCount: 2, contentSha256: sha256Hex(bytes) };
+  }
+
+  it("stores a teacher paper and queues its grading", async () => {
+    const s = (await storeTeacherPaper(assignment, await paper("ana"), "stack.pdf (pages 1–2)"))!;
+    expect(s).toMatchObject({ source: "teacher", status: "queued", pageCount: 2, originalFilename: "stack.pdf (pages 1–2)" });
+    expect(jobRows(s.id)).toMatchObject([{ kind: "grade_submission", priority: PRIORITY.teacher }]);
+  });
+
+  it("returns null for content already in the assignment, also for two at once", async () => {
+    const pdf = await paper("ana");
+    const [first, second] = await Promise.all([storeTeacherPaper(assignment, pdf, "a.pdf"), storeTeacherPaper(assignment, pdf, "b.pdf")]);
+    expect([first, second].filter((s) => s === null)).toHaveLength(1);
+    expect(await storeTeacherPaper(assignment, pdf, "c.pdf")).toBeNull();
+    expect(countSubmissions(assignment.id)).toBe(1);
+    expect(storedFiles(assignment)).toHaveLength(1);
+  });
+
+  it("refuses the answer key and an unapproved key", async () => {
+    const key = await paper("key");
+    updateKey(assignment.id, { sourceSha256: key.contentSha256 });
+    await expect(storeTeacherPaper(assignment, key, "k.pdf")).rejects.toMatchObject({ code: "is_answer_key" });
+    const draft = seedAssignment(seedTeacher().id);
+    await expect(storeTeacherPaper(draft, await paper("ana"), "a.pdf")).rejects.toMatchObject({ code: "key_not_ready" });
   });
 });
 
@@ -348,6 +403,42 @@ describe("review workflow", () => {
     expect(regradeStale(assignment)).toBe(1);
     expect(getSubmission(current)!.status).toBe("queued");
     expect(getSubmission(earlierFailed)!.status).toBe("graded");
+  });
+
+  it("regradeWithGuidance requeues only current, unreviewed papers graded with other guidance against the current key", async () => {
+    let minute = 0;
+    /** A graded paper the teacher named `name` (regrades keep it), submitted a minute after the previous one. */
+    const named = async (name: string, label: string) => {
+      const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [await pdfFile(label)]);
+      await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
+      const { id } = byReceipt(receiptUrl);
+      updateIdentity(getSubmission(id)!, { studentName: name, sectionId: null });
+      getDb().prepare("UPDATE submissions SET created_at = ? WHERE id = ?").run(T0 + ++minute * 60_000, id);
+      return getSubmission(id)!;
+    };
+    const anaEarlier = await named("Ana Ruiz", "ana-1");
+    const reviewed = await named("Ben Ode", "ben");
+    const keyStale = await named("Cy Moss", "cy");
+    const fresh = await named("Dee Park", "dee");
+    const ana = await named("Ana Ruiz", "ana-2");
+    expect(regradeWithGuidance(assignment)).toBe(0); // everything was graded with the current (empty) guidance
+
+    updateSubmission(reviewed.id, { reviewedAt: T0 });
+    getDb().prepare("UPDATE submissions SET graded_key_revision = 0 WHERE id = ?").run(keyStale.id);
+    setGradingPreferences(assignment.teacherId, "Ignore spelling.");
+
+    expect(regradeWithGuidance(assignment)).toBe(2);
+    for (const id of [fresh.id, ana.id]) {
+      expect(getSubmission(id)).toMatchObject({ status: "queued", gradingGeneration: 2 });
+      expect(jobRows(id).at(-1)).toMatchObject({ status: "queued", priority: PRIORITY.regrade });
+    }
+    for (const id of [anaEarlier.id, reviewed.id, keyStale.id]) expect(getSubmission(id)!.gradingGeneration).toBe(1);
+
+    await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
+    const { fingerprint } = loadGuidance(assignment);
+    expect(getSubmission(fresh.id)!.gradedGuidanceFp).toBe(fingerprint);
+    expect(getSubmission(ana.id)!.gradedGuidanceFp).toBe(fingerprint);
+    expect(regradeWithGuidance(assignment)).toBe(0);
   });
 
   it("deleteSubmission removes the row, its queued job and its file", async () => {

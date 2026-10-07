@@ -10,6 +10,7 @@ import { AppError } from "@/lib/errors";
 import { parseSectionsText, sectionsToText, type ParsedSection } from "@/lib/grading/sections";
 import { newId, newShareCode } from "@/lib/ids";
 import { loadKeyState } from "@/lib/services/key-state";
+import { studentUploadsEnabled } from "@/lib/services/settings";
 import { rematchSections, rescoreAssignment } from "@/lib/services/submissions";
 import { removeAssignmentFiles } from "@/lib/storage/files";
 import { GRADING_MODES, type Assignment, type AssignmentFormInput, type Section } from "@/lib/types";
@@ -93,10 +94,13 @@ function sameSections(current: Section[], next: ParsedSection[]): boolean {
   return JSON.stringify(current.map(shape)) === JSON.stringify(next.map(shape));
 }
 
-/** draft → open (needs an approved key) → closed → open. */
+/** draft → open (needs an approved key, and student uploads turned on in Settings) → closed → open. */
 export function setAssignmentStatus(a: Assignment, to: "open" | "closed"): Assignment {
   return tx(() => {
     const current = requireAssignment(a.id);
+    if (to === "open" && !studentUploadsEnabled()) {
+      throw new AppError("invalid_state", "Student submissions are turned off. Turn them on in Settings to open an assignment.");
+    }
     if (to === "open" && !loadKeyState(a.id).approved) {
       throw new AppError("key_not_ready", "Approve the answer key before opening the assignment.");
     }

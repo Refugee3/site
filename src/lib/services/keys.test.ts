@@ -10,10 +10,11 @@ import { getSubmission, getSubmissionByReceipt, updateSubmission } from "@/lib/d
 import { makeGradingOutput } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
 import { ingestKeyPdf, retryKeyExtraction, saveKey } from "@/lib/services/keys";
+import { setStudentUploads } from "@/lib/services/settings";
 import { ingestStudentUpload } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, SaveKeyInput } from "@/lib/types";
-import { makePdf, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
+import { enableStudentUploads, makePdf, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 
 let db: DB;
 let assignment: Assignment;
@@ -21,6 +22,7 @@ let assignment: Assignment;
 beforeEach(() => {
   setClockForTests(() => 1_700_000_000_000);
   db = useTestDb();
+  enableStudentUploads();
   assignment = seedAssignment(seedTeacher().id);
 });
 
@@ -124,6 +126,15 @@ describe("saveKey", () => {
     expect(result).toEqual({ revision: 1, staleCount: 0 });
     expect(getKey(assignment.id)).toMatchObject({ status: "ready", revision: 1, approvedRevision: 1, errorMessage: null });
     expect(listKeyItems(assignment.id)).toHaveLength(2);
+  });
+
+  it("saves and approves without opening the assignment while student uploads are turned off", () => {
+    setStudentUploads(false);
+    const result = saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: true });
+
+    expect(result).toEqual({ revision: 1, staleCount: 0 });
+    expect(getKey(assignment.id)).toMatchObject({ status: "ready", approvedRevision: 1 });
+    expect(getAssignment(assignment.id)!.status).toBe("draft");
   });
 
   it("re-approves an unchanged key without a new revision, and rescores on new points", async () => {

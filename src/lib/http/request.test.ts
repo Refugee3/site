@@ -214,6 +214,25 @@ describe("readUploadedFiles", () => {
     expect(error.code).toBe("too_large");
     expect(error.message).toContain("1 MB");
   });
+
+  it("takes a larger budget for a whole-class scan", async () => {
+    setEnv({ MAX_UPLOAD_MB: "1" });
+    const fd = new FormData();
+    fd.append("file", file("scan.pdf", new Uint8Array(MIB + MIB / 2)));
+    expect(await readUploadedFiles(await multipart(fd), "file", 1, { maxBytes: 2 * MIB })).toHaveLength(1);
+
+    const big = new FormData();
+    big.append("file", file("scan.pdf", new Uint8Array(2 * MIB + 1)));
+    const error = await caught(async () => readUploadedFiles(await multipart(big), "file", 1, { maxBytes: 2 * MIB }));
+    expect(error).toMatchObject({ code: "too_large", message: "Uploads can be at most 2 MB in total." });
+  });
+
+  it("refuses a body over the budget plus multipart overhead without reading it", async () => {
+    const { req, cancelled } = streamed([new Uint8Array(10)], { "content-length": String(3 * MIB + 1) });
+    const error = await caught(() => readUploadedFiles(req, "file", 1, { maxBytes: 2 * MIB }));
+    expect(error.code).toBe("too_large");
+    expect(cancelled()).toBe(false);
+  });
 });
 
 describe("error responses", () => {

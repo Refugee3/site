@@ -22,7 +22,7 @@ export function nextRunAfter(now: number, attempts: number, retryAfterMs: number
 export type FailureDecision =
   | { action: "requeue"; runAfter: number; maxTokens?: number; refundAttempt: boolean; note: string }
   | { action: "fail"; message: string /* teacher-readable */ }
-  | { action: "pause"; resumeAt: number; reason: string };
+  | { action: "pause"; resumeAt: number; reason: string; code: AiErrorCode };
 
 /**
  * What to do after a failed AI call. `job.attempts` already counts the current run.
@@ -40,7 +40,7 @@ export function decideFailure(
     return { action: "requeue", runAfter: o.now, maxTokens: o.maxTokensCeiling, refundAttempt: true, note: LARGER_BUDGET_NOTE };
   }
   if (err.o.pauseWorker) {
-    return { action: "pause", resumeAt: o.now + PAUSE_MS, reason: pauseReason(err.code) };
+    return { action: "pause", resumeAt: o.now + PAUSE_MS, reason: pauseReason(err.code), code: err.code };
   }
   if (err.o.retryable && job.attempts < job.maxAttempts) {
     const runAfter = nextRunAfter(o.now, job.attempts, err.o.retryAfterMs ?? null, o.rand);
@@ -52,7 +52,7 @@ export function decideFailure(
 function pauseReason(code: AiErrorCode): string {
   switch (code) {
     case "auth":
-      return "API key rejected — check ANTHROPIC_API_KEY";
+      return "Anthropic rejected the API key. Replace it in Settings.";
     case "model_not_found":
       return "Model not found — check ANTHROPIC_MODEL";
     case "billing":
@@ -63,6 +63,7 @@ function pauseReason(code: AiErrorCode): string {
 }
 
 function failureMessage(code: AiErrorCode, kind: JobKind): string {
+  if (kind === "split_scan") return splitFailureMessage(code);
   switch (code) {
     case "max_tokens":
       return kind === "grade_submission"
@@ -74,5 +75,19 @@ function failureMessage(code: AiErrorCode, kind: JobKind): string {
       return "The AI returned an unusable answer several times.";
     default:
       return `The AI service failed (${code}).`;
+  }
+}
+
+/** Every way out of a failed split leads to "every N pages", which needs no AI. */
+function splitFailureMessage(code: AiErrorCode): string {
+  switch (code) {
+    case "max_tokens":
+      return "The AI's answer was too long. Split the scan every N pages instead.";
+    case "request_too_large":
+      return "Part of this scan is too large for the AI. Split it every N pages instead.";
+    case "invalid_output":
+      return "The AI returned an unusable answer several times. Split the scan every N pages instead.";
+    default:
+      return `The AI service failed (${code}). Try again or split the scan every N pages.`;
   }
 }

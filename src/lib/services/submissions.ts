@@ -5,7 +5,7 @@ import { getAssignment, getAssignmentByShareCode, listSections } from "@/lib/db/
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import {
-  countSubmissions, deleteSubmissionRow, findBySha, getSubmission, insertSubmission, listIdsByStatus, listItems,
+  countSubmissions, deleteSubmissionRow, findBySha, getSubmission, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems,
   listItemsForAssignment, listStaleIds, listSubmissions, requeueForRegrade, setItemOverride, updateSubmission,
 } from "@/lib/db/repos/submissions";
 import { AppError, isAppError } from "@/lib/errors";
@@ -19,7 +19,10 @@ import { resolveSection } from "@/lib/grading/sections";
 import { charLength } from "@/lib/grading/text";
 import { newId, newToken, sha256Hex } from "@/lib/ids";
 import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
+import { loadGuidance } from "@/lib/services/guidance";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
+import { readLessonReason, syncLessonForItem } from "@/lib/services/lessons";
+import { studentUploadsEnabled, UPLOADS_OFF_MESSAGE } from "@/lib/services/settings";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
@@ -32,6 +35,7 @@ const MAX_STUDENT_NAME = 120;
 const MAX_OVERALL_FEEDBACK = 2000;
 const MAX_ITEM_NOTE = 1000;
 const REGRADABLE: ReadonlySet<SubmissionStatus> = new Set(["graded", "needs_review", "failed"]);
+const DUPLICATE_MESSAGE = "This exact file was already submitted for this assignment.";
 
 // ---------------------------------------------------------------------------------------------
 // Ingest: the steps after the route's cheap checks (build the PDF, content-hash duplicate checks, atomic
@@ -53,6 +57,7 @@ export async function ingestStudentUpload(
   files: UploadedFile[],
   clientUploadId: string | null = null,
 ): Promise<{ receiptUrl: string; duplicate: boolean }> {
+  assertStudentUploadsOn(); // before the lookup, so it reveals nothing about which codes exist
   const assignment = getAssignmentByShareCode(code);
   if (!assignment) throw new AppError("not_found", "This assignment link is not valid.");
   assertOpenForStudents(assignment);
@@ -79,19 +84,41 @@ export async function ingestStudentUpload(
 export async function ingestTeacherUpload(a: Assignment, file: UploadedFile, origin: string): Promise<{ submissionId: string; receiptUrl: string }> {
   assertKeyApproved(a);
   const { pageCount } = await validatePdf(file.bytes, { maxPages: getConfig().maxPages });
-  const contentSha256 = sha256Hex(file.bytes);
-  checkContentSha(a.id, contentSha256, { source: "teacher", clientUploadId: null });
-  const submission = await storeSubmission(
-    a.id, "teacher", { bytes: file.bytes, pageCount, contentSha256 }, sanitizeFilename(file.filename), assertKeyApproved,
-  );
+  const pdf = { bytes: file.bytes, pageCount, contentSha256: sha256Hex(file.bytes) };
+  const submission = await storeTeacherPaper(a, pdf, sanitizeFilename(file.filename));
+  if (!submission) throw new AppError("duplicate", DUPLICATE_MESSAGE);
   return { submissionId: submission.id, receiptUrl: receiptUrl(submission.receiptToken, origin) };
 }
 
+/**
+ * Stores one paper the teacher provides (an upload, or a paper cut from a scan) and queues its grading.
+ * Null when the same content is already in the assignment, including when a concurrent upload stored it first.
+ */
+export async function storeTeacherPaper(
+  a: Assignment,
+  pdf: { bytes: Uint8Array; pageCount: number; contentSha256: string },
+  originalFilename: string,
+): Promise<Submission | null> {
+  assertKeyApproved(a);
+  try {
+    checkContentSha(a.id, pdf.contentSha256, { source: "teacher", clientUploadId: null });
+    return await storeSubmission(a.id, "teacher", pdf, originalFilename, assertKeyApproved);
+  } catch (e) {
+    if (isAppError(e) && e.code === "duplicate") return null;
+    throw e;
+  }
+}
+
+function assertStudentUploadsOn(): void {
+  if (!studentUploadsEnabled()) throw new AppError("closed", UPLOADS_OFF_MESSAGE);
+}
+
 function assertOpenForStudents(a: Assignment): void {
+  assertStudentUploadsOn();
   if (a.status !== "open") throw new AppError("closed", "This assignment is not accepting submissions right now.");
 }
 
-function assertKeyApproved(a: Assignment): void {
+export function assertKeyApproved(a: Pick<Assignment, "id">): void {
   if (!loadKeyState(a.id).approved) {
     throw new AppError("key_not_ready", "Approve the answer key before uploading papers.");
   }
@@ -116,7 +143,7 @@ function checkContentSha(
   const sameUpload = upload.source === "student" && existing.source === "student" && upload.clientUploadId !== null
     && existing.clientUploadId === upload.clientUploadId;
   if (sameUpload) return existing;
-  throw new AppError("duplicate", "This exact file was already submitted for this assignment.");
+  throw new AppError("duplicate", DUPLICATE_MESSAGE);
 }
 
 function studentReplay(s: Submission): { receiptUrl: string; duplicate: boolean } {
@@ -182,11 +209,13 @@ export function receiptUrl(token: string, origin: string): string {
 /**
  * The teacher's points, feedback and (optionally) "what you did" note for one item; null clears an
  * override, and an omitted `whatStudentDid` leaves that note as it is. "" hides the note from the student.
+ * The item's lesson follows the overrides; a string `reason` (why the teacher corrected the AI) is stored
+ * with it, while null or an omitted reason keeps the stored one.
  */
 export function saveItemOverride(
   s: Submission,
   itemId: string,
-  p: { pointsCenti: number | null; feedback: string | null; whatStudentDid?: string | null },
+  p: { pointsCenti: number | null; feedback: string | null; whatStudentDid?: string | null; reason?: string | null },
 ): void {
   if (p.pointsCenti !== null && !(Number.isInteger(p.pointsCenti) && p.pointsCenti >= 0 && p.pointsCenti <= MAX_ITEM_POINTS_CENTI)) {
     throw new AppError("validation", `Points must be a number between 0 and ${formatPoints(MAX_ITEM_POINTS_CENTI)} with at most two decimals.`);
@@ -195,12 +224,15 @@ export function saveItemOverride(
   if (whatStudentDid && charLength(whatStudentDid) > MAX_ITEM_NOTE) {
     throw new AppError("validation", `Use at most ${MAX_ITEM_NOTE} characters for what the student did.`);
   }
+  const reason = typeof p.reason === "string" ? readLessonReason(p.reason) : p.reason;
   tx(() => {
-    if (!listKeyItems(s.assignmentId).some((item) => item.id === itemId)) {
-      throw new AppError("not_found", "This question is no longer in the answer key.");
-    }
+    const item = listKeyItems(s.assignmentId).find((candidate) => candidate.id === itemId);
+    if (!item) throw new AppError("not_found", "This question is no longer in the answer key.");
+    const assignment = getAssignment(s.assignmentId);
+    if (!assignment) throw new AppError("not_found", "This assignment no longer exists.");
     setItemOverride(s.id, itemId, { overrideCenti: p.pointsCenti, overrideFeedback: p.feedback, overrideWhatStudentDid: whatStudentDid });
     rescoreSubmission(s.id);
+    syncLessonForItem(s, assignment, item, reason);
   });
 }
 
@@ -301,6 +333,17 @@ export function regradeSubmission(s: Submission): void {
  */
 export function regradeStale(a: Assignment): number {
   return tx(() => requeueAll(a.id, currentOnly(a.id, listStaleIds(a.id, requireKey(a.id).revision))));
+}
+
+/**
+ * Regrades the current papers not reviewed yet that were graded before the teacher's latest lessons or
+ * preferences; returns how many. Reviewed papers are left alone: the teacher already checked them.
+ */
+export function regradeWithGuidance(a: Assignment): number {
+  return tx(() => {
+    const ids = listGuidanceStaleIds(a.id, requireKey(a.id).revision, loadGuidance(a).fingerprint);
+    return requeueAll(a.id, currentOnly(a.id, ids));
+  });
 }
 
 /** Retries every current paper whose grading failed; returns how many. */

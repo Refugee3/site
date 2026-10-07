@@ -4,19 +4,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AiError } from "@/lib/ai/errors";
 import { createFakeGrader } from "@/lib/ai/fake";
 import type { GradeInput, Grader } from "@/lib/ai/grader";
-import { setGraderForTests } from "@/lib/ai/index";
-import { itemRefs } from "@/lib/ai/prompts";
+import { getGrader, setGraderForTests } from "@/lib/ai/index";
+import { guidanceFingerprint, itemRefs, renderGuidance } from "@/lib/ai/prompts";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
-import { getConfig } from "@/lib/config";
+import { getConfig, resetConfigForTests } from "@/lib/config";
 import { tx, type DB } from "@/lib/db/connection";
 import { getAssignmentUsage, listSections } from "@/lib/db/repos/assignments";
 import * as jobsRepo from "@/lib/db/repos/jobs";
 import { cancelQueuedJobs, claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getSubmission, getSubmissionByReceipt, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
+import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
-import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY } from "@/lib/jobs/queue";
+import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY, resumeWorker } from "@/lib/jobs/queue";
 import { answeringGrader, deferred, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
 import { createWorker, startWorker } from "@/lib/jobs/worker";
 import { updateAssignment } from "@/lib/services/assignments";
@@ -24,7 +25,9 @@ import { ingestKeyPdf, saveKey } from "@/lib/services/keys";
 import { ingestStudentUpload, regradeSubmission, updateIdentity } from "@/lib/services/submissions";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import type { Assignment, AssignmentFormInput } from "@/lib/types";
-import { makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
+import {
+  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson, seedSubmission, seedTeacher, useTestDb,
+} from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
 let clock = T0;
@@ -35,6 +38,7 @@ beforeEach(() => {
   clock = T0;
   setClockForTests(() => clock);
   db = useTestDb();
+  enableStudentUploads();
   assignment = seedAssignment(seedTeacher().id, { status: "open" });
   seedApprovedKey(assignment.id, [{ label: "1" }, { label: "2", pointsCenti: 200 }]);
 });
@@ -165,6 +169,37 @@ describe("grading with the fake grader", () => {
   });
 });
 
+describe("grading with the teacher's guidance", () => {
+  it("sends the preferences and lessons, and records the guidance's fingerprint with the grading", async () => {
+    setGradingPreferences(assignment.teacherId, "Ignore spelling.");
+    const earlier = await uploadPaper("earlier");
+    await drainQueue();
+    const items = listKeyItems(assignment.id);
+    seedLesson({ assignmentId: assignment.id, submissionId: earlier, itemId: items[0].id, studentAnswer: "co2", reason: "Lowercase is fine." });
+    const id = await uploadPaper("later");
+    const inputs: GradeInput[] = [];
+
+    await drainQueue(recordingGrader(inputs));
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].guidance).toEqual({
+      preferences: "Ignore spelling.",
+      lessons: [expect.objectContaining({ itemId: items[0].id, studentAnswer: "co2", reason: "Lowercase is fine." })],
+    });
+    const fingerprint = guidanceFingerprint(renderGuidance(inputs[0].guidance, items));
+    expect(fingerprint).not.toBe("");
+    expect(getSubmission(id)!.gradedGuidanceFp).toBe(fingerprint);
+    expect(getSubmission(earlier)!.gradedGuidanceFp).toBe(guidanceFingerprint(renderGuidance({ preferences: "Ignore spelling.", lessons: [] }, items)));
+  });
+
+  it("records an empty fingerprint when there is no guidance, also for a refused paper", async () => {
+    const id = await uploadPaper();
+    await drainQueue(rejectingGrader(new AiError("refusal", "declined", { retryable: false, refusalCategory: "cyber" })));
+
+    expect(getSubmission(id)).toMatchObject({ flags: expect.arrayContaining(["ai_refused"]), gradedGuidanceFp: "" });
+  });
+});
+
 describe("AI failures", () => {
   it("requeues a retryable error with backoff and fails the paper once attempts run out", async () => {
     const id = await uploadPaper();
@@ -221,11 +256,13 @@ describe("AI failures", () => {
     }));
 
     await worker.runOnce();
-    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000 }]);
-    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Paused: API key rejected — check ANTHROPIC_API_KEY" });
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000, paused: 1 }]);
+    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Paused: Anthropic rejected the API key. Replace it in Settings." });
 
     worker.start();
-    expect(worker.status()).toMatchObject({ state: "paused", reason: "API key rejected — check ANTHROPIC_API_KEY", queued: 1 });
+    expect(worker.status()).toMatchObject({
+      state: "paused", reason: "Anthropic rejected the API key. Replace it in Settings.", queued: 1, keyIssue: "rejected",
+    });
     await worker.stop();
     expect(worker.status().state).toBe("stopped");
 
@@ -242,7 +279,7 @@ describe("AI failures", () => {
     const id = await uploadPaper();
     await workerWith(rejectingGrader(new AiError("billing", "credit balance is too low", { retryable: false, pauseWorker: true }))).runOnce();
 
-    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000 }]);
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000, paused: 1 }]);
     expect(getSubmission(id)).toMatchObject({
       status: "queued", statusNote: "Paused: Billing problem — check the plan and credits in the Anthropic Console",
     });
@@ -610,7 +647,27 @@ describe("startWorker", () => {
     expect(jobRows(unqueued.id)).toMatchObject([{ status: "queued", priority: PRIORITY.student }]);
     expect(jobRows(scanned.id)).toMatchObject([{ status: "queued", priority: PRIORITY.teacher }]);
     expect(jobRows(keyAssignment.id)).toMatchObject([{ kind: "extract_key", status: "queued", priority: PRIORITY.extractKey }]);
-    expect(getWorkerStatus()).toEqual({ state: "paused", reason: "ANTHROPIC_API_KEY is not set", aiMode: "claude", queued: 4, running: 0 });
+    expect(getWorkerStatus()).toEqual({
+      state: "paused", reason: "No Anthropic API key. Add one in Settings.", aiMode: "claude", queued: 4, running: 0, keyIssue: "missing",
+    });
+  });
+
+  it("runs jobs a pause pushed back at once, since a restart is how an ANTHROPIC_API_KEY fix arrives", async () => {
+    setGraderForTests(null);
+    const paused = seedSubmission(assignment.id);
+    enqueueGrade(paused.id, assignment.id, PRIORITY.student);
+    const job = claimNextJob(clock)!;
+    jobsRepo.requeueJob(job.id, { runAfter: clock + 300_000, error: "paused", refundAttempt: true, paused: true });
+    const backedOff = seedSubmission(assignment.id);
+    enqueueGrade(backedOff.id, assignment.id, PRIORITY.student);
+    const other = claimNextJob(clock)!;
+    jobsRepo.requeueJob(other.id, { runAfter: clock + 30_000, error: "overloaded" });
+
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    await startWorker();
+
+    expect(jobRows(paused.id)).toMatchObject([{ status: "queued", run_after: clock, paused: 0 }]);
+    expect(jobRows(backedOff.id)).toMatchObject([{ status: "queued", run_after: clock + 30_000, paused: 0 }]);
   });
 
   it("is idempotent", async () => {
@@ -629,6 +686,72 @@ describe("startWorker", () => {
 
     await vi.waitFor(() => expect(getSubmission(id)!.status).toBe("graded"));
     expect(getWorkerStatus()).toMatchObject({ state: "running", aiMode: "fake", queued: 0 });
+  });
+});
+
+describe("API key changes", () => {
+  function authError(): AiError {
+    return new AiError("auth", "invalid x-api-key", { retryable: false, pauseWorker: true });
+  }
+
+  it("asks for the grader on every tick: paused without a key, then grading once a key is saved, without a restart", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    const id = await uploadPaper();
+    const worker = createWorker({ grader: getGrader, concurrency: 1, pollMs: 1000 });
+    worker.start();
+
+    expect(worker.status()).toMatchObject({
+      state: "paused", reason: "No Anthropic API key. Add one in Settings.", aiMode: "claude", keyIssue: "missing", queued: 1,
+    });
+    expect(await worker.runOnce()).toBe(false);
+
+    // What saving a key amounts to for the worker: getGrader() has a grader from now on.
+    setGraderForTests(instantFake);
+    worker.kick();
+    await vi.waitFor(() => expect(["graded", "needs_review"]).toContain(getSubmission(id)!.status));
+    expect(worker.status()).toMatchObject({ state: "running", aiMode: "fake", keyIssue: null });
+    await worker.stop();
+  });
+
+  it("reports a rejected key, and resumeWorker() runs the job the pause deferred at once", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let rejectKey = true;
+    setGraderForTests(scriptedGrader({
+      gradeSubmission: async (input, options) => {
+        if (rejectKey) throw authError();
+        return instantFake.gradeSubmission(input, options);
+      },
+    }));
+    const id = await uploadPaper();
+    await startWorker();
+
+    await vi.waitFor(() => expect(getWorkerStatus()).toMatchObject({ state: "paused", keyIssue: "rejected" }));
+    expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 0, run_after: T0 + 300_000, paused: 1 }]);
+
+    rejectKey = false;
+    resumeWorker();
+
+    await vi.waitFor(() => expect(["graded", "needs_review"]).toContain(getSubmission(id)!.status));
+    expect(getWorkerStatus()).toMatchObject({ state: "running", reason: null, keyIssue: null });
+  });
+
+  it("does not report the key for other pauses, and resume() leaves ordinary backoffs alone", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const billing = await uploadPaper("billing");
+    const worker = workerWith(rejectingGrader(new AiError("billing", "credit balance is too low", { retryable: false, pauseWorker: true })));
+    await worker.runOnce();
+    worker.start();
+    expect(worker.status()).toMatchObject({ state: "paused", keyIssue: null });
+    const backedOff = await uploadPaper("backoff");
+    jobsRepo.requeueJob(claimNextJob(clock)!.id, { runAfter: clock + 30_000, error: "overloaded" });
+
+    worker.resume();
+
+    expect(worker.status()).toMatchObject({ state: "running", reason: null });
+    expect(jobRows(billing)).toMatchObject([{ run_after: T0, paused: 0 }]);
+    expect(jobRows(backedOff)).toMatchObject([{ status: "queued", run_after: T0 + 30_000, paused: 0 }]);
+    await worker.stop();
   });
 });
 

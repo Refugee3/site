@@ -19,11 +19,12 @@ export const FAKE_META: AiCallMeta = {
 };
 
 /** A grader whose methods default to the instant fake grader; override one to script a test. */
-export function scriptedGrader(o: Partial<Pick<Grader, "extractKey" | "gradeSubmission">> = {}): Grader {
+export function scriptedGrader(o: Partial<Pick<Grader, "extractKey" | "gradeSubmission" | "readScanPages">> = {}): Grader {
   return {
     mode: "fake",
     extractKey: o.extractKey ?? instantFake.extractKey,
     gradeSubmission: o.gradeSubmission ?? instantFake.gradeSubmission,
+    readScanPages: o.readScanPages ?? instantFake.readScanPages,
   };
 }
 
@@ -71,11 +72,13 @@ export interface JobRow {
   run_after: number;
   max_tokens: number | null;
   last_error: string | null;
+  paused: 0 | 1;
 }
 
 /** Every job row for a target, oldest first. */
 export function jobRows(targetId: string): JobRow[] {
   return getDb()
-    .prepare("SELECT id, kind, status, priority, attempts, max_attempts, run_after, max_tokens, last_error FROM jobs WHERE target_id = ? ORDER BY id")
+    .prepare(`SELECT id, kind, status, priority, attempts, max_attempts, run_after, max_tokens, last_error, paused
+              FROM jobs WHERE target_id = ? ORDER BY id`)
     .all(targetId) as JobRow[];
 }

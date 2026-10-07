@@ -3,21 +3,32 @@ import {
   getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
 } from "@/lib/db/repos/assignments";
 import { listKeyItems } from "@/lib/db/repos/keys";
+import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
+import { listScans } from "@/lib/db/repos/scans";
+import { getAppSettings } from "@/lib/db/repos/settings";
 import {
-  countByStatus, getSubmissionByReceipt, listItems, listItemsForAssignment, listStaleIds, listSubmissions,
+  countByStatus, countSubmissions, getSubmissionByReceipt, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
+  listSubmissions,
 } from "@/lib/db/repos/submissions";
+import { getGradingPreferences, getTeacher } from "@/lib/db/repos/teachers";
 import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
 import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
 import { toCsv } from "@/lib/grading/csv";
 import { computeScore, percentTenths } from "@/lib/grading/scoring";
 import { sectionsToText } from "@/lib/grading/sections";
+import { keyPageCountHint } from "@/lib/grading/split";
+import { getWorkerStatus } from "@/lib/jobs/queue";
+import { decryptSecret } from "@/lib/secrets";
+import { isGuidanceStale, loadGuidance } from "@/lib/services/guidance";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
-import { receiptUrl } from "@/lib/services/submissions";
+import { studentUploadsEnabled } from "@/lib/services/settings";
+import { currentOnly, receiptUrl } from "@/lib/services/submissions";
 import type {
   AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, FlagCode, KeyEditorView, KeyItem,
-  ReceiptNotice, ReceiptPhase, ReceiptView, ReviewView, ScoreResult, SettingsView, StatusCounts, StudentUploadView, Submission,
-  SubmissionItem, SubmissionStatus, Teacher,
+  LessonsView, LessonView, ReceiptNotice, ReceiptPhase, ReceiptView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult,
+  SettingsView, StatusCounts, StudentUploadView, Submission, SubmissionItem, SubmissionStatus, Teacher, TeacherSettingsView,
+  UploadPageView,
 } from "@/lib/types";
 
 const MIB = 1_048_576;
@@ -28,6 +39,7 @@ const UNNAMED = "No name";
 
 export function getDashboardView(t: Teacher): DashboardView {
   return {
+    studentsCanUpload: studentUploadsEnabled(),
     assignments: listAssignmentsForTeacher(t.id).map((a) => {
       const { key, approved } = loadKeyState(a.id);
       return {
@@ -47,6 +59,7 @@ export function getDashboardView(t: Teacher): DashboardView {
 
 export function getAssignmentHeader(a: Assignment, origin: string): AssignmentHeader {
   const { key, items, approved } = loadKeyState(a.id);
+  const studentsCanUpload = studentUploadsEnabled();
   return {
     assignment: a,
     shareUrl: `${origin}/s/${a.shareCode}`,
@@ -55,7 +68,8 @@ export function getAssignmentHeader(a: Assignment, origin: string): AssignmentHe
     itemCount: items.length,
     totalPointsCenti: items.reduce((sum, item) => sum + item.pointsCenti, 0),
     counts: currentCounts(a.id),
-    canOpen: approved && a.status !== "open",
+    canOpen: approved && a.status !== "open" && studentsCanUpload,
+    studentsCanUpload,
   };
 }
 
@@ -69,6 +83,7 @@ function currentCounts(assignmentId: string): StatusCounts {
 
 export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
   const { revision } = requireKey(a.id);
+  const studentsCanUpload = studentUploadsEnabled();
   const submissions = listSubmissions(a.id);
   const board = organizeBoard(submissions, listSections(a.id));
   const current = new Set(boardOrderIds(board));
@@ -83,9 +98,11 @@ export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
     groups,
     counts: countCurrent(board),
     staleCount: listStaleIds(a.id, revision).filter((id) => current.has(id)).length,
+    guidanceStaleCount: listGuidanceStaleIds(a.id, revision, loadGuidance(a).fingerprint).filter((id) => current.has(id)).length,
     // Polls while anything is being graded, including a regraded earlier attempt.
     active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
-    open: a.status === "open",
+    open: studentsCanUpload && a.status === "open",
+    studentsCanUpload,
   };
 }
 
@@ -121,6 +138,7 @@ export function getKeyEditorView(a: Assignment): KeyEditorView {
     keyPdfUrl: key.sourcePdfPath ? `/api/teacher/assignments/${a.id}/key/pdf` : null,
     gradedCount: counts.graded + counts.needs_review,
     locked: isKeyLocked(a.id),
+    studentsCanUpload: studentUploadsEnabled(),
   };
 }
 
@@ -130,6 +148,7 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
   const results = listItems(s.id);
   const score = scoreOf(s, a, items, results);
   const resultByItem = new Map(results.map((result) => [result.itemId, result]));
+  const lessonByItem = new Map(listLessonsForSubmission(s.id).map((lesson) => [lesson.itemId, lesson]));
 
   const groups = organizeBoard(listSubmissions(a.id), sections);
   // An earlier attempt has no row of its own; it navigates from the row of its newest attempt.
@@ -142,9 +161,16 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     submission: s,
     sections,
     sectionLabel: sections.find((section) => section.id === s.sectionId)?.label ?? null,
-    items: items.map((item, i) => ({ item, result: resultByItem.get(item.id) ?? null, score: score.items[i] })),
+    items: items.map((item, i) => {
+      const lesson = lessonByItem.get(item.id);
+      return {
+        item, result: resultByItem.get(item.id) ?? null, score: score.items[i],
+        lesson: lesson ? { id: lesson.id, reason: lesson.reason, active: lesson.active } : null,
+      };
+    }),
     score,
     stale: isStale(s, key.revision),
+    guidanceStale: isGuidanceStale(s, key.revision, loadGuidance(a, items).fingerprint),
     pdfUrl: `/api/teacher/submissions/${s.id}/pdf`,
     receiptUrl: receiptUrl(s.receiptToken, origin),
     prevId: index > 0 ? rows[index - 1].current.id : null,
@@ -153,6 +179,108 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     // Attempts are newest first, so the ones after this paper are older.
     earlierAttempts: attempts.slice(attempts.findIndex((attempt) => attempt.id === s.id) + 1).map(attemptSummary),
     released: a.feedbackReleasedAt !== null,
+  };
+}
+
+/**
+ * The Lessons tab: every lesson grouped by key item (key order), newest first within an item, with whether
+ * the grader is sent it and, if not, why.
+ */
+export function getLessonsView(a: Assignment): LessonsView {
+  const { key, items } = loadKeyState(a.id);
+  const guidance = loadGuidance(a, items);
+  const sent = new Set(guidance.sentIds);
+  const lessons = listLessons(a.id);
+  const views: LessonView[] = items.flatMap((item) =>
+    lessons.filter((lesson) => lesson.itemId === item.id).map((lesson) => ({
+      lesson,
+      itemLabel: item.label,
+      itemPosition: item.position,
+      itemMaxCenti: item.pointsCenti,
+      sent: sent.has(lesson.id),
+      notSent: guidance.notSent[lesson.id] ?? null,
+      paperHref: lesson.submissionId ? `/teacher/assignments/${a.id}/submissions/${lesson.submissionId}` : null,
+    })));
+  return {
+    lessons: views,
+    activeCount: lessons.filter((lesson) => lesson.active).length,
+    sentCount: guidance.sentIds.length,
+    guidanceStaleCount: currentOnly(a.id, listGuidanceStaleIds(a.id, key.revision, guidance.fingerprint)).length,
+    hasPreferences: guidance.guidance.preferences.trim() !== "",
+  };
+}
+
+export function getUploadPageView(a: Assignment): UploadPageView {
+  const cfg = getConfig();
+  const { key, items, approved } = loadKeyState(a.id);
+  return {
+    keyApproved: approved,
+    keyPageCount: keyPageCountHint(key, items),
+    scans: listScans(a.id).map(scanSummary),
+    maxUploadMb: cfg.maxUploadBytes / MIB,
+    maxPages: cfg.maxPages,
+    maxScanMb: cfg.maxScanBytes / MIB,
+    maxScanPages: cfg.maxScanPages,
+    studentsCanUpload: studentUploadsEnabled(),
+  };
+}
+
+function scanSummary(s: Scan): ScanSummary {
+  return {
+    id: s.id, status: s.status, originalFilename: s.originalFilename, pageCount: s.pageCount, createdAt: s.createdAt,
+    createdCount: s.createdCount,
+  };
+}
+
+/** The scan's split for the teacher to check; the stored path, hash and AI accounting stay on the server. */
+export function getScanReviewView(scan: Scan, a: Assignment): ScanReviewView {
+  const { key, items, approved } = loadKeyState(a.id);
+  return {
+    scan: shownScan(scan),
+    pdfUrl: `/api/teacher/scans/${scan.id}/pdf`,
+    keyApproved: approved,
+    keyPageCount: keyPageCountHint(key, items),
+    maxPagesPerPaper: getConfig().maxPages,
+    remainingSubmissions: Math.max(0, a.maxSubmissions - countSubmissions(a.id)),
+  };
+}
+
+/** An allowlist, so a field added to Scan later reaches the browser only when it is added here. */
+function shownScan(s: Scan): ScanReviewView["scan"] {
+  return {
+    id: s.id, assignmentId: s.assignmentId, status: s.status, splitMode: s.splitMode, pagesPerPaper: s.pagesPerPaper,
+    splitGeneration: s.splitGeneration, originalFilename: s.originalFilename, byteSize: s.byteSize, pageCount: s.pageCount,
+    readings: s.readings, pagesRead: s.pagesRead, layout: s.layout, proposedLayout: s.proposedLayout, statusNote: s.statusNote,
+    errorMessage: s.errorMessage, createdCount: s.createdCount, duplicateCount: s.duplicateCount, createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  };
+}
+
+/**
+ * /teacher/settings. The saved key is decrypted only to learn whether it still can be; the view carries its
+ * masked form alone.
+ */
+export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
+  const cfg = getConfig();
+  const settings = getAppSettings();
+  const stored = settings.apiKeyCiphertext;
+  const readable = stored !== null && decryptSecret(stored, "anthropic-api-key") !== null;
+  const setBy = readable && settings.apiKeySetBy !== null ? getTeacher(settings.apiKeySetBy) : null;
+  return {
+    apiKey: {
+      source: readable ? "app" : cfg.hasApiKey ? "env" : "none",
+      masked: readable ? settings.apiKeyMasked : null,
+      check: readable ? settings.apiKeyCheck : null,
+      setAt: readable ? settings.apiKeySetAt : null,
+      setByName: setBy?.displayName ?? null,
+      unreadable: stored !== null && !readable,
+      envKeySet: cfg.hasApiKey,
+    },
+    aiMode: cfg.aiMode,
+    model: cfg.model,
+    studentsCanUpload: settings.studentsCanUpload,
+    gradingPreferences: getGradingPreferences(t.id),
+    worker: getWorkerStatus(),
   };
 }
 
@@ -226,7 +354,7 @@ export function getStudentUploadView(code: string): StudentUploadView | null {
     instructions: a.instructions,
     teacherName: a.teacherName,
     status: a.status,
-    accepting: a.status === "open",
+    accepting: studentUploadsEnabled() && a.status === "open",
     maxUploadMb: cfg.maxUploadBytes / MIB,
     maxPages: cfg.maxPages,
     maxFiles: cfg.maxUploadFiles,
@@ -261,6 +389,7 @@ export function getReceiptView(token: string): ReceiptView | null {
     detectedSection: listSections(a.id).find((section) => section.id === s.sectionId)?.label ?? s.aiSectionRaw,
     notices: showNotices ? RECEIPT_NOTICES.filter(([flag]) => s.flags.includes(flag)).map(([, notice]) => notice) : [],
     result: phase === "released" ? releasedResult(s, a) : null,
+    canResubmit: studentUploadsEnabled(),
   };
 }
 

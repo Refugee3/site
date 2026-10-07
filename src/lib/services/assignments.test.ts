@@ -12,9 +12,10 @@ import {
   AssignmentFormSchema, createAssignment, defaultSectionsText, deleteAssignment, rotateShareCode, setAssignmentStatus,
   setFeedbackReleased, updateAssignment,
 } from "@/lib/services/assignments";
+import { setStudentUploads } from "@/lib/services/settings";
 import { ingestStudentUpload, updateIdentity } from "@/lib/services/submissions";
 import type { Assignment, AssignmentFormInput, Submission, Teacher } from "@/lib/types";
-import { makePdf, seedApprovedKey, seedTeacher, useTestDb } from "@/test/helpers";
+import { enableStudentUploads, makePdf, seedApprovedKey, seedTeacher, useTestDb } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
 let teacher: Teacher;
@@ -22,6 +23,7 @@ let teacher: Teacher;
 beforeEach(() => {
   setClockForTests(() => T0);
   useTestDb();
+  enableStudentUploads();
   teacher = seedTeacher();
 });
 
@@ -164,6 +166,22 @@ describe("lifecycle", () => {
     expect(setAssignmentStatus(a, "open").status).toBe("open");
     expect(setAssignmentStatus(a, "closed").status).toBe("closed");
     expect(setAssignmentStatus(a, "open").status).toBe("open");
+  });
+
+  it("opens only while student uploads are turned on; closing still works", () => {
+    const a = createAssignment(teacher.id, form());
+    seedApprovedKey(a.id, [{}]);
+    setStudentUploads(false);
+
+    expect(() => setAssignmentStatus(a, "open")).toThrow(expect.objectContaining({
+      code: "invalid_state", message: "Student submissions are turned off. Turn them on in Settings to open an assignment.",
+    }));
+    expect(getAssignment(a.id)!.status).toBe("draft");
+
+    setStudentUploads(true);
+    setAssignmentStatus(a, "open");
+    setStudentUploads(false);
+    expect(setAssignmentStatus(a, "closed").status).toBe("closed");
   });
 
   it("releases feedback and can take it back", () => {

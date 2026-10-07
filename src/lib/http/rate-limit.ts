@@ -206,3 +206,11 @@ export function checkSignup(ip: string | null): Charge {
   enforce([perIp, wrongCodes], "Too many sign-up attempts.", [perIp]);
   return charge([wrongCodes]);
 }
+
+/**
+ * Before checking a pasted API key with Anthropic: 10 checks per teacher per hour, every attempt counted,
+ * so a hijacked account can't use the server to test keys.
+ */
+export function checkApiKeySave(teacherId: string): void {
+  enforce([{ bucket: `apikey:teacher:${teacherId}`, limit: 10, windowMs: HOUR }], "Too many key checks.");
+}

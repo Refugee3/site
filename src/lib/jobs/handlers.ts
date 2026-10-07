@@ -1,4 +1,4 @@
-import { AiError, classifySdkError } from "@/lib/ai/errors";
+import { AiError, classifySdkError, type AiErrorCode } from "@/lib/ai/errors";
 import type { AiCallMeta, Grader } from "@/lib/ai/grader";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
@@ -7,14 +7,20 @@ import { tx } from "@/lib/db/connection";
 import { addAssignmentUsage, getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
+import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
 import { isAppError } from "@/lib/errors";
 import { isKeyApproved, keyFingerprint, normalizeExtractedKey } from "@/lib/grading/key";
 import { buildRefusedResult, reconcileGrading } from "@/lib/grading/reconcile";
+import {
+  keyPageCountHint, normalizeScanReadings, proposeLayout, SCAN_CHUNK_MAX_BYTES, SCAN_CHUNK_MAX_PAGES,
+} from "@/lib/grading/split";
 import { decideFailure } from "@/lib/jobs/backoff";
+import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
 import { rescoreSubmission } from "@/lib/services/submissions";
 import { readDataFile, removeDataFile } from "@/lib/storage/files";
-import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Section } from "@/lib/types";
+import { extractPageSets } from "@/lib/storage/pdf";
+import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReading, Section } from "@/lib/types";
 
 // Handlers own every write to the job's target (submission or key); the worker owns every jobs-table write.
 
@@ -22,7 +28,7 @@ export type HandlerResult =
   | { kind: "done" }
   | { kind: "requeue"; runAfter: number; error: string; maxTokens?: number; refundAttempt: boolean }
   | { kind: "fail"; error: string }
-  | { kind: "pause"; resumeAt: number; reason: string };
+  | { kind: "pause"; resumeAt: number; reason: string; code: AiErrorCode };
 
 const DONE: HandlerResult = { kind: "done" };
 const KEY_WAIT_MS = 60_000;
@@ -42,6 +48,8 @@ interface GradingContext {
   items: KeyItem[];
   /** As sent to the AI; the result is reconciled against the sections at save time. */
   sections: Section[];
+  /** The teacher's preferences and lessons as they were when the job started; the grading records their fingerprint. */
+  guidance: AssignmentGuidance;
 }
 
 type Billed = NonNullable<AiError["o"]["billed"]>;
@@ -63,9 +71,10 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
   const assignment = getAssignment(submission.assignmentId);
   const key = getKey(submission.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
+  const items = listKeyItems(assignment.id);
   const ctx: GradingContext = {
-    job, submissionId: submission.id, generation, assignment, key,
-    items: listKeyItems(assignment.id), sections: listSections(assignment.id),
+    job, submissionId: submission.id, generation, assignment, key, items, sections: listSections(assignment.id),
+    guidance: loadGuidance(assignment, items),
   };
 
   if (!isKeyApproved(key, ctx.items.length)) {
@@ -91,7 +100,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
     const result = await grader.gradeSubmission(
       {
         assignment, teacherNotes: key.teacherNotes, sections: ctx.sections, items: ctx.items,
-        keyPdf, studentPdf, studentPageCount: submission.pageCount,
+        keyPdf, studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
@@ -137,6 +146,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
     submissionId: ctx.submissionId,
     generation: ctx.generation,
     keyRevision: ctx.key.revision,
+    guidanceFingerprint: ctx.guidance.fingerprint,
     items: reconciled.items,
     fields: { ...reconciled.fields, status: reconciled.status, ...ai },
   });
@@ -154,7 +164,7 @@ function gradingFailure(ctx: GradingContext, err: AiError): HandlerResult {
         : DONE;
     case "pause":
       return scheduleRetry(id, generation, `Paused: ${decision.reason}`)
-        ? { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason }
+        ? { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason, code: decision.code }
         : DONE;
     case "fail":
       return markFailed(id, generation, err.code, decision.message) ? { kind: "fail", error: describe(err) } : DONE;
@@ -232,7 +242,7 @@ function extractionFailure(job: Job, sourceSha: string | null, err: AiError): Ha
     case "requeue":
       return { kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens, refundAttempt: decision.refundAttempt };
     case "pause":
-      return { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason };
+      return { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason, code: decision.code };
     case "fail":
       return failKey(job.targetId, sourceSha, decision.message);
   }
@@ -250,6 +260,144 @@ function failKey(assignmentId: string, sourceSha: string | null, message: string
 
 function isSameRun(key: AnswerKey, sourceSha: string | null): boolean {
   return key.status === "processing" && key.sourceSha256 === sourceSha;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Splitting a whole-class scan (handleSplitScan)
+
+interface SplitRun {
+  job: Job;
+  scanId: string;
+  /** Every scan write is conditional on the scan still splitting on this generation. */
+  generation: number;
+}
+
+type ScanChunk = { pages: number[]; pdf: Uint8Array } | { error: string };
+
+/**
+ * Has the AI describe the scan's pages chunk by chunk, then proposes where each paper starts. Readings are
+ * saved after every chunk, so a requeued run resumes at the first unread page; "every N pages", "try the AI
+ * again" and deleting the scan supersede a run, whose writes then change nothing.
+ */
+export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSignal): Promise<HandlerResult> {
+  const scan = getScan(job.targetId);
+  if (!scan || scan.status !== "splitting") return DONE;
+  const assignment = getAssignment(scan.assignmentId);
+  const key = getKey(scan.assignmentId);
+  if (!assignment || !key) return DONE; // deleted since the claim
+  const run: SplitRun = { job, scanId: scan.id, generation: scan.splitGeneration };
+  const items = listKeyItems(assignment.id);
+  const sections = listSections(assignment.id);
+  const keyPageCount = keyPageCountHint(key, items);
+  const readings: Array<ScanPageReading | null> = scan.readings.length === scan.pageCount
+    ? [...scan.readings]
+    : new Array<ScanPageReading | null>(scan.pageCount).fill(null);
+  let usage = scan.usage;
+  let progress = false;
+
+  for (let start = readings.indexOf(null); start !== -1; start = readings.indexOf(null)) {
+    const chunk = await nextChunk(scan, readings, start);
+    if ("error" in chunk) return failScan(run, chunk.error);
+    let read: { meta: AiCallMeta; readings: ScanPageReading[] };
+    try {
+      const result = await grader.readScanPages(
+        {
+          assignmentTitle: assignment.title, sections, items, keyPageCount,
+          chunkPdf: chunk.pdf, firstPage: chunk.pages[0], chunkPageCount: chunk.pages.length, totalPages: scan.pageCount,
+        },
+        { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
+      );
+      recordUsage(assignment.id, result.meta.servedModel, result.meta.usage);
+      read = { meta: result.meta, readings: normalizeScanReadings(result.output, { chunkPageCount: chunk.pages.length }) };
+    } catch (e) {
+      const err = classifySdkError(e);
+      if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage);
+      return splitFailure(run, err, progress);
+    }
+    chunk.pages.forEach((page, i) => {
+      readings[page - 1] = read.readings[i];
+    });
+    usage = addUsage(usage, read.meta.usage);
+    const saved = updateSplittingScan(run.scanId, run.generation, {
+      readings, pagesRead: readings.filter((r) => r !== null).length, statusNote: null, aiModel: read.meta.servedModel, usage,
+    });
+    if (!saved) return DONE;
+    progress = true;
+  }
+
+  const layout = proposeLayout(readings.filter((r) => r !== null), { keyPageCount });
+  updateSplittingScan(run.scanId, run.generation, { status: "review", layout, proposedLayout: layout, statusNote: null });
+  return DONE;
+}
+
+/**
+ * The unread pages from `start` (0-based) up to the next page already read, at most SCAN_CHUNK_MAX_PAGES and
+ * fewer while their PDF is over SCAN_CHUNK_MAX_BYTES. The scan's bytes are dropped on return: only the chunk
+ * is held across the AI call.
+ */
+async function nextChunk(scan: Scan, readings: Array<ScanPageReading | null>, start: number): Promise<ScanChunk> {
+  let pages: number[] = [];
+  for (let i = start; i < readings.length && readings[i] === null && pages.length < SCAN_CHUNK_MAX_PAGES; i++) pages.push(i + 1);
+  const bytes = await readStoredPdf(scan.pdfPath);
+  if (!bytes) return { error: "The uploaded scan is missing on the server. Upload it again." };
+  for (;;) {
+    let pdf: Uint8Array;
+    try {
+      [pdf] = await extractPageSets(bytes, [pages]);
+    } catch (e) {
+      if (isAppError(e) && e.code === "invalid_pdf") return { error: "The scan could not be read. Upload it again." };
+      throw e;
+    }
+    if (pdf.byteLength <= SCAN_CHUNK_MAX_BYTES) return { pages, pdf };
+    if (pages.length === 1) {
+      return { error: `Page ${pages[0]} of the scan is too large to send to the AI. Split the scan every N pages instead.` };
+    }
+    pages = pages.slice(0, Math.ceil(pages.length / 2));
+  }
+}
+
+/**
+ * A run that read at least one chunk does not count as a used attempt: a long scan that keeps making progress
+ * never runs out of attempts, also on its last one.
+ */
+function splitFailure(run: SplitRun, err: AiError, progress: boolean): HandlerResult {
+  const job = progress ? { ...run.job, attempts: run.job.attempts - 1 } : run.job;
+  if (isFinalRefusal(job, err)) return failScan(run, "The AI declined to read this scan. Split it every N pages instead.");
+  const decision = decideFailure(job, err, failureLimits());
+  switch (decision.action) {
+    case "requeue":
+      return noteSplit(run, decision.note)
+        ? {
+          kind: "requeue", runAfter: decision.runAfter, error: describe(err), maxTokens: decision.maxTokens,
+          refundAttempt: decision.refundAttempt || progress,
+        }
+        : DONE;
+    case "pause":
+      return noteSplit(run, `Paused: ${decision.reason}`)
+        ? { kind: "pause", resumeAt: decision.resumeAt, reason: decision.reason, code: decision.code }
+        : DONE;
+    case "fail":
+      return failScan(run, decision.message, describe(err));
+  }
+}
+
+function noteSplit(run: SplitRun, note: string): boolean {
+  return updateSplittingScan(run.scanId, run.generation, { statusNote: note });
+}
+
+/** `message` is for the teacher; `lastError` for jobs.last_error. A superseded run fails nothing. */
+function failScan(run: SplitRun, message: string, lastError: string = message): HandlerResult {
+  const failed = updateSplittingScan(run.scanId, run.generation, { status: "failed", errorMessage: message, statusNote: null });
+  return failed ? { kind: "fail", error: lastError } : DONE;
+}
+
+function addUsage(total: AiUsage | null, u: AiUsage): AiUsage {
+  return {
+    inputTokens: (total?.inputTokens ?? 0) + u.inputTokens,
+    outputTokens: (total?.outputTokens ?? 0) + u.outputTokens,
+    cacheReadTokens: (total?.cacheReadTokens ?? 0) + u.cacheReadTokens,
+    cacheWriteTokens: (total?.cacheWriteTokens ?? 0) + u.cacheWriteTokens,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -272,11 +420,20 @@ function isFinalRefusal(job: Job, err: AiError): boolean {
 export function failTarget(job: Job, message: string): void {
   tx(() => {
     if (hasActiveJob(job.kind, job.targetId)) return;
-    if (job.kind === "grade_submission") {
-      const submission = getSubmission(job.targetId);
-      if (submission) markFailed(submission.id, submission.gradingGeneration, "internal", message);
-    } else if (getKey(job.targetId)?.status === "processing") {
-      updateKey(job.targetId, { status: "failed", errorMessage: message });
+    switch (job.kind) {
+      case "grade_submission": {
+        const submission = getSubmission(job.targetId);
+        if (submission) markFailed(submission.id, submission.gradingGeneration, "internal", message);
+        return;
+      }
+      case "extract_key":
+        if (getKey(job.targetId)?.status === "processing") updateKey(job.targetId, { status: "failed", errorMessage: message });
+        return;
+      case "split_scan": {
+        const scan = getScan(job.targetId);
+        if (scan) updateSplittingScan(scan.id, scan.splitGeneration, { status: "failed", errorMessage: message, statusNote: null });
+        return;
+      }
     }
   });
 }

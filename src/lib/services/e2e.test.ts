@@ -1,23 +1,29 @@
-// The smoke flow, end to end through the services and the real worker with the fake grader:
+// The smoke flows, end to end through the services and the real worker with the fake grader:
 // signup → assignment with sections → key upload → extraction → save & open → student uploads →
-// receipts → board → override, identity, review → release → released receipt → teacher upload → CSV.
+// receipts → board → override, identity, review → release → released receipt → teacher upload → CSV;
+// and, with student uploads off: a scan of the whole stack → split → papers → a correction → regrade.
 import { beforeEach, describe, expect, it } from "vitest";
 import { createFakeGrader } from "@/lib/ai/fake";
 import { registerTeacher } from "@/lib/auth/accounts";
 import { setClockForTests } from "@/lib/clock";
 import { getAssignment } from "@/lib/db/repos/assignments";
-import { getSubmission, getSubmissionByReceipt } from "@/lib/db/repos/submissions";
+import { getScan } from "@/lib/db/repos/scans";
+import { getSubmission, getSubmissionByReceipt, listItems, listSubmissions } from "@/lib/db/repos/submissions";
 import { createWorker } from "@/lib/jobs/worker";
+import { papersFromLayout } from "@/lib/scan-layout";
 import { createAssignment, setFeedbackReleased, setAssignmentStatus } from "@/lib/services/assignments";
+import { loadGuidance } from "@/lib/services/guidance";
 import { ingestKeyPdf, saveKey } from "@/lib/services/keys";
+import { createPapersFromScan, ingestScan } from "@/lib/services/scans";
 import {
-  ingestStudentUpload, ingestTeacherUpload, markReviewed, saveItemOverride, updateIdentity,
+  ingestStudentUpload, ingestTeacherUpload, markReviewed, regradeWithGuidance, saveItemOverride, updateIdentity,
 } from "@/lib/services/submissions";
 import {
-  buildGradesCsv, getBoardView, getKeyEditorView, getReceiptView, getReviewView, getStudentUploadView,
+  buildGradesCsv, getBoardView, getKeyEditorView, getLessonsView, getReceiptView, getReviewView, getStudentUploadView,
+  getUploadPageView,
 } from "@/lib/services/views";
-import type { Assignment, SaveKeyInput } from "@/lib/types";
-import { makePdf, TINY_JPEG, useTestDb } from "@/test/helpers";
+import type { Assignment, KeyItem, SaveKeyInput } from "@/lib/types";
+import { enableStudentUploads, makePdf, TINY_JPEG, useTestDb } from "@/test/helpers";
 
 const ORIGIN = "https://grader.school.test";
 let clock = 1_700_000_000_000;
@@ -44,8 +50,21 @@ function tokenOf(receiptUrl: string): string {
   return receiptUrl.slice(receiptUrl.lastIndexOf("/r/") + 3);
 }
 
+/** Approves the extracted key as it is (acknowledging the AI-proposed item). */
+function approveExtractedKey(a: Assignment, items: KeyItem[], o: { open: boolean }): ReturnType<typeof saveKey> {
+  return saveKey(a, {
+    teacherNotes: "", acknowledgeAiProposed: true,
+    items: items.map((i) => ({
+      id: i.id, label: i.label, groupLabel: i.groupLabel, prompt: i.prompt, answerType: i.answerType, expectedAnswer: i.expectedAnswer,
+      acceptableAnswers: i.acceptableAnswers, gradingCriteria: i.gradingCriteria, pointsCenti: i.pointsCenti, partialCredit: i.partialCredit,
+      page: i.page,
+    })),
+  }, o);
+}
+
 describe("end-to-end flow with the fake grader", () => {
   it("runs from signup to CSV export", async () => {
+    enableStudentUploads();
     const teacher = await registerTeacher({ email: "Rivera@Example.org", displayName: "Ms. Rivera", password: "correct horse battery", code: null });
     let a = createAssignment(teacher.id, {
       title: "Unit 4 Quiz", instructions: "Show your work.", gradingMode: "completion", accuracyWeight: 50,
@@ -165,5 +184,65 @@ describe("end-to-end flow with the fake grader", () => {
     expect(currentRows).toBe(3);
     expect(lines).toHaveLength(1 + currentRows);
     expect(lines.some((l) => l.includes('"Maria Lopez"') && l.includes(`${ORIGIN}/r/${reviewed.receiptToken}`))).toBe(true);
+  });
+
+  it("grades one scan of the whole stack with student uploads off, and learns from a correction", async () => {
+    const teacher = await registerTeacher({ email: "kim@example.org", displayName: "Mr. Kim", password: "correct horse battery", code: null });
+    let a = createAssignment(teacher.id, {
+      title: "Photosynthesis", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500,
+    });
+
+    // A three-page key; "Save & open" approves it but can't open the assignment while student uploads are off.
+    await ingestKeyPdf(a, { filename: "key.pdf", bytes: await makePdf(3, { label: "key" }) });
+    expect(await drain()).toBe(1);
+    expect(approveExtractedKey(a, getKeyEditorView(a).items, { open: true })).toEqual({ revision: 1, staleCount: 0 });
+    a = reload(a);
+    expect(a.status).toBe("draft");
+    expect(getStudentUploadView(a.shareCode)).toMatchObject({ accepting: false });
+    await expect(ingestStudentUpload(a.shareCode, [{ filename: "s.pdf", bytes: await makePdf(1) }])).rejects.toMatchObject({ code: "closed" });
+    expect(getUploadPageView(a)).toMatchObject({ keyApproved: true, keyPageCount: 3, studentsCanUpload: false });
+
+    // One 9-page scan → the AI split → 3 papers of 3 pages, checked, then created and graded.
+    tick();
+    const scan = await ingestScan(a, { filename: "stack.pdf", bytes: await makePdf(9, { label: "class" }) }, { mode: "auto", pagesPerPaper: null });
+    expect(await drain()).toBe(1);
+    const split = getScan(scan.id)!;
+    expect(split.status).toBe("review");
+    expect(papersFromLayout(split.layout!)).toEqual([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+    expect(await createPapersFromScan(a, split, split.layout!)).toEqual({ created: 3, duplicates: 0 });
+    expect(await drain()).toBe(3);
+    const papers = listSubmissions(a.id);
+    expect(papers.map((p) => [p.source, p.pageCount])).toEqual([["teacher", 3], ["teacher", 3], ["teacher", 3]]);
+    for (const p of papers) expect(["graded", "needs_review"]).toContain(p.status);
+    expect(getBoardView(a, "all")).toMatchObject({ counts: { total: 3 }, guidanceStaleCount: 0, open: false });
+
+    // The fake's answers repeat across papers: find an item answered "Sample answer for Q…" on two of them.
+    const items = getKeyEditorView(a).items;
+    const answers = (paperId: string) => new Map(listItems(paperId).map((r) => [r.itemId, r.judgment]));
+    const index = items.findIndex((item) =>
+      papers.filter((p) => answers(p.id).get(item.id)?.studentAnswer.startsWith("Sample answer for Q")
+        && answers(p.id).get(item.id)?.correctness === "correct").length >= 2);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const item = items[index];
+    const [corrected, other] = papers.filter((p) => answers(p.id).get(item.id)?.correctness === "correct"
+      && answers(p.id).get(item.id)?.studentAnswer === `Sample answer for Q${index + 1}`);
+
+    // The teacher gives no credit and says why: a lesson the grader is sent from now on.
+    saveItemOverride(getSubmission(corrected.id)!, item.id, { pointsCenti: 0, feedback: null, reason: "That's the textbook's sentence, not an answer." });
+    const lessons = getLessonsView(a);
+    expect(lessons).toMatchObject({ sentCount: 1, activeCount: 1, guidanceStaleCount: 3 });
+    expect(lessons.lessons[0].lesson).toMatchObject({ teacherAttempt: "none", teacherCorrectness: "no_answer" });
+    expect(getBoardView(a, "all").guidanceStaleCount).toBe(3);
+
+    // Regrading with the latest corrections: the other paper's identical answer now follows the ruling.
+    expect(regradeWithGuidance(a)).toBe(3);
+    expect(await drain()).toBe(3);
+    expect(answers(other.id).get(item.id)).toMatchObject({
+      attempt: "none", correctness: "no_answer", teacherNote: "Practice grader: followed your ruling on this answer.",
+    });
+    const { fingerprint } = loadGuidance(a);
+    for (const p of papers) expect(getSubmission(p.id)!.gradedGuidanceFp).toBe(fingerprint);
+    expect(getBoardView(a, "all").guidanceStaleCount).toBe(0);
+    expect(listItems(corrected.id).find((r) => r.itemId === item.id)!.overrideCenti).toBe(0);
   });
 });
