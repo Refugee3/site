@@ -37,14 +37,15 @@ All settings are listed, with defaults, in [`.env.example`](.env.example). The m
 | `APP_URL` | — | Public origin, e.g. `https://grader.school.org`. Used for share and receipt links, the origin check and secure cookies. |
 | `DATA_DIR` | `./data` | SQLite database and uploaded PDFs. |
 | `ANTHROPIC_EFFORT` | `high` | `low` … `max`. `medium` is cheaper and faster. |
-| `TEACHER_SIGNUP_CODE` | — | Lets additional teachers sign up (see below). |
+| `TEACHER_SIGNUP_CODE` | — | Required to sign up, when set (see below). At least 12 characters. |
 | `MAX_UPLOAD_MB` / `MAX_PAGES` | `20` / `40` | Per-upload limits for students, teacher uploads and keys. |
+
+The server checks the settings, the data directory and the database when it starts; if anything is wrong it logs the problem and exits with code 1 instead of serving errors.
 
 ## Teacher accounts
 
-- The **first** account can be created by anyone who reaches `/signup`, so create it right after deploying.
-- After that, sign-up requires `TEACHER_SIGNUP_CODE`. Share the code only with colleagues who should get an account.
-- If `TEACHER_SIGNUP_CODE` is unset, sign-up is closed once the first teacher exists.
+- If `TEACHER_SIGNUP_CODE` is set, **every** sign-up needs it, the first one included. Use a random code of at least 12 characters (for example the output of `openssl rand -base64 12`), not a word, and share it only with colleagues who should get an account. Wrong codes are limited to 20 per hour server-wide.
+- If `TEACHER_SIGNUP_CODE` is unset, the **first** account can be created by anyone who reaches `/signup` (so create it right after deploying), and sign-up is closed once it exists.
 
 ## Run exactly one instance
 
@@ -53,6 +54,8 @@ The grading queue lives in SQLite and the worker runs inside the Next.js server 
 ## Behind a reverse proxy
 
 Terminate TLS in a reverse proxy and let it pass the client's address and the original host. Raise the body limit above `MAX_UPLOAD_MB`. Set `APP_URL` to the public origin.
+
+Make the Node server reachable **only through the proxy**: start it on the loopback interface with `npm start -- -H 127.0.0.1` (or firewall port 3000). The per-address rate limits (login, uploads, code lookups) read the client's address from `X-Forwarded-For`, which only the proxy can be trusted to set. A client that reaches `next start` directly can put any address there, and those limits then mean nothing; only the limits that don't depend on the address (uploads per assignment and in all, wrong signup codes) still hold.
 
 Caddy:
 
@@ -105,7 +108,7 @@ Student work — the PDFs and photos, including names written on them — and th
 
 ## Cost
 
-Roughly **$0.10–0.30 per paper** with the default model (`claude-opus-5-5`, $4 / $20 per million input / output tokens). Output and thinking tokens dominate; `ANTHROPIC_EFFORT=medium` is the main lever for lowering cost. The answer key is cached between papers, so its cost is negligible. Each assignment's Settings tab shows its token usage and estimated cost.
+Roughly **$0.10–0.30 per paper** with the default model (`claude-opus-5-5`, $4 / $20 per million input / output tokens). Output and thinking tokens dominate; `ANTHROPIC_EFFORT=medium` is the main lever for lowering cost. The answer key is cached between papers, so its cost is negligible. Each assignment's Settings tab shows its token usage and estimated cost, added up over every AI call (regrades, retries and reading the key included).
 
 ## Development
 
