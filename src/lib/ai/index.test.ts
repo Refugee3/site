@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
-import { clearStoredApiKey, getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
+import {
+  clearStoredApiKey, getAppSettings, getHostedAgentState, setGradingEngine, setStoredApiKey,
+} from "@/lib/db/repos/settings";
 import { encryptSecret } from "@/lib/secrets";
 import { seedTeacher, useTestDb } from "@/test/helpers";
+import { apiKeyFingerprint } from "./api-key";
 import type { MessageRunner } from "./claude";
 import { createFakeGrader } from "./fake";
-import { checkApiKey, confirmKeyOnSuccess, getGrader, resetGrader, setGraderForTests } from "./index";
+import {
+  checkApiKey, confirmKeyOnSuccess, currentGraderEngine, getGrader, getHostedAgentStatus, resetGrader, setGraderForTests,
+  setUpHostedAgentNow, startHostedAgentSetup,
+} from "./index";
 import { makeMessage } from "./test-utils";
 
 // The test setup runs with AI_MODE=fake and an empty ANTHROPIC_API_KEY, and deletes the slot after each test.
@@ -14,6 +20,35 @@ import { makeMessage } from "./test-utils";
 function useEnv(env: Record<string, string>) {
   for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
   resetConfigForTests();
+}
+
+const KEY_A = "sk-ant-api03-saved-key-aaaaaaaaaa";
+const KEY_B = "sk-ant-api03-saved-key-bbbbbbbbbb";
+
+function saveKey(key: string) {
+  setStoredApiKey({ ciphertext: encryptSecret(key, "anthropic-api-key"), masked: `sk-ant-…${key.slice(-4)}`, check: "unverified",
+    setBy: seedTeacher().id });
+}
+
+/**
+ * Anthropic's Managed Agents endpoints, in place of the network: every create succeeds, and each request waits until
+ * `release()` (all requests are recorded with their headers).
+ */
+function fakeManagedAgentsApi() {
+  const requests: Array<{ method: string; path: string; headers: Headers }> = [];
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    requests.push({ method: init?.method ?? "GET", path: url.pathname, headers: new Headers(init?.headers) });
+    await released;
+    const id = `${url.pathname.split("/").at(-1)}_${requests.length}`;
+    const created = url.pathname === "/v1/environments" ? { id, name: "pdf-autograder", archived_at: null } : { id, version: 1, archived_at: null };
+    return Response.json(created);
+  });
+  return { requests, release, restore: () => fetchSpy.mockRestore() };
 }
 
 describe("getGrader", () => {
@@ -49,6 +84,142 @@ describe("getGrader", () => {
     const grader = getGrader();
     delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("pag.grader")];
     expect(getGrader()).not.toBe(grader);
+  });
+});
+
+describe("the grading engine", () => {
+  it("is the hosted agent by default in claude mode, and the direct API once chosen", () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    saveKey(KEY_A);
+    expect(getGrader()).toMatchObject({ mode: "claude", engine: "agent" });
+    expect(currentGraderEngine()).toBe("agent");
+
+    setGradingEngine("direct");
+    expect(getGrader()?.engine).toBe("agent"); // memoized until reset
+    resetGrader();
+    expect(getGrader()).toMatchObject({ mode: "claude", engine: "direct" });
+    expect(currentGraderEngine()).toBe("direct");
+
+    setGradingEngine("agent");
+    clearStoredApiKey();
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "sk-ant-env-key-0000000000000000" });
+    resetGrader();
+    expect(getGrader()).toMatchObject({ mode: "claude", engine: "agent" });
+  });
+
+  it("is the practice grader in fake mode, whatever was chosen, and none without a key", () => {
+    useTestDb();
+    setGradingEngine("direct");
+    expect(getGrader()).toMatchObject({ mode: "fake", engine: "fake" });
+    expect(currentGraderEngine()).toBe("fake");
+
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    resetGrader();
+    expect(getGrader()).toBeNull();
+    expect(currentGraderEngine()).toBeNull();
+  });
+
+  it("is told without building a grader", () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    saveKey(KEY_A);
+    expect(currentGraderEngine()).toBe("agent");
+    expect((globalThis as unknown as Record<symbol, unknown>)[Symbol.for("pag.grader")]).toBeUndefined();
+  });
+});
+
+describe("setting up the hosted agent", () => {
+  it("does nothing in fake mode, without a key or with the direct API chosen", async () => {
+    const api = fakeManagedAgentsApi();
+    try {
+      useTestDb();
+      saveKey(KEY_A);
+      startHostedAgentSetup();
+      expect(getHostedAgentStatus()).toBeNull();
+      expect(await setUpHostedAgentNow()).toEqual({ ok: false, error: "Practice mode (AI_MODE=fake) doesn't use the hosted agent." });
+
+      useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+      clearStoredApiKey();
+      startHostedAgentSetup();
+      expect(getHostedAgentStatus()).toBeNull();
+      expect(await setUpHostedAgentNow()).toEqual({ ok: false, error: "Add an API key first." });
+
+      saveKey(KEY_A);
+      setGradingEngine("direct");
+      startHostedAgentSetup();
+      // Settings still shows the hosted agent's state for the key, which is used again once it is chosen.
+      expect(getHostedAgentStatus()).toEqual({ state: "not_set_up", error: null, checkedAt: null });
+      expect(api.requests).toEqual([]);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it("sets up with the key in use, sent as the API key only, and saves the result for that key", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "env-token");
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "sk-ant-env-key-0000000000000000" });
+    useTestDb();
+    saveKey(KEY_A);
+    const api = fakeManagedAgentsApi();
+    try {
+      const done = setUpHostedAgentNow();
+      await vi.waitFor(() => expect(api.requests).toHaveLength(1));
+      expect(getHostedAgentStatus()).toEqual({ state: "setting_up", error: null, checkedAt: null });
+      api.release();
+
+      expect(await done).toEqual({ ok: true });
+      expect(api.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+        "POST /v1/environments", "POST /v1/agents", "POST /v1/agents", "POST /v1/agents",
+      ]);
+      expect(api.requests.every((r) => r.headers.get("x-api-key") === KEY_A && r.headers.get("authorization") === null)).toBe(true);
+      expect(getHostedAgentStatus()).toMatchObject({ state: "ready", error: null });
+      const state = getHostedAgentState();
+      expect(state).toMatchObject({ status: "ready", keyFp: apiKeyFingerprint(KEY_A), environment: { id: "environments_1" } });
+      expect(JSON.stringify(state)).not.toContain(KEY_A);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it("uses the server's ANTHROPIC_API_KEY when no key is saved", async () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "sk-ant-env-key-0000000000000000" });
+    useTestDb();
+    const api = fakeManagedAgentsApi();
+    try {
+      api.release();
+      expect(await setUpHostedAgentNow()).toEqual({ ok: true });
+      expect(api.requests[0].headers.get("x-api-key")).toBe("sk-ant-env-key-0000000000000000");
+      expect(getHostedAgentState().keyFp).toBe(apiKeyFingerprint("sk-ant-env-key-0000000000000000"));
+    } finally {
+      api.restore();
+    }
+  });
+
+  it("doesn't save a setup result for a key that was replaced meanwhile, leaving the new key's state as it was", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    saveKey(KEY_A);
+    const api = fakeManagedAgentsApi();
+    try {
+      startHostedAgentSetup();
+      await vi.waitFor(() => expect(api.requests).toHaveLength(1));
+      expect(api.requests[0].headers.get("x-api-key")).toBe(KEY_A);
+
+      // The teacher saves another key while the setup for the first one is still running.
+      saveKey(KEY_B);
+      const before = getHostedAgentState();
+      api.release();
+
+      await vi.waitFor(() => expect(info).toHaveBeenCalledWith("[agent] setup result for a replaced API key not saved"));
+      expect(api.requests).toHaveLength(4);
+      expect(getHostedAgentState()).toEqual(before);
+      expect(before).toMatchObject({ status: "none", keyFp: null, environment: null, agents: {} });
+      expect(getHostedAgentStatus()).toEqual({ state: "not_set_up", error: null, checkedAt: null });
+    } finally {
+      api.restore();
+    }
   });
 });
 

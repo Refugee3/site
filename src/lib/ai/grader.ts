@@ -1,4 +1,5 @@
 import type { AiUsage, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
+import type { AgentCallCost } from "./errors";
 import type { GradingOutput, KeyExtraction, ScanPages } from "./schemas";
 
 export interface AiCallMeta {
@@ -8,6 +9,8 @@ export interface AiCallMeta {
   stopReason: string;
   usage: AiUsage;
   durationMs: number;
+  /** Set only by the hosted agent. */
+  agent?: AgentCallCost;
 }
 
 export interface ExtractKeyInput {
@@ -63,6 +66,8 @@ export interface CallOptions {
 /** The domain interface every consumer of the AI layer uses; every method rejects with AiError. */
 export interface Grader {
   readonly mode: "claude" | "fake";
+  /** Which engine this grader is (stored with each grading). */
+  readonly engine: "direct" | "agent" | "fake";
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
   gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
   readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;

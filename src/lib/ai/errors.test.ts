@@ -10,6 +10,19 @@ describe("classifySdkError", () => {
     expect(classifySdkError(err)).toBe(err);
   });
 
+  it("returns the hosted agent's errors unchanged, with the session cost they were billed", () => {
+    const billed = {
+      servedModel: "claude-opus-5-5",
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      agent: { listCostCents: 200, activeSeconds: 95 },
+    };
+    for (const code of ["budget_reached", "agent_unavailable"] as const) {
+      const err = new AiError(code, "x", { retryable: code === "budget_reached", billed });
+      expect(classifySdkError(err)).toBe(err);
+      expect(classifySdkError(err).o.billed?.agent).toEqual({ listCostCents: 200, activeSeconds: 95 });
+    }
+  });
+
   it.each([
     ["APIUserAbortError", new Anthropic.APIUserAbortError(), "aborted", true],
     ["APIConnectionTimeoutError", new Anthropic.APIConnectionTimeoutError(), "timeout", true],

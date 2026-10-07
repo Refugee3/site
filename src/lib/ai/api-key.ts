@@ -1,6 +1,7 @@
 import "server-only";
 import { getConfig } from "@/lib/config";
 import { getAppSettings } from "@/lib/db/repos/settings";
+import { sha256Hex } from "@/lib/ids";
 import { decryptSecret } from "@/lib/secrets";
 
 // The Anthropic API key: one saved in the app (encrypted at rest) wins over ANTHROPIC_API_KEY.
@@ -11,6 +12,7 @@ export type ResolvedApiKey = { source: "app"; key: string; ciphertext: string } 
 
 const KEY_FORMAT = /^sk-ant-[A-Za-z0-9_-]{16,300}$/;
 const MASK_PREFIX = "sk-ant-";
+const FINGERPRINT_DOMAIN = "pag-agent-owner-v1:";
 
 /** The key the grader should use: a decryptable saved key, else the server's ANTHROPIC_API_KEY, else null. */
 export function resolveApiKey(): ResolvedApiKey | null {
@@ -21,6 +23,20 @@ export function resolveApiKey(): ResolvedApiKey | null {
     console.warn("[ai] the saved API key can't be decrypted");
   }
   return getConfig().hasApiKey ? { source: "env" } : null;
+}
+
+/** ANTHROPIC_API_KEY (trimmed) when the server has one, else null. Never logged. */
+export function envApiKey(): string | null {
+  return process.env.ANTHROPIC_API_KEY?.trim() || null;
+}
+
+/**
+ * Identifies the API key that owns the hosted agent's remote objects, without storing the key: the first 32 hex chars
+ * of SHA-256("pag-agent-owner-v1:" + key). API keys are long random secrets, so this reveals nothing usable; it is only
+ * compared for equality and never leaves the server.
+ */
+export function apiKeyFingerprint(key: string): string {
+  return sha256Hex(FINGERPRINT_DOMAIN + key).slice(0, 32);
 }
 
 /**

@@ -11,7 +11,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     effort: "high", fallbacks: true, cacheTtl: "1h", aiTimeoutMs: 600_000, jobTimeoutMs: 2_700_000, maxTokens: 64_000,
     maxTokensCeiling: 128_000, concurrency: 3, jobMaxAttempts: 4, teacherSignupCode: null, cookieSecure: false,
     maxUploadBytes: 20 * 1_048_576, maxPages: 40, maxUploadFiles: 20, maxKeyItems: 200, appSecret: null,
-    maxScanBytes: 100 * 1_048_576, maxScanPages: 200, ...overrides,
+    maxScanBytes: 100 * 1_048_576, maxScanPages: 200, agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
+    agentSessionTimeoutMs: 1_200_000, agentKeepSessions: false, ...overrides,
   };
 }
 

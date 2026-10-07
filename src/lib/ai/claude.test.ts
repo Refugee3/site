@@ -557,6 +557,7 @@ describe("createClaudeGrader", () => {
     const signal = new AbortController().signal;
     const result = await grader.gradeSubmission(gradeInput(), { signal });
     expect(grader.mode).toBe("claude");
+    expect(grader.engine).toBe("direct");
     expect(result.output).toEqual(gradingOutput);
     expect(result.refs).toEqual(["Q1", "Q2"]);
     expect(result.keyPdfIncluded).toBe(true);

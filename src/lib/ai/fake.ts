@@ -37,6 +37,7 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
 
   return {
     mode: "fake",
+    engine: "fake",
     async extractKey(input, options = {}) {
       const meta = await simulateCall(seedFor(input.keyPdf), options);
       return { output: fakeKey(input.pageCount), meta };

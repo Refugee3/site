@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
 import { getAppSettings, setStoredApiKey } from "@/lib/db/repos/settings";
+import { sha256Hex } from "@/lib/ids";
 import { encryptSecret } from "@/lib/secrets";
 import { seedTeacher, useTestDb } from "@/test/helpers";
-import { maskApiKey, normalizeApiKeyInput, resolveApiKey } from "./api-key";
+import { apiKeyFingerprint, envApiKey, maskApiKey, normalizeApiKeyInput, resolveApiKey } from "./api-key";
 
 const SAVED_KEY = "sk-ant-api03-SAVEDSAVEDSAVED-xyz_-a1b2";
 
@@ -88,5 +89,35 @@ describe("resolveApiKey", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(resolveApiKey()).toBeNull();
     warn.mockRestore();
+  });
+});
+
+describe("envApiKey", () => {
+  it("is null when ANTHROPIC_API_KEY is unset or blank", () => {
+    expect(envApiKey()).toBeNull();
+    vi.stubEnv("ANTHROPIC_API_KEY", " \n");
+    expect(envApiKey()).toBeNull();
+  });
+
+  it("returns the trimmed key", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "  sk-ant-env-key-0000000000000000\n");
+    expect(envApiKey()).toBe("sk-ant-env-key-0000000000000000");
+  });
+});
+
+describe("apiKeyFingerprint", () => {
+  it("is 32 hex characters, deterministic, and different for each key", () => {
+    const fp = apiKeyFingerprint(SAVED_KEY);
+    expect(fp).toMatch(/^[0-9a-f]{32}$/);
+    expect(apiKeyFingerprint(SAVED_KEY)).toBe(fp);
+    expect(apiKeyFingerprint(`${SAVED_KEY}x`)).not.toBe(fp);
+    expect(apiKeyFingerprint("sk-ant-env-key-0000000000000000")).not.toBe(fp);
+  });
+
+  it("is domain-separated and never contains the key", () => {
+    const fp = apiKeyFingerprint(SAVED_KEY);
+    expect(fp).not.toContain(SAVED_KEY.slice(-8));
+    expect(fp).not.toBe(sha256Hex(SAVED_KEY).slice(0, 32));
+    expect(fp).toBe(sha256Hex(`pag-agent-owner-v1:${SAVED_KEY}`).slice(0, 32));
   });
 });

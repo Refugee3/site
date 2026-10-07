@@ -44,6 +44,7 @@ describe("fake grader", () => {
     expect(result.output.items.map((i) => i.ref)).toEqual(result.refs);
     expect(result.keyPdfIncluded).toBe(false);
     expect(grader.mode).toBe("fake");
+    expect(grader.engine).toBe("fake");
     expect(result.meta).toMatchObject({
       requestedModel: "fake", servedModel: "fake", fallbackUsed: false, stopReason: "end_turn",
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },

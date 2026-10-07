@@ -15,7 +15,16 @@ import {
 import type { AiUsage } from "@/lib/types";
 
 export type AiErrorCode = "refusal" | "max_tokens" | "invalid_output" | "rate_limited" | "overloaded" | "server_error" | "connection"
-  | "timeout" | "aborted" | "bad_request" | "request_too_large" | "auth" | "model_not_found" | "billing" | "unknown";
+  | "timeout" | "aborted" | "bad_request" | "request_too_large" | "auth" | "model_not_found" | "billing" | "unknown"
+  | "budget_reached" | "agent_unavailable";
+
+/** What one hosted-agent session cost besides its tokens. */
+export interface AgentCallCost {
+  /** The session's list cost in US cents; null while Anthropic reports none (cost tracking unavailable). */
+  listCostCents: number | null;
+  /** Seconds the session was running, which agent runtime is priced on. */
+  activeSeconds: number;
+}
 
 export interface AiErrorOptions {
   retryable: boolean;
@@ -23,8 +32,11 @@ export interface AiErrorOptions {
   /** The whole worker should stop claiming jobs (bad key, unknown model, no credits): every job would fail the same way. */
   pauseWorker?: boolean;
   refusalCategory?: string | null;
-  /** Set when a response arrived (and was billed) but could not be used: a refusal, a cut-off or invalid answer. */
-  billed?: { servedModel: string; usage: AiUsage } | null;
+  /**
+   * Set when a response arrived (and was billed) but could not be used: a refusal, a cut-off or invalid answer.
+   * `agent` is the hosted-agent session's cost beside its tokens.
+   */
+  billed?: { servedModel: string; usage: AiUsage; agent?: AgentCallCost | null } | null;
 }
 
 /** A failed AI call, classified so the job layer can decide between retry, pause and fail. */
