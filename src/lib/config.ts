@@ -10,6 +10,8 @@ export interface AppConfig {
   appUrl: string | null;
   aiMode: "claude" | "fake";
   hasApiKey: boolean;
+  /** Master secret for encrypting the saved API key; null → DATA_DIR/secret.key. Never log the config object. */
+  appSecret: string | null;
   model: string;
   effort: Effort;
   fallbacks: boolean;
@@ -24,6 +26,8 @@ export interface AppConfig {
   cookieSecure: boolean;
   maxUploadBytes: number;
   maxPages: number;
+  maxScanBytes: number;
+  maxScanPages: number;
   maxUploadFiles: number;
   maxKeyItems: number;
 }
@@ -61,6 +65,7 @@ const EnvSchema = z.object({
   AI_MODE: z.enum(["claude", "fake"]).default("claude"),
   ALLOW_FAKE_AI: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  APP_SECRET: z.string().min(32, "must be at least 32 characters; generate one with: openssl rand -base64 32").optional(),
   ANTHROPIC_MODEL: z.string().default("claude-opus-5-5"),
   ANTHROPIC_EFFORT: z.enum(EFFORTS).default("high"),
   AI_FALLBACKS: z.enum(["on", "off"]).default("on"),
@@ -73,6 +78,8 @@ const EnvSchema = z.object({
   COOKIE_SECURE: z.enum(["auto", "true", "false"]).default("auto"),
   MAX_UPLOAD_MB: intVar(1, 22, 20),
   MAX_PAGES: intVar(1, 200, 40),
+  MAX_SCAN_MB: intVar(1, 200, 100),
+  MAX_SCAN_PAGES: intVar(1, 500, 200),
 });
 
 type EnvVar = keyof typeof EnvSchema.shape;
@@ -107,6 +114,7 @@ function parseConfig(): AppConfig {
     appUrl,
     aiMode: env.AI_MODE,
     hasApiKey: env.ANTHROPIC_API_KEY !== undefined,
+    appSecret: env.APP_SECRET ?? null,
     model: env.ANTHROPIC_MODEL,
     effort: env.ANTHROPIC_EFFORT,
     fallbacks: env.AI_FALLBACKS === "on",
@@ -118,6 +126,8 @@ function parseConfig(): AppConfig {
     cookieSecure: env.COOKIE_SECURE === "auto" ? (appUrl?.startsWith("https:") ?? false) : env.COOKIE_SECURE === "true",
     maxUploadBytes: env.MAX_UPLOAD_MB * MIB,
     maxPages: env.MAX_PAGES,
+    maxScanBytes: env.MAX_SCAN_MB * MIB,
+    maxScanPages: env.MAX_SCAN_PAGES,
     ...CONSTANTS,
   };
 }

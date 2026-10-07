@@ -18,6 +18,7 @@ interface JobRow {
   created_at: number;
   updated_at: number;
   finished_at: number | null;
+  paused: 0 | 1;
 }
 
 function jobFromRow(row: JobRow): Job {
@@ -36,6 +37,7 @@ function jobFromRow(row: JobRow): Job {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
+    paused: row.paused === 1,
   };
 }
 
@@ -72,16 +74,17 @@ export function enqueueJob(j: {
 /**
  * Claims the next runnable job (marks it running and counts the attempt). A job waits while its run_after
  * is in the future, while another job for the same target runs, and (grading only) while the key is unapproved.
+ * Key extraction and scan splitting don't need an approved key. Claiming clears `paused`.
  */
 export function claimNextJob(at: number): Job | null {
   return tx(() => {
     const row = one<JobRow>(
-      `UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = @now
+      `UPDATE jobs SET status = 'running', attempts = attempts + 1, paused = 0, updated_at = @now
        WHERE id = (
          SELECT j.id FROM jobs j
          WHERE j.status = 'queued' AND j.run_after <= @now
            AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.kind = j.kind AND r.target_id = j.target_id AND r.status = 'running')
-           AND (j.kind = 'extract_key' OR EXISTS (SELECT 1 FROM answer_keys k WHERE k.assignment_id = j.assignment_id
+           AND (j.kind IN ('extract_key', 'split_scan') OR EXISTS (SELECT 1 FROM answer_keys k WHERE k.assignment_id = j.assignment_id
                                                   AND k.status = 'ready' AND k.approved_revision = k.revision))
          ORDER BY j.priority, j.run_after, j.id LIMIT 1)
        RETURNING *`,
@@ -115,10 +118,11 @@ function hasQueuedTwin(job: Pick<JobRow, "id" | "kind" | "target_id">): boolean 
  * Puts a running job back in the queue. If a regrade or re-upload queued another job for the same target
  * meanwhile, this one is cancelled instead ("superseded"), since only one queued job per target may exist.
  * A job that is no longer running (e.g. deleted with its assignment) also reports "superseded".
+ * `paused` marks a run_after pushed out by a worker pause, so `releasePausedJobs` can pull it forward.
  */
 export function requeueJob(
   id: number,
-  o: { runAfter: number; error: string; maxTokens?: number | null; refundAttempt?: boolean },
+  o: { runAfter: number; error: string; maxTokens?: number | null; refundAttempt?: boolean; paused?: boolean },
 ): "requeued" | "superseded" {
   return tx(() => {
     const at = now();
@@ -132,7 +136,7 @@ export function requeueJob(
       return "superseded";
     }
     run(
-      `UPDATE jobs SET status = 'queued', run_after = @run_after, last_error = @error, updated_at = @at,
+      `UPDATE jobs SET status = 'queued', run_after = @run_after, last_error = @error, updated_at = @at, paused = @paused,
          max_tokens = CASE WHEN @set_max_tokens THEN @max_tokens ELSE max_tokens END,
          attempts = CASE WHEN @refund THEN max(attempts - 1, 0) ELSE attempts END
        WHERE id = @id`,
@@ -144,10 +148,16 @@ export function requeueJob(
         set_max_tokens: o.maxTokens === undefined ? 0 : 1,
         max_tokens: o.maxTokens ?? null,
         refund: o.refundAttempt ? 1 : 0,
+        paused: o.paused ? 1 : 0,
       },
     );
     return "requeued";
   });
+}
+
+/** Makes the queued jobs a worker pause deferred runnable at `at`; returns how many. */
+export function releasePausedJobs(at: number): number {
+  return run("UPDATE jobs SET run_after = @at, paused = 0, updated_at = @at WHERE status = 'queued' AND paused = 1", { at });
 }
 
 export function cancelQueuedJobs(kind: JobKind, targetId: string): void {

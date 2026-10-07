@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { isAppError } from "@/lib/errors";
 import { sha256Hex } from "@/lib/ids";
 import {
-  buildSubmissionPdf, MAX_PDF_DECODED_BYTES, sanitizeFilename, sniffKind, validatePdf, type UploadedFile,
+  buildSubmissionPdf, extractPageSets, MAX_PDF_DECODED_BYTES, sanitizeFilename, sniffKind, validatePdf, type UploadedFile,
 } from "@/lib/storage/pdf";
 import { ENCRYPTED_PDF, makePdf, TINY_JPEG, TINY_PNG } from "@/test/helpers";
 
@@ -177,6 +177,53 @@ describe("validatePdf", () => {
     ]);
     expect(results.map((r) => r.status)).toEqual([...Array(5).fill("fulfilled"), "rejected", "fulfilled"]);
     expect(await validatePdf(pdf, OPTS)).toEqual({ pageCount: 1 });
+  });
+});
+
+describe("extractPageSets", () => {
+  const SIZES: Array<[number, number]> = [[100, 101], [200, 202], [300, 303], [400, 404], [500, 505]];
+
+  it("cuts one PDF per page set, with the pages in the order given", async () => {
+    const scan = await sizedPdf(SIZES);
+
+    const cut = await extractPageSets(scan, [[1, 2], [3], [5, 4]]);
+
+    expect(await Promise.all(cut.map(pageSizes))).toEqual([[SIZES[0], SIZES[1]], [SIZES[2]], [SIZES[4], SIZES[3]]]);
+    for (const pdf of cut) expect((await validatePdf(pdf, OPTS)).pageCount).toBeGreaterThan(0);
+  });
+
+  it("gives identical bytes for identical pages, also across separate calls (separate loads)", async () => {
+    const scan = await makePdf(6);
+
+    const [first, again, other] = await extractPageSets(scan, [[1, 2, 3], [1, 2, 3], [4, 5, 6]]);
+    const [later] = await extractPageSets(scan, [[1, 2, 3]]);
+
+    expect(again).toEqual(first);
+    expect(later).toEqual(first);
+    expect(sha256Hex(later)).toBe(sha256Hex(first));
+    expect(other).not.toEqual(first);
+  });
+
+  it("returns nothing for no sets", async () => {
+    expect(await extractPageSets(await makePdf(2), [])).toEqual([]);
+  });
+
+  it.each([
+    ["page 0", [[0]]],
+    ["a page past the end", [[1], [2, 4]]],
+    ["a fractional page", [[1.5]]],
+    ["an empty set", [[1], []]],
+  ])("throws a RangeError for %s", async (_name, sets) => {
+    await expect(extractPageSets(await makePdf(3), sets)).rejects.toThrow(RangeError);
+  });
+
+  it.each<[string, () => Promise<Uint8Array> | Uint8Array]>([
+    ["garbage", () => ascii("not a pdf at all")],
+    ["garbage after a PDF header", () => ascii("%PDF-1.4 garbage")],
+    ["an encrypted PDF", () => ENCRYPTED_PDF],
+    ["an object stream that inflates past the budget", () => pdfWithObjectStreams([MAX_PDF_DECODED_BYTES + 1_000_000])],
+  ])("refuses %s as invalid_pdf", async (_name, bytes) => {
+    expect(await errorCode(extractPageSets(await bytes(), [[1]]))).toBe("invalid_pdf");
   });
 });
 

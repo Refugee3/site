@@ -1,5 +1,5 @@
 import { now } from "@/lib/clock";
-import { isUniqueViolation, one } from "@/lib/db/sql";
+import { isUniqueViolation, one, run } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import { newId } from "@/lib/ids";
 import type { Teacher } from "@/lib/types";
@@ -45,4 +45,13 @@ export function findTeacherAuthByEmail(email: string): { teacher: Teacher; passw
 export function getTeacher(id: string): Teacher | null {
   const row = one<TeacherRow>("SELECT * FROM teachers WHERE id = ?", id);
   return row ? teacherFromRow(row) : null;
+}
+
+/** "" when the teacher has none (or is unknown). */
+export function getGradingPreferences(teacherId: string): string {
+  return one<{ grading_preferences: string }>("SELECT grading_preferences FROM teachers WHERE id = ?", teacherId)?.grading_preferences ?? "";
+}
+
+export function setGradingPreferences(teacherId: string, text: string): void {
+  run("UPDATE teachers SET grading_preferences = ? WHERE id = ?", text, teacherId);
 }

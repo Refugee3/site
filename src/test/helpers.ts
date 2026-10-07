@@ -5,10 +5,16 @@ import { getConfig } from "@/lib/config";
 import { openDatabase, setDbForTests, type DB } from "@/lib/db/connection";
 import { insertAssignment, replaceSections, shareCodeExists, updateAssignment } from "@/lib/db/repos/assignments";
 import { createEmptyKey, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
+import { updateLesson, upsertLesson, type LessonSnapshot } from "@/lib/db/repos/lessons";
+import { insertScan, updateScan } from "@/lib/db/repos/scans";
+import { setStudentsCanUpload } from "@/lib/db/repos/settings";
 import { insertSubmission, updateSubmission, type NewSubmission } from "@/lib/db/repos/submissions";
 import { insertTeacher } from "@/lib/db/repos/teachers";
 import { newId, newShareCode, newToken, sha256Hex } from "@/lib/ids";
-import type { Assignment, KeyItem, NewKeyItem, Submission, SubmissionStatus, Teacher } from "@/lib/types";
+import { scanPdfRel } from "@/lib/storage/paths";
+import type {
+  Assignment, KeyItem, Lesson, NewKeyItem, Scan, ScanLayout, ScanSplitMode, ScanStatus, Submission, SubmissionStatus, Teacher,
+} from "@/lib/types";
 
 /** A fresh migrated in-memory database installed as the shared connection (closed by the test setup). */
 export function useTestDb(): DB {
@@ -105,6 +111,66 @@ export function seedSubmission(
     fs.writeFileSync(file, ONE_PAGE_PDF);
   }
   return status && status !== submission.status ? updateSubmission(id, { status }) : submission;
+}
+
+/** Turns on "Students can upload their own work" (off by default since migration 3). */
+export function enableStudentUploads(): void {
+  setStudentsCanUpload(true);
+}
+
+/**
+ * A scan of makePdf(pages) (3 by default; its real sha256), splitting in "auto" mode unless `o` says otherwise.
+ * `writeFile` (default true) also stores the PDF at its data path.
+ */
+export async function seedScan(
+  assignmentId: string,
+  o: { pages?: number; status?: ScanStatus; splitMode?: ScanSplitMode; pagesPerPaper?: number | null; layout?: ScanLayout | null;
+    writeFile?: boolean } = {},
+): Promise<Scan> {
+  const pages = o.pages ?? 3;
+  const bytes = await makePdf(pages);
+  const id = newId();
+  const pdfPath = scanPdfRel(assignmentId, id);
+  if (o.writeFile ?? true) {
+    const file = path.join(getConfig().dataDir, pdfPath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes);
+  }
+  const status = o.status ?? "splitting";
+  const scan = insertScan({
+    id,
+    assignmentId,
+    status: status === "review" ? "review" : "splitting",
+    splitMode: o.splitMode ?? "auto",
+    pagesPerPaper: o.pagesPerPaper ?? null,
+    pdfPath,
+    originalFilename: "scan.pdf",
+    contentSha256: sha256Hex(bytes),
+    byteSize: bytes.length,
+    pageCount: pages,
+    layout: o.layout ?? null,
+  });
+  return status === scan.status ? scan : updateScan(id, { status });
+}
+
+/** A lesson in which the teacher marked the AI's (complete, incorrect) as (complete, correct), unless `o` says otherwise. */
+export function seedLesson(
+  o: { assignmentId: string; submissionId: string; itemId: string } & Partial<LessonSnapshot & { reason: string; active: boolean }>,
+): Lesson {
+  const { active, ...fields } = o;
+  const lesson = upsertLesson({
+    studentAnswer: "",
+    aiAttempt: "complete",
+    aiCorrectness: "incorrect",
+    teacherAttempt: "complete",
+    teacherCorrectness: "correct",
+    overrideCenti: 100,
+    feedback: null,
+    whatStudentDid: null,
+    reason: "",
+    ...fields,
+  });
+  return active === false ? updateLesson(lesson.id, { active }) : lesson;
 }
 
 /** A valid PDF with `pages` letter-size pages, each labelled "<label> page N"; same arguments → same bytes. */

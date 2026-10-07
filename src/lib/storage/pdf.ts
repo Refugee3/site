@@ -177,6 +177,51 @@ async function withPdfSlot<T>(work: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * One new PDF per page set (1-based page numbers, in the given order), cut from a stored, already validated
+ * PDF such as a scan. Same pages give the same bytes, also across separate loads, so the sha256 of a cut paper
+ * is a stable dedupe key. Loading, checking and cutting share one PDF slot, and the parsed source is dropped
+ * before returning: a parsed scan costs several times its file size, so no caller keeps one across an await.
+ * Throws AppError("invalid_pdf") when the bytes can't be read, RangeError for a page outside the document.
+ */
+export async function extractPageSets(bytes: Uint8Array, sets: number[][]): Promise<Uint8Array[]> {
+  return withPdfSlot(async () => {
+    const source = await loadStoredPdf(bytes);
+    const pageCount = source.getPageCount();
+    for (const set of sets) checkPageSet(set, pageCount);
+    const cut: Uint8Array[] = [];
+    for (const set of sets) cut.push(await copyIntoNewPdf(source, set));
+    return cut;
+  });
+}
+
+async function loadStoredPdf(b: Uint8Array): Promise<PDFDocument> {
+  const pdf = await inspectPdf(b);
+  if (pdf.encrypted) throw invalidPdf();
+  return pdf.doc;
+}
+
+// pdf-lib itself throws an unhelpful TypeError for a page index it doesn't have.
+function checkPageSet(pages: number[], pageCount: number): void {
+  if (pages.length === 0) throw new RangeError("A page set must contain at least one page");
+  for (const page of pages) {
+    if (!Number.isInteger(page) || page < 1 || page > pageCount) {
+      throw new RangeError(`Page ${page} is outside the document's pages 1..${pageCount}`);
+    }
+  }
+}
+
+async function copyIntoNewPdf(source: PDFDocument, pages: number[]): Promise<Uint8Array> {
+  try {
+    // No metadata: a timestamp or producer string would make the bytes differ between runs.
+    const doc = await PDFDocument.create({ updateMetadata: false });
+    for (const page of await doc.copyPages(source, pages.map((page) => page - 1))) doc.addPage(page);
+    return await doc.save({ useObjectStreams: true });
+  } catch {
+    throw invalidPdf();
+  }
+}
+
+/**
  * Turns the uploaded parts (PDFs and photos, in order) into the one PDF that is stored and graded.
  * A single PDF is kept byte for byte; anything else is merged into a new document.
  */

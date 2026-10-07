@@ -3,7 +3,7 @@ import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
   cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, hasActiveJob, pruneFinishedJobs, queueStats,
-  recoverRunningJobs, requeueJob, requeueOrphanedRunningJobs,
+  recoverRunningJobs, releasePausedJobs, requeueJob, requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { updateKey } from "@/lib/db/repos/keys";
 import { seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
@@ -53,7 +53,9 @@ describe("enqueueJob", () => {
   it("defaults run_after to now and starts with zero attempts", () => {
     grade("s1");
     const job = claimNextJob(T0)!;
-    expect(job).toMatchObject({ targetId: "s1", runAfter: T0, attempts: 1, maxAttempts: 4, maxTokens: null, status: "running" });
+    expect(job).toMatchObject({
+      targetId: "s1", runAfter: T0, attempts: 1, maxAttempts: 4, maxTokens: null, status: "running", paused: false,
+    });
   });
 
   it("queues a new row beside a running job for the same target", () => {
@@ -114,6 +116,15 @@ describe("claimNextJob", () => {
     expect(claimNextJob(T0)?.targetId).toBe("waiting");
   });
 
+  it("claims split_scan jobs without an approved key", () => {
+    const draft = seedAssignment(seedTeacher().id);
+    grade("waiting", { assignmentId: draft.id });
+    enqueueJob({ kind: "split_scan", targetId: "scan-1", assignmentId: draft.id, priority: 5, maxAttempts: 4 });
+
+    expect(claimNextJob(T0)).toMatchObject({ kind: "split_scan", targetId: "scan-1", status: "running" });
+    expect(claimNextJob(T0)).toBeNull();
+  });
+
   it("counts the attempt and stamps updated_at", () => {
     grade("s1");
     const job = claimNextJob(T0 + 5)!;
@@ -161,6 +172,22 @@ describe("requeueJob", () => {
     expect(claimNextJob(T0)).toMatchObject({ id: job.id, attempts: 1, maxTokens: 99 });
   });
 
+  it("marks a job deferred by a worker pause, and claiming it clears the mark", () => {
+    grade("s1");
+    grade("s2");
+    const paused = claimNextJob(T0)!;
+    const retried = claimNextJob(T0)!;
+
+    requeueJob(paused.id, { runAfter: T0 + 300_000, error: "auth", refundAttempt: true, paused: true });
+    requeueJob(retried.id, { runAfter: T0 + 300_000, error: "overloaded" });
+
+    const pausedRow = () => db.prepare("SELECT paused FROM jobs WHERE id = ?").get(paused.id);
+    expect(pausedRow()).toEqual({ paused: 1 });
+    expect(db.prepare("SELECT paused FROM jobs WHERE id = ?").get(retried.id)).toEqual({ paused: 0 });
+    expect(claimNextJob(T0 + 300_000)).toMatchObject({ id: paused.id, paused: false });
+    expect(pausedRow()).toEqual({ paused: 0 });
+  });
+
   it("cancels the job instead when another queued job for the target exists (superseded)", () => {
     grade("s1");
     const job = claimNextJob(T0)!;
@@ -178,6 +205,27 @@ describe("requeueJob", () => {
     expect(requeueJob(job.id, { runAfter: T0, error: "late" })).toBe("superseded");
     expect(statusOf(job.id)).toBe("done");
     expect(requeueJob(9999, { runAfter: T0, error: "gone" })).toBe("superseded");
+  });
+});
+
+describe("releasePausedJobs", () => {
+  it("makes only the jobs a pause deferred runnable now", () => {
+    grade("s1");
+    grade("s2");
+    const paused = claimNextJob(T0)!;
+    const backoff = claimNextJob(T0)!;
+    requeueJob(paused.id, { runAfter: T0 + 300_000, error: "auth", paused: true });
+    requeueJob(backoff.id, { runAfter: T0 + 60_000, error: "overloaded" });
+    setClockForTests(() => T0 + 10);
+
+    expect(releasePausedJobs(T0 + 10)).toBe(1);
+
+    expect(db.prepare("SELECT id, run_after, paused, updated_at FROM jobs ORDER BY id").all()).toEqual([
+      { id: paused.id, run_after: T0 + 10, paused: 0, updated_at: T0 + 10 },
+      { id: backoff.id, run_after: T0 + 60_000, paused: 0, updated_at: T0 },
+    ]);
+    expect(claimNextJob(T0 + 10)?.id).toBe(paused.id);
+    expect(releasePausedJobs(T0 + 20)).toBe(0);
   });
 });
 

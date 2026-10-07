@@ -26,7 +26,7 @@ export const FLAG_CODES = ["name_missing", "name_unclear", "name_uncertain", "se
   "wrong_assignment", "blank_submission", "pages_missing", "low_confidence", "illegible", "item_review", "grader_directed_text",
   "output_repaired", "ai_refused", "manual_grading", "fallback_model"] as const;
 export type FlagCode = (typeof FLAG_CODES)[number];
-export type JobKind = "extract_key" | "grade_submission";
+export type JobKind = "extract_key" | "grade_submission" | "split_scan";
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -50,7 +50,7 @@ export interface SubmissionItem { submissionId: string; itemId: string; judgment
   overrideFeedback: string | null; overrideWhatStudentDid: string | null; updatedAt: number }
 export interface Submission { id: string; assignmentId: string; source: "student" | "teacher"; receiptToken: string; pdfPath: string;
   originalFilename: string; contentSha256: string; clientUploadId: string | null; byteSize: number; pageCount: number; status: SubmissionStatus; statusNote: string | null;
-  gradingGeneration: number; gradedKeyRevision: number | null; aiName: string | null; aiNameConfidence: Confidence | null;
+  gradingGeneration: number; gradedKeyRevision: number | null; gradedGuidanceFp: string | null; aiName: string | null; aiNameConfidence: Confidence | null;
   aiSectionRaw: string | null; aiSectionMatch: string | null; studentName: string | null; nameSource: "ai" | "teacher" | null;
   nameKey: string | null; nameSortKey: string; sectionId: string | null; sectionKey: string | null; sectionSource: "ai" | "teacher" | null;
   documentMatch: DocumentMatch | null; flags: FlagCode[]; overallFeedback: string; overallFeedbackEdited: boolean; teacherSummary: string;
@@ -60,7 +60,7 @@ export interface Submission { id: string; assignmentId: string; source: "student
   createdAt: number; updatedAt: number }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
-  finishedAt: number | null }
+  finishedAt: number | null; paused: boolean }
 
 export interface ItemScore { itemId: string; maxCenti: number; computedCenti: number | null; earnedCenti: number; overridden: boolean }
 export interface ScoreResult { items: ItemScore[]; earnedCenti: number; maxCenti: number; percentTenths: number | null;
@@ -73,23 +73,28 @@ export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boo
   pointsCenti: number; partialCredit: boolean; page: number | null }> }
 
 // ---- view models (produced by src/lib/services/views.ts) ----
-export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number }
+export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number;
+  /** Grading can't run because there is no key at all, or Anthropic rejected the key in use. */
+  keyIssue: "missing" | "rejected" | null }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
 export interface DashboardView { assignments: Array<{ id: string; title: string;
-  status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; released: boolean; createdAt: number }> }
+  status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; released: boolean; createdAt: number }>;
+  studentsCanUpload: boolean }
 export interface AssignmentHeader { assignment: Assignment; shareUrl: string; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
-  totalPointsCenti: number; counts: StatusCounts; canOpen: boolean }
+  totalPointsCenti: number; counts: StatusCounts; canOpen: boolean; studentsCanUpload: boolean }
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
 export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
   source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number }
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
-  staleCount: number; active: boolean; open: boolean }
-export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean }
-export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore }
+  staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean }
+export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean;
+  studentsCanUpload: boolean }
+export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore;
+  lesson: { id: string; reason: string; active: boolean } | null }
 export interface ReviewView { submission: Submission; sections: Section[]; sectionLabel: string | null; items: ReviewItemView[];
   score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
-  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean }
+  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean }
 export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null } }
 export interface StudentUploadView { code: string; title: string; instructions: string; teacherName: string; status: AssignmentStatus;
@@ -99,4 +104,51 @@ export type ReceiptNotice = "no_name" | "wrong_assignment" | "blank" | "pages_mi
 export interface ReceiptView { assignmentTitle: string; submittedAt: number; pageCount: number; phase: ReceiptPhase;
   pdfUrl: string; detectedName: string | null; detectedSection: string | null; notices: ReceiptNotice[];
   result: null | { earnedCenti: number; maxCenti: number; percentTenths: number | null; overallFeedback: string;
-    groups: Array<{ groupLabel: string; items: Array<{ label: string; earnedCenti: number; maxCenti: number; whatStudentDid: string; feedback: string }> }> } }
+    groups: Array<{ groupLabel: string; items: Array<{ label: string; earnedCenti: number; maxCenti: number; whatStudentDid: string; feedback: string }> }> };
+  canResubmit: boolean }
+
+// ---- v2: scans ----
+export const SCAN_STATUSES = ["splitting", "review", "creating", "done", "failed"] as const;
+export type ScanStatus = (typeof SCAN_STATUSES)[number];
+export type ScanSplitMode = "auto" | "every";
+export const SCAN_PAGE_KINDS = ["student_work", "blank", "cover_or_separator", "answer_key", "other"] as const;
+export type ScanPageKind = (typeof SCAN_PAGE_KINDS)[number];
+/** What the AI read on one scanned page; `reported:false` = a placeholder for a page the AI skipped. */
+export interface ScanPageReading { kind: ScanPageKind; startsNewPaper: boolean; studentName: string | null; sectionRaw: string | null;
+  pageMarker: string | null; worksheetPage: number | null; confidence: Confidence; note: string; reported: boolean }
+export interface ScanLayoutPage { startsPaper: boolean; dropped: boolean }
+/** One entry per scanned page (index = page - 1). */
+export type ScanLayout = ScanLayoutPage[];
+export interface Scan { id: string; assignmentId: string; status: ScanStatus; splitMode: ScanSplitMode; pagesPerPaper: number | null;
+  splitGeneration: number; pdfPath: string; originalFilename: string; contentSha256: string; byteSize: number; pageCount: number;
+  readings: Array<ScanPageReading | null>; pagesRead: number; layout: ScanLayout | null; proposedLayout: ScanLayout | null;
+  statusNote: string | null; errorMessage: string | null; aiModel: string | null; usage: AiUsage | null;
+  createdCount: number | null; duplicateCount: number | null; createdAt: number; updatedAt: number }
+
+// ---- v2: lessons and guidance ----
+export interface Lesson { id: string; assignmentId: string; itemId: string; submissionId: string | null; studentAnswer: string;
+  aiAttempt: Attempt | null; aiCorrectness: Correctness | null; teacherAttempt: Attempt | null; teacherCorrectness: Correctness | null;
+  overrideCenti: number | null; feedback: string | null; whatStudentDid: string | null; reason: string; active: boolean;
+  createdAt: number; updatedAt: number }
+/** A lesson as sent to the grader (fields already truncated by toGuidanceLesson). */
+export interface GuidanceLesson { itemId: string; studentAnswer: string; aiAttempt: Attempt | null; aiCorrectness: Correctness | null;
+  teacherAttempt: Attempt | null; teacherCorrectness: Correctness | null; reason: string; feedback: string | null; whatStudentDid: string | null }
+/** `lessons` in recency order (newest first), already selected and capped. */
+export interface GradingGuidance { preferences: string; lessons: GuidanceLesson[] }
+export type LessonNotSentReason = "inactive" | "agrees" | "no_reading" | "limit" | "unknown_item";
+
+// ---- v2: view models ----
+export type ApiKeySource = "app" | "env" | "none";
+export interface TeacherSettingsView {
+  apiKey: { source: ApiKeySource; masked: string | null; check: "verified" | "unverified" | null; setAt: number | null;
+    setByName: string | null; unreadable: boolean; envKeySet: boolean };
+  aiMode: "claude" | "fake"; model: string; studentsCanUpload: boolean; gradingPreferences: string; worker: WorkerStatus | null }
+export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: number; itemMaxCenti: number; sent: boolean;
+  notSent: LessonNotSentReason | null; paperHref: string | null }
+export interface LessonsView { lessons: LessonView[] /* key order, then newest first */; activeCount: number; sentCount: number;
+  guidanceStaleCount: number; hasPreferences: boolean }
+export interface ScanSummary { id: string; status: ScanStatus; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null }
+export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
+  maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean }
+export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage">; pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
+  keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number }

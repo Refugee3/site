@@ -19,6 +19,8 @@ export interface GradingWrite {
   submissionId: string;
   generation: number;
   keyRevision: number;
+  /** guidanceFingerprint() of the guidance this grading was sent ("" = none). */
+  guidanceFingerprint: string;
   items: Array<{ itemId: string; judgment: ItemJudgment | null }>;
   fields: Pick<Submission, "aiName" | "aiNameConfidence" | "aiSectionRaw" | "aiSectionMatch" | "studentName" | "nameSource" | "nameKey"
     | "nameSortKey" | "sectionId" | "sectionKey" | "sectionSource" | "documentMatch" | "flags" | "status" | "teacherSummary"
@@ -40,6 +42,7 @@ interface SubmissionRow {
   status_note: string | null;
   grading_generation: number;
   graded_key_revision: number | null;
+  graded_guidance_fp: string | null;
   ai_name: string | null;
   ai_name_confidence: Confidence | null;
   ai_section_raw: string | null;
@@ -113,6 +116,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     statusNote: row.status_note,
     gradingGeneration: row.grading_generation,
     gradedKeyRevision: row.graded_key_revision,
+    gradedGuidanceFp: row.graded_guidance_fp,
     aiName: row.ai_name,
     aiNameConfidence: row.ai_name_confidence,
     aiSectionRaw: row.ai_section_raw,
@@ -334,7 +338,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
          ai_model = @ai_model, usage_json = @usage_json, ai_output_json = @ai_output_json,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
-         graded_key_revision = @graded_key_revision, graded_at = @at, updated_at = @at,
+         graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp, graded_at = @at, updated_at = @at,
          status_note = NULL, error_code = NULL, error_message = NULL, reviewed_at = NULL
        WHERE id = @id AND grading_generation = @generation`,
       {
@@ -363,6 +367,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
         ai_output_json: f.aiOutputJson,
         overall_feedback: f.overallFeedback,
         graded_key_revision: w.keyRevision,
+        guidance_fp: w.guidanceFingerprint,
       },
     );
 
@@ -448,6 +453,11 @@ export function listItems(submissionId: string): SubmissionItem[] {
   ).map(itemFromRow);
 }
 
+export function getItem(submissionId: string, itemId: string): SubmissionItem | null {
+  const row = one<SubmissionItemRow>("SELECT * FROM submission_items WHERE submission_id = ? AND item_id = ?", submissionId, itemId);
+  return row ? itemFromRow(row) : null;
+}
+
 /** Every submission's items, keyed by submission id (submissions without items are absent). */
 export function listItemsForAssignment(assignmentId: string): Map<string, SubmissionItem[]> {
   const rows = all<SubmissionItemRow>(
@@ -507,6 +517,20 @@ export function listStaleIds(assignmentId: string, revision: number): string[] {
      WHERE assignment_id = ? AND status IN ('graded', 'needs_review') AND graded_key_revision < ?
      ORDER BY created_at, rowid`,
     assignmentId, revision,
+  ).map((row) => row.id);
+}
+
+/**
+ * Graded papers not reviewed yet, graded at key revision `revision` (key-stale ones are listed by listStaleIds),
+ * whose guidance fingerprint differs from `fingerprint` (NULL, from before guidance existed, counts as "").
+ */
+export function listGuidanceStaleIds(assignmentId: string, revision: number, fingerprint: string): string[] {
+  return all<{ id: string }>(
+    `SELECT id FROM submissions
+     WHERE assignment_id = ? AND status IN ('graded', 'needs_review') AND reviewed_at IS NULL
+       AND graded_key_revision = ? AND coalesce(graded_guidance_fp, '') <> ?
+     ORDER BY created_at, rowid`,
+    assignmentId, revision, fingerprint,
   ).map((row) => row.id);
 }
 

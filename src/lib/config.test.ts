@@ -5,7 +5,7 @@ import { getConfig, resetConfigForTests } from "@/lib/config";
 const CONFIG_VARS = [
   "NODE_ENV", "DATA_DIR", "APP_URL", "AI_MODE", "ALLOW_FAKE_AI", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "ANTHROPIC_EFFORT",
   "AI_FALLBACKS", "AI_CACHE_TTL", "AI_TIMEOUT_MS", "GRADING_CONCURRENCY", "JOB_MAX_ATTEMPTS", "TEACHER_SIGNUP_CODE",
-  "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES",
+  "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -24,6 +24,7 @@ describe("getConfig", () => {
       appUrl: null,
       aiMode: "claude",
       hasApiKey: false,
+      appSecret: null,
       model: "claude-opus-5-5",
       effort: "high",
       fallbacks: true,
@@ -38,6 +39,8 @@ describe("getConfig", () => {
       cookieSecure: false,
       maxUploadBytes: 20 * 1_048_576,
       maxPages: 40,
+      maxScanBytes: 100 * 1_048_576,
+      maxScanPages: 200,
       maxUploadFiles: 20,
       maxKeyItems: 200,
     });
@@ -60,6 +63,9 @@ describe("getConfig", () => {
       TEACHER_SIGNUP_CODE: " maple-quartz-4417 ",
       MAX_UPLOAD_MB: "5",
       MAX_PAGES: "200",
+      APP_SECRET: " 0123456789abcdefghijklmnopqrstuv ",
+      MAX_SCAN_MB: "200",
+      MAX_SCAN_PAGES: "500",
     });
     expect(cfg).toMatchObject({
       nodeEnv: "production",
@@ -77,6 +83,9 @@ describe("getConfig", () => {
       cookieSecure: true,
       maxUploadBytes: 5 * 1_048_576,
       maxPages: 200,
+      appSecret: "0123456789abcdefghijklmnopqrstuv",
+      maxScanBytes: 200 * 1_048_576,
+      maxScanPages: 500,
     });
   });
 
@@ -91,6 +100,30 @@ describe("getConfig", () => {
     expect(() => configWith({ TEACHER_SIGNUP_CODE: "letmein" })).toThrow(/TEACHER_SIGNUP_CODE: must be at least 12 characters/);
     expect(() => configWith({ TEACHER_SIGNUP_CODE: "  math2026xx  " })).toThrow(/TEACHER_SIGNUP_CODE/);
     expect(configWith({ TEACHER_SIGNUP_CODE: "k3v9-qp2m-x7tw" }).teacherSignupCode).toBe("k3v9-qp2m-x7tw");
+  });
+
+  it("requires an APP_SECRET of at least 32 characters (after trimming), and treats an empty one as unset", () => {
+    expect(() => configWith({ APP_SECRET: "a".repeat(31) })).toThrow(
+      /APP_SECRET: must be at least 32 characters; generate one with: openssl rand -base64 32/,
+    );
+    expect(() => configWith({ APP_SECRET: ` ${"a".repeat(31)} ` })).toThrow(/APP_SECRET/);
+    expect(configWith({ APP_SECRET: "a".repeat(32) }).appSecret).toBe("a".repeat(32));
+    expect(configWith({ APP_SECRET: "  " }).appSecret).toBeNull();
+  });
+
+  it("does not echo a too-short APP_SECRET in the error", () => {
+    let message = "";
+    try {
+      configWith({ APP_SECRET: "hunter2-secret" });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("APP_SECRET");
+    expect(message).not.toContain("hunter2");
+  });
+
+  it("parses the scan limits within their ranges", () => {
+    expect(configWith({ MAX_SCAN_MB: "1", MAX_SCAN_PAGES: "1" })).toMatchObject({ maxScanBytes: 1_048_576, maxScanPages: 1 });
   });
 
   it("derives cookieSecure from APP_URL unless set explicitly", () => {
@@ -136,6 +169,11 @@ describe("getConfig", () => {
     ["JOB_MAX_ATTEMPTS", "11"],
     ["MAX_UPLOAD_MB", "23"],
     ["MAX_PAGES", "0"],
+    ["MAX_SCAN_MB", "0"],
+    ["MAX_SCAN_MB", "201"],
+    ["MAX_SCAN_PAGES", "0"],
+    ["MAX_SCAN_PAGES", "501"],
+    ["MAX_SCAN_PAGES", "1.5"],
     ["AI_CACHE_TTL", "10m"],
     ["COOKIE_SECURE", "yes"],
     ["APP_URL", "grader.school.org"],

@@ -5,9 +5,13 @@ import { describe, expect, it } from "vitest";
 import { getConfig } from "@/lib/config";
 import { getKey, listKeyItems } from "@/lib/db/repos/keys";
 import { listSections } from "@/lib/db/repos/assignments";
+import { getLesson } from "@/lib/db/repos/lessons";
+import { getScan } from "@/lib/db/repos/scans";
+import { getAppSettings } from "@/lib/db/repos/settings";
+import { sha256Hex } from "@/lib/ids";
 import {
-  ENCRYPTED_PDF, ONE_PAGE_PDF, TINY_JPEG, TINY_PNG, makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher,
-  useTestDb,
+  ENCRYPTED_PDF, ONE_PAGE_PDF, TINY_JPEG, TINY_PNG, enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson,
+  seedScan, seedSubmission, seedTeacher, useTestDb,
 } from "@/test/helpers";
 
 describe("PDF and image fixtures", () => {
@@ -74,5 +78,60 @@ describe("seed helpers", () => {
     const file = path.join(getConfig().dataDir, s.pdfPath);
     expect(new Uint8Array(fs.readFileSync(file))).toEqual(ONE_PAGE_PDF);
     expect(s.byteSize).toBe(ONE_PAGE_PDF.length);
+  });
+
+  it("enableStudentUploads turns the student upload switch on", () => {
+    useTestDb();
+    expect(getAppSettings().studentsCanUpload).toBe(false);
+    enableStudentUploads();
+    expect(getAppSettings().studentsCanUpload).toBe(true);
+  });
+
+  it("seedScan stores a splitting scan of makePdf(pages) by default", async () => {
+    useTestDb();
+    const assignment = seedAssignment(seedTeacher().id);
+
+    const scan = await seedScan(assignment.id);
+
+    const bytes = await makePdf(3);
+    expect(scan).toMatchObject({
+      assignmentId: assignment.id, status: "splitting", splitMode: "auto", pagesPerPaper: null, pageCount: 3, layout: null,
+      pdfPath: `files/${assignment.id}/scans/${scan.id}.pdf`, contentSha256: sha256Hex(bytes), byteSize: bytes.length,
+    });
+    expect(new Uint8Array(fs.readFileSync(path.join(getConfig().dataDir, scan.pdfPath)))).toEqual(bytes);
+    expect(getScan(scan.id)).toEqual(scan);
+  });
+
+  it("seedScan takes a status, mode and layout, and can skip the file", async () => {
+    useTestDb();
+    const assignment = seedAssignment(seedTeacher().id);
+    const layout = [{ startsPaper: true, dropped: false }, { startsPaper: false, dropped: false }];
+
+    const review = await seedScan(assignment.id, { pages: 2, status: "review", splitMode: "every", pagesPerPaper: 2, layout, writeFile: false });
+    const done = await seedScan(assignment.id, { pages: 2, status: "done", layout, writeFile: false });
+
+    expect(review).toMatchObject({ status: "review", splitMode: "every", pagesPerPaper: 2, pageCount: 2, layout, proposedLayout: layout });
+    expect(done).toMatchObject({ status: "done", layout });
+    expect(fs.existsSync(path.join(getConfig().dataDir, review.pdfPath))).toBe(false);
+  });
+
+  it("seedLesson stores an informative lesson by default and takes overrides", () => {
+    useTestDb();
+    const assignment = seedAssignment(seedTeacher().id);
+    const [item] = seedApprovedKey(assignment.id, [{}]);
+    const paper = seedSubmission(assignment.id);
+
+    const lesson = seedLesson({ assignmentId: assignment.id, submissionId: paper.id, itemId: item.id });
+    expect(lesson).toMatchObject({
+      aiAttempt: "complete", aiCorrectness: "incorrect", teacherAttempt: "complete", teacherCorrectness: "correct", overrideCenti: 100,
+      reason: "", active: true,
+    });
+
+    const other = seedLesson({
+      assignmentId: assignment.id, submissionId: seedSubmission(assignment.id).id, itemId: item.id, overrideCenti: null,
+      reason: "Units are optional.", active: false, aiAttempt: null, aiCorrectness: null,
+    });
+    expect(other).toMatchObject({ overrideCenti: null, reason: "Units are optional.", active: false, aiAttempt: null, aiCorrectness: null });
+    expect(getLesson(other.id)).toEqual(other);
   });
 });

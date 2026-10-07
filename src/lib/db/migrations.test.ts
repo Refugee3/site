@@ -2,11 +2,11 @@ import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { MIGRATIONS, migrate } from "@/lib/db/migrations";
 import { deleteAssignmentRow } from "@/lib/db/repos/assignments";
-import { enqueueJob } from "@/lib/db/repos/jobs";
+import { claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { getSubmission, listItems, setItemOverride } from "@/lib/db/repos/submissions";
-import { seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
-import type { DB } from "@/lib/db/connection";
+import { setDbForTests, type DB } from "@/lib/db/connection";
+import { seedApprovedKey, seedAssignment, seedLesson, seedScan, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 
 function tableNames(db: Database.Database): string[] {
   return (db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>)
@@ -23,7 +23,8 @@ describe("migrate", () => {
     migrate(db);
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(tableNames(db)).toEqual([
-      "answer_keys", "assignments", "jobs", "key_items", "sections", "sessions", "submission_items", "submissions", "teachers",
+      "answer_keys", "app_settings", "assignments", "jobs", "key_items", "lessons", "scans", "sections", "sessions",
+      "submission_items", "submissions", "teachers",
     ]);
     db.close();
   });
@@ -52,11 +53,119 @@ describe("migrate", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT ai_usage_json FROM assignments WHERE id = 'a1'").get()).toEqual({ ai_usage_json: "{}" });
     const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
     expect(columns("submission_items")).toContain("override_what_student_did");
     expect(columns("submissions")).toContain("client_upload_id");
+    db.close();
+  });
+});
+
+describe("migration 3 on a version-2 database", () => {
+  const JOB_COLUMNS = "id, kind, target_id, assignment_id, status, priority, attempts, max_attempts, run_after, max_tokens, last_error, "
+    + "created_at, updated_at, finished_at";
+
+  /** A v2 database (built with the shipped v1 and v2 SQL) holding a graded paper, a judgment and jobs in every state. */
+  function versionTwoDatabase(): DB {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.exec(MIGRATIONS[0].sql);
+    db.exec(MIGRATIONS[1].sql);
+    db.pragma("user_version = 2");
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO answer_keys (assignment_id, status, revision, approved_revision, updated_at) VALUES ('a1', 'ready', 1, 1, 1);
+      INSERT INTO key_items (id, assignment_id, position, label, answer_type, points_centi, partial_credit, answer_source)
+        VALUES ('i1', 'a1', 0, '1', 'short_answer', 100, 1, 'teacher');
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, graded_key_revision, created_at, updated_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 1, 1, 1);
+      INSERT INTO submission_items (submission_id, item_id, attempt, correctness, legibility, confidence, review_reason, updated_at)
+        VALUES ('s1', 'i1', 'complete', 'correct', 'clear', 'high', 'none', 1);
+      INSERT INTO jobs (id, kind, target_id, assignment_id, status, priority, attempts, max_attempts, run_after, max_tokens, last_error,
+        created_at, updated_at, finished_at) VALUES
+        (3, 'extract_key', 'a1', 'a1', 'done', 0, 1, 4, 1, NULL, NULL, 1, 2, 2),
+        (7, 'grade_submission', 's1', 'a1', 'running', 10, 2, 4, 5, 128000, 'overloaded', 3, 4, NULL),
+        (9, 'grade_submission', 's1', 'a1', 'queued', 15, 0, 4, 6, NULL, NULL, 5, 5, NULL);
+    `);
+    return db;
+  }
+
+  it("keeps every job with its id, unpaused, and keeps the other rows", () => {
+    const db = versionTwoDatabase();
+    const before = db.prepare(`SELECT ${JOB_COLUMNS} FROM jobs ORDER BY id`).all();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.prepare(`SELECT ${JOB_COLUMNS} FROM jobs ORDER BY id`).all()).toEqual(before);
+    expect(db.prepare("SELECT id, paused FROM jobs ORDER BY id").all()).toEqual([
+      { id: 3, paused: 0 }, { id: 7, paused: 0 }, { id: 9, paused: 0 },
+    ]);
+    expect(db.prepare("SELECT status, graded_guidance_fp FROM submissions").get()).toEqual({ status: "graded", graded_guidance_fp: null });
+    expect(count(db, "submission_items")).toBe(1);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+
+  it("adds the settings row with student uploads off, and empty grading preferences", () => {
+    const db = versionTwoDatabase();
+    migrate(db);
+
+    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{
+      id: 1, students_can_upload: 0, api_key_ciphertext: null, api_key_masked: null, api_key_check: null,
+      api_key_set_by: null, api_key_set_at: null, updated_at: 0,
+    }]);
+    expect(db.prepare("SELECT grading_preferences FROM teachers").get()).toEqual({ grading_preferences: "" });
+    expect(() => db.prepare("UPDATE teachers SET grading_preferences = ?").run("x".repeat(4001))).toThrow(/constraint/i);
+    db.prepare("UPDATE teachers SET grading_preferences = ?").run("x".repeat(4000));
+    db.close();
+  });
+
+  it("accepts split_scan jobs, rejects unknown kinds, and keeps the one-queued-job upsert and the claim order", () => {
+    const db = versionTwoDatabase();
+    migrate(db);
+    setDbForTests(db);
+
+    enqueueJob({ kind: "split_scan", targetId: "scan-1", assignmentId: "a1", priority: 5, maxAttempts: 4 });
+    enqueueJob({ kind: "grade_submission", targetId: "s1", assignmentId: "a1", priority: 12, maxAttempts: 4, runAfter: 1 });
+    expect(() => db.prepare(`INSERT INTO jobs (kind, target_id, assignment_id, status, priority, max_attempts, run_after, created_at,
+      updated_at) VALUES ('email', 'x', 'a1', 'queued', 0, 1, 0, 0, 0)`).run()).toThrow(/constraint/i);
+
+    expect(db.prepare("SELECT id, priority, run_after FROM jobs WHERE kind = 'grade_submission' AND status = 'queued'").all())
+      .toEqual([{ id: 9, priority: 12, run_after: 1 }]);
+    expect(claimNextJob(Date.now())).toMatchObject({ kind: "split_scan", targetId: "scan-1", paused: false });
+  });
+
+  it("drops jobs whose assignment no longer exists, so the rebuilt table passes foreign_key_check", () => {
+    const db = versionTwoDatabase();
+    db.pragma("foreign_keys = OFF");
+    db.prepare(`INSERT INTO jobs (id, kind, target_id, assignment_id, status, priority, max_attempts, run_after, created_at, updated_at)
+                VALUES (20, 'grade_submission', 'gone', 'missing', 'queued', 10, 4, 0, 0, 0)`).run();
+    db.pragma("foreign_keys = ON");
+
+    migrate(db);
+
+    expect(db.prepare("SELECT id FROM jobs ORDER BY id").all()).toEqual([{ id: 3 }, { id: 7 }, { id: 9 }]);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    db.close();
+  });
+
+  it("still cascades from assignments to jobs, and a second migrate is a no-op", () => {
+    const db = versionTwoDatabase();
+    migrate(db);
+    const schema = db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.prepare("SELECT sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+    expect(count(db, "app_settings")).toBe(1);
+    db.prepare("DELETE FROM assignments WHERE id = 'a1'").run();
+    expect(count(db, "jobs")).toBe(0);
     db.close();
   });
 });
@@ -90,6 +199,15 @@ describe("schema constraints", () => {
     ["name confidence", "UPDATE submissions SET ai_name_confidence = 'certain'"],
     ["integer column type", "UPDATE submissions SET page_count = 'many'"],
     ["job kind", "UPDATE jobs SET kind = 'email'"],
+    ["job paused flag", "UPDATE jobs SET paused = 2"],
+    ["second settings row", "INSERT INTO app_settings (id, updated_at) VALUES (2, 0)"],
+    ["students_can_upload flag", "UPDATE app_settings SET students_can_upload = 2"],
+    ["API key check", "UPDATE app_settings SET api_key_ciphertext = 'c', api_key_masked = 'm', api_key_check = 'maybe'"],
+    ["API key without its mask", "UPDATE app_settings SET api_key_ciphertext = 'c', api_key_check = 'verified'"],
+    ["API key without its check", "UPDATE app_settings SET api_key_ciphertext = 'c', api_key_masked = 'm'"],
+    ["mask without a key", "UPDATE app_settings SET api_key_masked = 'm'"],
+    ["long API key mask", `UPDATE app_settings SET api_key_ciphertext = 'c', api_key_masked = '${"m".repeat(41)}', api_key_check = 'verified'`],
+    ["long grading preferences", `UPDATE teachers SET grading_preferences = '${"p".repeat(4001)}'`],
   ])("rejects a bad %s", (_name, sql) => {
     enqueueJob({ kind: "grade_submission", targetId: submissionId, assignmentId, priority: 10, maxAttempts: 4 });
     expect(() => db.prepare(sql).run()).toThrow(/constraint|cannot store/i);
@@ -104,6 +222,40 @@ describe("schema constraints", () => {
     const itemId = listKeyItems(assignmentId)[0].id;
     setItemOverride(submissionId, itemId, { overrideCenti: 50 });
     expect(() => db.prepare(`UPDATE submission_items SET ${column} = ${value}`).run()).toThrow(/constraint/i);
+  });
+
+  it.each([
+    ["AI attempt without correctness", "UPDATE lessons SET ai_correctness = NULL"],
+    ["teacher correctness without attempt", "UPDATE lessons SET teacher_attempt = NULL"],
+    ["teacher attempt", "UPDATE lessons SET teacher_attempt = 'most'"],
+    ["AI correctness", "UPDATE lessons SET ai_correctness = 'mostly'"],
+    ["active flag", "UPDATE lessons SET active = 2"],
+    ["negative override", "UPDATE lessons SET override_centi = -1"],
+    ["long reason", `UPDATE lessons SET reason = '${"r".repeat(1001)}'`],
+    ["long student answer", `UPDATE lessons SET student_answer = '${"a".repeat(2001)}'`],
+    ["long feedback", `UPDATE lessons SET feedback = '${"f".repeat(2001)}'`],
+    ["long \"what you did\"", `UPDATE lessons SET what_student_did = '${"w".repeat(1001)}'`],
+  ])("rejects a lesson with a bad %s", (_name, sql) => {
+    seedLesson({ assignmentId, submissionId, itemId: listKeyItems(assignmentId)[0].id });
+    expect(() => db.prepare(sql).run()).toThrow(/constraint/i);
+  });
+
+  it("allows one lesson per paper and item", () => {
+    const itemId = listKeyItems(assignmentId)[0].id;
+    seedLesson({ assignmentId, submissionId, itemId });
+    expect(() => db.prepare(`INSERT INTO lessons (id, assignment_id, item_id, submission_id, created_at, updated_at)
+      VALUES ('l2', ?, ?, ?, 0, 0)`).run(assignmentId, itemId, submissionId)).toThrow(/UNIQUE/);
+  });
+
+  it.each([
+    ["status", "UPDATE scans SET status = 'queued'"],
+    ["split mode", "UPDATE scans SET split_mode = 'manual'"],
+    ["pages per paper", "UPDATE scans SET pages_per_paper = 101"],
+    ["zero pages per paper", "UPDATE scans SET pages_per_paper = 0"],
+    ["page count", "UPDATE scans SET page_count = 0"],
+  ])("rejects a scan with a bad %s", async (_name, sql) => {
+    await seedScan(assignmentId, { writeFile: false });
+    expect(() => db.prepare(sql).run()).toThrow(/constraint/i);
   });
 
   it("rejects double-quoted string literals", () => {
@@ -143,6 +295,19 @@ describe("cascades", () => {
 
     expect(listItems(submission.id).map((i) => i.itemId)).toEqual([second.id]);
     expect(getSubmission(submission.id)).not.toBeNull();
+  });
+
+  it("deleting an assignment removes its lessons and scans", async () => {
+    const db = useTestDb();
+    const assignment = seedAssignment(seedTeacher().id);
+    const [item] = seedApprovedKey(assignment.id, [{}]);
+    seedLesson({ assignmentId: assignment.id, submissionId: seedSubmission(assignment.id).id, itemId: item.id });
+    await seedScan(assignment.id, { writeFile: false });
+
+    deleteAssignmentRow(assignment.id);
+
+    expect(count(db, "lessons")).toBe(0);
+    expect(count(db, "scans")).toBe(0);
   });
 
   it("deleting a teacher removes their sessions and assignments", () => {

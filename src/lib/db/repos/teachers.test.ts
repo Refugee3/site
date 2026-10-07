@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { deleteExpiredSessions, deleteSession, findSessionTeacher, insertSession } from "@/lib/db/repos/sessions";
-import { countTeachers, findTeacherAuthByEmail, getTeacher, insertTeacher } from "@/lib/db/repos/teachers";
+import {
+  countTeachers, findTeacherAuthByEmail, getGradingPreferences, getTeacher, insertTeacher, setGradingPreferences,
+} from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
 import { useTestDb } from "@/test/helpers";
 
@@ -35,6 +37,28 @@ describe("teachers", () => {
     expect(again).toThrow(AppError);
     expect(again).toThrow(expect.objectContaining({ code: "conflict" }));
     expect(countTeachers()).toBe(1);
+  });
+});
+
+describe("grading preferences", () => {
+  it("start empty, are stored per teacher, and read as empty for an unknown teacher", () => {
+    const rivera = insertTeacher({ email: "ms.rivera@school.org", displayName: "Ms. Rivera", passwordHash: "h" });
+    const chen = insertTeacher({ email: "mr.chen@school.org", displayName: "Mr. Chen", passwordHash: "h" });
+    expect(getGradingPreferences(rivera.id)).toBe("");
+
+    setGradingPreferences(rivera.id, "Ignore spelling.\nUnits matter.");
+
+    expect(getGradingPreferences(rivera.id)).toBe("Ignore spelling.\nUnits matter.");
+    expect(getGradingPreferences(chen.id)).toBe("");
+    expect(getGradingPreferences("missing")).toBe("");
+    expect(getTeacher(rivera.id)).toEqual(rivera);
+  });
+
+  it("are limited to 4000 characters", () => {
+    const teacher = insertTeacher({ email: "a@school.org", displayName: "A", passwordHash: "h" });
+    setGradingPreferences(teacher.id, "x".repeat(4000));
+    expect(() => setGradingPreferences(teacher.id, "x".repeat(4001))).toThrow(/constraint/i);
+    expect(getGradingPreferences(teacher.id)).toHaveLength(4000);
   });
 });
 

@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { now, setClockForTests } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
@@ -15,17 +17,19 @@ describe("test setup", () => {
     await expect(fetch("https://api.anthropic.com")).rejects.toThrow("network disabled in tests");
   });
 
-  it("runs in fake AI mode without an API key, in a temporary data directory", () => {
+  it("runs in fake AI mode without an API key or APP_SECRET, in a temporary data directory", () => {
     const cfg = getConfig();
     expect(cfg.aiMode).toBe("fake");
     expect(cfg.hasApiKey).toBe(false);
+    expect(cfg.appSecret).toBeNull();
     expect(cfg.dataDir.startsWith(os.tmpdir())).toBe(true);
   });
 
-  it("leaves a file database, a pinned clock, stubbed env and singleton slots behind", () => {
+  it("leaves a file database, a secret key file, a pinned clock, stubbed env and singleton slots behind", () => {
     vi.stubEnv("MAX_PAGES", "7");
     expect(getConfig().maxPages).toBe(7);
     insertTeacher({ email: "a@school.org", displayName: "A", passwordHash: "h" });
+    fs.writeFileSync(path.join(getConfig().dataDir, "secret.key"), Buffer.alloc(32));
     setClockForTests(() => 5);
     slots[Symbol.for("pag.grader")] = { grader: null };
     slots[Symbol.for("pag.rate")] = new Map();
@@ -43,5 +47,6 @@ describe("test setup", () => {
     expect(getConfig().maxPages).toBe(40);
     expect(getDb().name.endsWith("app.db")).toBe(true);
     expect(countTeachers()).toBe(0);
+    expect(fs.existsSync(path.join(getConfig().dataDir, "secret.key"))).toBe(false);
   });
 });

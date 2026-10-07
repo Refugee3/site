@@ -19,6 +19,7 @@ vi.stubGlobal("fetch", async () => {
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pag-"));
 process.env.AI_MODE = "fake";
 process.env.ANTHROPIC_API_KEY = "";
+process.env.APP_SECRET = "";
 process.env.DATA_DIR = dataDir;
 
 afterEach(async () => {
@@ -28,6 +29,7 @@ afterEach(async () => {
   setDbForTests(null);
   // A test that used getDb() directly left ${DATA_DIR}/app.db behind; the next test starts empty.
   for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(path.join(dataDir, `app.db${suffix}`), { force: true });
+  fs.rmSync(path.join(dataDir, "secret.key"), { force: true });
   setClockForTests(null);
   vi.unstubAllEnvs();
   resetConfigForTests();

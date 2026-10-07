@@ -183,6 +183,113 @@ ALTER TABLE submission_items ADD COLUMN override_what_student_did TEXT;
 ALTER TABLE submissions ADD COLUMN client_upload_id TEXT;
 `,
   },
+  {
+    version: 3,
+    name: "settings_lessons_scans",
+    sql: `
+-- App-wide settings: exactly one row. Student uploads start OFF, for existing databases too.
+CREATE TABLE app_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  students_can_upload INTEGER NOT NULL DEFAULT 0 CHECK (students_can_upload IN (0,1)),
+  api_key_ciphertext TEXT,                               -- encryptSecret(key, "anthropic-api-key")
+  api_key_masked TEXT CHECK (api_key_masked IS NULL OR length(api_key_masked) <= 40),  -- "sk-ant-…a1b2"
+  api_key_check TEXT CHECK (api_key_check IN ('verified','unverified')),
+  api_key_set_by TEXT REFERENCES teachers(id) ON DELETE SET NULL,
+  api_key_set_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  CHECK ((api_key_ciphertext IS NULL) = (api_key_masked IS NULL)),
+  CHECK ((api_key_ciphertext IS NULL) = (api_key_check IS NULL))
+) STRICT;
+INSERT INTO app_settings (id, students_can_upload, updated_at) VALUES (1, 0, 0);
+
+-- Teacher-level grading preferences (all of the teacher's assignments).
+ALTER TABLE teachers ADD COLUMN grading_preferences TEXT NOT NULL DEFAULT '' CHECK (length(grading_preferences) <= 4000);
+
+-- The guidance a grading was sent: guidanceFingerprint(rendered guidance); '' = none; NULL = graded before v3 or never (≡ '').
+ALTER TABLE submissions ADD COLUMN graded_guidance_fp TEXT;
+
+-- Lessons: one per (submission, item); snapshots taken when the teacher saves a correction.
+CREATE TABLE lessons (
+  id TEXT PRIMARY KEY,
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL REFERENCES key_items(id) ON DELETE CASCADE,
+  submission_id TEXT REFERENCES submissions(id) ON DELETE SET NULL,   -- kept when the paper is deleted
+  student_answer TEXT NOT NULL DEFAULT '' CHECK (length(student_answer) <= 2000),
+  ai_attempt TEXT CHECK (ai_attempt IN ('complete','partial','none')),
+  ai_correctness TEXT CHECK (ai_correctness IN ('correct','minor_error','partially_correct','major_error','incorrect','no_answer','cannot_judge')),
+  teacher_attempt TEXT CHECK (teacher_attempt IN ('complete','partial','none')),
+  teacher_correctness TEXT CHECK (teacher_correctness IN ('correct','minor_error','partially_correct','major_error','incorrect','no_answer','cannot_judge')),
+  override_centi INTEGER CHECK (override_centi IS NULL OR override_centi >= 0),
+  feedback TEXT CHECK (feedback IS NULL OR length(feedback) <= 2000),
+  what_student_did TEXT CHECK (what_student_did IS NULL OR length(what_student_did) <= 1000),
+  reason TEXT NOT NULL DEFAULT '' CHECK (length(reason) <= 1000),
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK ((ai_attempt IS NULL) = (ai_correctness IS NULL)),
+  CHECK ((teacher_attempt IS NULL) = (teacher_correctness IS NULL)),
+  UNIQUE (submission_id, item_id)
+) STRICT;
+CREATE INDEX lessons_assignment ON lessons(assignment_id, updated_at);
+CREATE INDEX lessons_item ON lessons(item_id);
+
+-- Whole-stack scans.
+CREATE TABLE scans (
+  id TEXT PRIMARY KEY,
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('splitting','review','creating','done','failed')),
+  split_mode TEXT NOT NULL CHECK (split_mode IN ('auto','every')),
+  pages_per_paper INTEGER CHECK (pages_per_paper IS NULL OR pages_per_paper BETWEEN 1 AND 100),
+  split_generation INTEGER NOT NULL DEFAULT 1,             -- bumped by "every N"/"try the AI again"; guards AI writes
+  pdf_path TEXT NOT NULL,
+  original_filename TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  page_count INTEGER NOT NULL CHECK (page_count >= 1),
+  readings_json TEXT NOT NULL DEFAULT '[]',                -- Array<ScanPageReading | null>, length page_count once reading starts
+  pages_read INTEGER NOT NULL DEFAULT 0,
+  layout_json TEXT,                                        -- ScanLayout the teacher grades (null while splitting/failed)
+  proposed_layout_json TEXT,                               -- the original proposal ("Reset")
+  status_note TEXT,
+  error_message TEXT,
+  ai_model TEXT,
+  usage_json TEXT,                                         -- AiUsage summed over chunk calls
+  created_count INTEGER,
+  duplicate_count INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX scans_assignment ON scans(assignment_id, created_at);
+CREATE INDEX scans_sha ON scans(assignment_id, content_sha256);
+
+-- New job kind 'split_scan' + jobs.paused: rebuild (SQLite cannot alter a CHECK). Safe with foreign_keys=ON
+-- inside migrate()'s transaction because no table references jobs, so DROP TABLE runs no foreign-key actions.
+CREATE TABLE jobs_v3 (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('extract_key','grade_submission','split_scan')),
+  target_id TEXT NOT NULL,                                 -- assignment_id | submission_id | scan_id
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','cancelled')),
+  priority INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL,
+  run_after INTEGER NOT NULL,
+  max_tokens INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER,
+  paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0,1))  -- 1 = run_after was pushed out by a worker pause
+) STRICT;
+INSERT INTO jobs_v3 (id, kind, target_id, assignment_id, status, priority, attempts, max_attempts, run_after, max_tokens,
+                     last_error, created_at, updated_at, finished_at)
+  SELECT id, kind, target_id, assignment_id, status, priority, attempts, max_attempts, run_after, max_tokens,
+         last_error, created_at, updated_at, finished_at
+  FROM jobs WHERE assignment_id IN (SELECT id FROM assignments);
+DROP TABLE jobs;
+ALTER TABLE jobs_v3 RENAME TO jobs;
+CREATE UNIQUE INDEX jobs_one_queued ON jobs(kind, target_id) WHERE status = 'queued';
+CREATE INDEX jobs_claim ON jobs(status, priority, run_after, id);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

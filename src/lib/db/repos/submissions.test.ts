@@ -5,8 +5,8 @@ import { listSections, replaceSections } from "@/lib/db/repos/assignments";
 import { enqueueJob } from "@/lib/db/repos/jobs";
 import { upsertKeyItems } from "@/lib/db/repos/keys";
 import {
-  countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getSubmission, getSubmissionByReceipt,
-  getSubmissionForTeacher, insertSubmission, listIdsByStatus, listItems, listItemsForAssignment, listQueuedWithoutJob,
+  countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getItem, getSubmission, getSubmissionByReceipt,
+  getSubmissionForTeacher, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems, listItemsForAssignment, listQueuedWithoutJob,
   listStaleIds, listSubmissions, markFailed, requeueForRegrade, resetGradingToQueued, saveGradingResult, scheduleRetry,
   setItemOverride, startGrading, updateSubmission, type GradingWrite,
 } from "@/lib/db/repos/submissions";
@@ -57,6 +57,7 @@ function gradingWrite(
     submissionId: s.id,
     generation: s.gradingGeneration,
     keyRevision: 1,
+    guidanceFingerprint: "",
     items: items.map((item) => ({ itemId: item.id, judgment: judgment() })),
     ...o,
     fields: {
@@ -97,7 +98,7 @@ describe("insertSubmission", () => {
     const s = seedSubmission(assignment.id, { originalFilename: "quiz.pdf", pageCount: 3 });
     expect(s).toMatchObject({
       assignmentId: assignment.id, status: "queued", gradingGeneration: 1, originalFilename: "quiz.pdf", pageCount: 3,
-      flags: [], nameSortKey: "~", overallFeedbackEdited: false, usage: null, createdAt: T0, updatedAt: T0,
+      flags: [], nameSortKey: "~", overallFeedbackEdited: false, usage: null, gradedGuidanceFp: null, createdAt: T0, updatedAt: T0,
     });
     expect(getSubmission(s.id)).toEqual(s);
     expect(getSubmissionByReceipt(s.receiptToken)).toEqual(s);
@@ -178,6 +179,17 @@ describe("saveGradingResult", () => {
     });
     expect(db.prepare("SELECT ai_output_json FROM submissions WHERE id = ?").get(s.id)).toEqual({ ai_output_json: "{\"ok\":true}" });
     expect(listItems(s.id).map((i) => [i.itemId, i.judgment])).toEqual(items.map((item) => [item.id, judgment()]));
+  });
+
+  it("records the fingerprint of the guidance the grading was sent", () => {
+    const withGuidance = gradingSubmission();
+    const without = gradingSubmission();
+
+    saveGradingResult(gradingWrite(withGuidance, { guidanceFingerprint: "fp-1" }));
+    saveGradingResult(gradingWrite(without));
+
+    expect(getSubmission(withGuidance.id)!.gradedGuidanceFp).toBe("fp-1");
+    expect(getSubmission(without.id)!.gradedGuidanceFp).toBe("");
   });
 
   it("writes nothing when the generation moved on", () => {
@@ -348,6 +360,17 @@ describe("item overrides", () => {
     expect(listItems(s.id)[0]).toMatchObject({ overrideWhatStudentDid: "You got x = 4.", judgment: judgment() });
   });
 
+  it("getItem returns one item row, judged or not", () => {
+    const s = gradingSubmission();
+    saveGradingResult(gradingWrite(s, { items: [{ itemId: items[0].id, judgment: judgment() }] }));
+    setItemOverride(s.id, items[1].id, { overrideCenti: 50 });
+
+    expect(getItem(s.id, items[0].id)).toMatchObject({ itemId: items[0].id, judgment: judgment(), overrideCenti: null });
+    expect(getItem(s.id, items[1].id)).toMatchObject({ itemId: items[1].id, judgment: null, overrideCenti: 50 });
+    expect(getItem(s.id, items[2].id)).toBeNull();
+    expect(getItem("missing", items[0].id)).toBeNull();
+  });
+
   it("lists items in key order, per submission across the assignment", () => {
     const a = seedSubmission(assignment.id);
     const b = seedSubmission(assignment.id);
@@ -375,6 +398,42 @@ describe("listStaleIds", () => {
 
     expect(listStaleIds(assignment.id, 2)).toEqual([old.id, oldReview.id]);
     expect(listStaleIds(assignment.id, 1)).toEqual([]);
+  });
+});
+
+describe("listGuidanceStaleIds", () => {
+  function graded(o: Partial<Omit<GradingWrite, "fields">> & { fields?: Partial<GradingWrite["fields"]> } = {}): Submission {
+    const s = gradingSubmission();
+    saveGradingResult(gradingWrite(s, { keyRevision: 2, ...o }));
+    return getSubmission(s.id)!;
+  }
+
+  it("returns unreviewed papers graded at the current key revision with other guidance, oldest first", () => {
+    const older = graded({ guidanceFingerprint: "old" });
+    setClockForTests(() => T0 + 1);
+    const none = graded({ fields: { status: "needs_review" } });
+    graded({ guidanceFingerprint: "new" });
+
+    expect(listGuidanceStaleIds(assignment.id, 2, "new")).toEqual([older.id, none.id]);
+    expect(listGuidanceStaleIds(seedAssignment(teacher.id).id, 2, "new")).toEqual([]);
+  });
+
+  it("excludes reviewed, key-stale and unfinished papers", () => {
+    const reviewed = graded({ guidanceFingerprint: "old" });
+    updateSubmission(reviewed.id, { reviewedAt: T0 });
+    graded({ keyRevision: 1, guidanceFingerprint: "old" });
+    seedSubmission(assignment.id);
+    seedSubmission(assignment.id, { status: "failed" });
+
+    expect(listGuidanceStaleIds(assignment.id, 2, "new")).toEqual([]);
+  });
+
+  it("treats a paper graded before guidance existed (NULL) as graded without guidance", () => {
+    const legacy = graded();
+    db.prepare("UPDATE submissions SET graded_guidance_fp = NULL WHERE id = ?").run(legacy.id);
+
+    expect(listGuidanceStaleIds(assignment.id, 2, "")).toEqual([]);
+    expect(listGuidanceStaleIds(assignment.id, 2, "fp")).toEqual([legacy.id]);
   });
 });
 
