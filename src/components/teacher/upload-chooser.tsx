@@ -28,7 +28,7 @@ export function UploadChooser({ assignmentId, view }: UploadChooserProps) {
     {
       value: "stack",
       label: "One scan of the whole stack",
-      description: `Scan the whole class's papers into one PDF, up to ${view.maxScanMb} MB and ${view.maxScanPages} pages. The AI finds where each student's paper starts, and you check the split before anything is graded.`,
+      description: `Scan the whole class's papers into one PDF, up to ${view.maxScanMb} MB and ${view.maxScanPages} pages. The AI finds where each student's paper starts. A clean split is graded automatically; a split with anything to check waits for you.`,
     },
   ];
 

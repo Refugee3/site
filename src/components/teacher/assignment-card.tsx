@@ -3,6 +3,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { cx } from "@/components/ui/cx";
 import { LocalTime } from "@/components/ui/local-time";
+import { ProgressBar } from "@/components/ui/progress-bar";
 import { TONE_CLASSES } from "@/components/ui/tone";
 import { formatShareCode } from "@/lib/format";
 import type { DashboardView } from "@/lib/types";
@@ -42,6 +43,20 @@ export function AssignmentCard({ assignment: a, studentsCanUpload }: AssignmentC
         <Count label="In progress" value={inProgress} />
         <Count label="Graded" value={a.counts.graded} />
       </dl>
+
+      {a.progress && (
+        <div className="flex items-center gap-3">
+          <ProgressBar
+            size="sm"
+            value={a.progress.total > 0 ? a.progress.done / a.progress.total : 0}
+            label={`Grading ${a.title}`}
+            valueText={`${a.progress.done} of ${a.progress.total} graded`}
+          />
+          <p className="shrink-0 text-sm text-muted tabular-nums">
+            {a.progress.done}/{a.progress.total} graded
+          </p>
+        </div>
+      )}
 
       {step && (
         <Link

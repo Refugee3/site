@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { ReviewPanel } from "@/components/teacher/review-panel";
 import { requireOwnedSubmission } from "@/lib/auth/dal";
+import { now } from "@/lib/clock";
 import { getPublicOrigin } from "@/lib/http/request";
 import { getReviewView } from "@/lib/services/views";
 
@@ -20,7 +21,7 @@ export default async function ReviewPage(props: PageProps<"/teacher/assignments/
 
   return (
     <>
-      <ReviewPanel key={submission.id} assignmentId={assignment.id} view={view} />
+      <ReviewPanel key={submission.id} assignmentId={assignment.id} view={view} serverNow={now()} />
       <AutoRefresh intervalMs={grading ? GRADING_POLL_MS : null} />
     </>
   );

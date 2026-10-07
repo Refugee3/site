@@ -12,15 +12,18 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { cx } from "@/components/ui/cx";
 import { LinkButton } from "@/components/ui/link-button";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
+import { TONE_CLASSES } from "@/components/ui/tone";
 import { STATUS_LABEL } from "@/lib/format";
 import type { ReviewItemView, ReviewView } from "@/lib/types";
 import { boardHref, reviewHref } from "./board-helpers";
 import { IdentityForm } from "./identity-form";
 import { ItemCard, itemFormKey } from "./item-card";
 import { OverallFeedbackForm } from "./overall-feedback-form";
+import { EstimatedProgress } from "./progress-widgets";
 import { ScoreSummary } from "./score-summary";
 import { plural } from "./text";
 import { describeUnsaved, leaveUnsavedMessage, orderUnsaved } from "./unsaved-edits";
@@ -31,6 +34,8 @@ import { useLeaveGuard } from "./use-leave-guard";
 export interface ReviewPanelProps {
   assignmentId: string;
   view: ReviewView;
+  /** When the server rendered the page (epoch ms): the grading timer counts from its timestamps. */
+  serverNow: number;
 }
 
 /**
@@ -40,7 +45,7 @@ export interface ReviewPanelProps {
  * Each card saves on its own, so the forms report unsaved edits to the panel: leaving through a link asks
  * first, and marking the paper reviewed or regrading it waits until they are saved or undone.
  */
-export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
+export function ReviewPanel({ assignmentId, view, serverNow }: ReviewPanelProps) {
   const s = view.submission;
   // `jumps` counts page-link clicks, so clicking the same page again still brings it back into view.
   const [pdfView, setPdfView] = useState<{ page: number | null; jumps: number }>({ page: null, jumps: 0 });
@@ -61,6 +66,8 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
     <UnsavedEditsContext value={unsavedTracker}>
       <div className="flex flex-col gap-4">
         <ReviewHeader assignmentId={assignmentId} view={view} />
+        {/* Above the PDF rather than beside it, so on phones it shows without scrolling past the paper. */}
+        <GradingNotice view={view} serverNow={serverNow} />
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
           <div ref={pdfRef} className="scroll-mt-4 lg:sticky lg:top-4 lg:self-start">
@@ -110,7 +117,7 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
   );
 }
 
-function ReviewHeader({ assignmentId, view }: ReviewPanelProps) {
+function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow">) {
   const s = view.submission;
   const section = view.sectionLabel ?? (s.aiSectionRaw ? `“${s.aiSectionRaw}” (not matched)` : "No section");
   const byHostedAgent = s.aiEngine === "agent" && (s.status === "graded" || s.status === "needs_review")
@@ -146,19 +153,38 @@ function ReviewHeader({ assignmentId, view }: ReviewPanelProps) {
   );
 }
 
+/** While the paper waits or is being graded: where it is in the queue, or a running timer and an estimated bar. */
+function GradingNotice({ view, serverNow }: { view: ReviewView; serverNow: number }) {
+  const s = view.submission;
+  if (s.status !== "queued" && s.status !== "grading") return null;
+  // Not an Alert: its live region would read the running timer out every second.
+  return (
+    <div className={cx("flex flex-col gap-2 rounded-lg border px-4 py-3 text-sm leading-relaxed", TONE_CLASSES.info)}>
+      {s.status === "grading" && view.gradingTiming ? (
+        <EstimatedProgress
+          label="Grading…"
+          barLabel="Grading this paper"
+          startedAt={view.gradingTiming.gradingStartedAt}
+          typicalMs={view.gradingTiming.typicalPaperMs}
+          serverNow={serverNow}
+        />
+      ) : (
+        <p className="font-semibold">{s.status === "grading" ? "Grading…" : queueText(view.queue)}</p>
+      )}
+      {/* Announces the change from waiting to grading once, not each queue position or second. */}
+      <p role="status" className="sr-only">
+        {s.status === "queued" ? "Waiting to be graded" : "Being graded"}
+      </p>
+      {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
+      {view.gradingEngine === "agent" && <p>The hosted agent takes a few minutes per paper.</p>}
+      <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
+    </div>
+  );
+}
+
 function StatusNotices({ view }: { view: ReviewView }) {
   const s = view.submission;
   const runner = useActionRunner();
-
-  if (s.status === "queued" || s.status === "grading") {
-    return (
-      <Alert tone="info" title={s.status === "queued" ? "Waiting to be graded" : "The AI is reading this paper…"}>
-        {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
-        {view.gradingEngine === "agent" && <p>The hosted agent takes a few minutes per paper.</p>}
-        <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
-      </Alert>
-    );
-  }
 
   if (s.status === "failed") {
     return (
@@ -252,7 +278,7 @@ const HELD: Record<HeldAction, { before: string; anyway: string }> = {
   regrade: { before: "regrading", anyway: "Regrade without saving" },
 };
 
-function ReviewFooter({ assignmentId, view, unsaved }: ReviewPanelProps & { unsaved: string[] }) {
+function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "serverNow"> & { unsaved: string[] }) {
   const s = view.submission;
   const router = useRouter();
   const runner = useActionRunner();
@@ -368,4 +394,10 @@ function NavLink({ href, label }: { href: string | null; label: string }) {
       {label}
     </LinkButton>
   );
+}
+
+/** Where a queued paper stands: "Waiting — next in line", "Waiting — 3 papers ahead". */
+function queueText(queue: ReviewView["queue"]): string {
+  if (queue === null) return "Waiting to be graded";
+  return `Waiting — ${queue.position === 0 ? "next in line" : `${plural(queue.position, "paper")} ahead`}`;
 }

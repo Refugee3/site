@@ -11,7 +11,8 @@ export interface ScanListProps {
 }
 
 function statusText(scan: ScanSummary): string {
-  return scan.status === "done" && scan.createdCount !== null ? `${plural(scan.createdCount, "paper")} created` : SCAN_STATUS_LABEL[scan.status];
+  if (scan.status !== "done" || scan.createdCount === null) return SCAN_STATUS_LABEL[scan.status];
+  return `${plural(scan.createdCount, "paper")} created${scan.autoGraded ? ", grading started automatically" : ""}`;
 }
 
 /** The assignment's whole-class scans, each linking to its split check; renders nothing before the first one. */

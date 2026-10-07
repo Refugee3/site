@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { boardHref } from "@/components/teacher/board-helpers";
 import { DeleteScanButton, RetryAiButton, ScanReview, SplitEveryForm } from "@/components/teacher/scan-review";
+import { ScanSplitProgressBar } from "@/components/teacher/progress-widgets";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
@@ -11,6 +12,7 @@ import { LinkButton } from "@/components/ui/link-button";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
 import { requireOwnedScan } from "@/lib/auth/dal";
+import { now } from "@/lib/clock";
 import { getScanReviewView } from "@/lib/services/views";
 import type { ScanReviewView } from "@/lib/types";
 
@@ -61,16 +63,22 @@ function defaultPages(view: ScanReviewView): number {
 }
 
 function Splitting({ view }: { view: ScanReviewView }) {
-  const { scan } = view;
+  const { scan, splitProgress } = view;
   return (
     <Card>
       <div className="flex flex-col gap-4">
         <div className="flex items-start gap-3">
-          <Spinner className="mt-0.5 size-6 text-brand-600" />
-          <div className="flex flex-col gap-1">
+          <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
             <p className="text-lg font-semibold">Finding where each student&apos;s paper starts…</p>
-            <p className="text-muted">
-              Read {scan.pagesRead} of {plural(scan.pageCount, "page")}. This page updates by itself.
+            {splitProgress ? (
+              <ScanSplitProgressBar split={splitProgress} serverNow={now()} />
+            ) : (
+              <p className="text-muted">Read {scan.pagesRead} of {plural(scan.pageCount, "page")}.</p>
+            )}
+            <p className="text-sm text-muted">
+              This page updates by itself. If the split looks clean, the papers are graded automatically; if anything
+              looks off, the split waits here for your check.
             </p>
             {scan.statusNote && <p className="whitespace-pre-wrap text-sm text-muted">{scan.statusNote}</p>}
           </div>
@@ -109,6 +117,12 @@ function Done({ assignmentId, view }: { assignmentId: string; view: ScanReviewVi
       : ` (${duplicates} ${duplicates === 1 ? "was already uploaded and was skipped" : "were already uploaded and were skipped"})`;
   return (
     <div className="flex flex-col gap-4">
+      {scan.autoGraded && (
+        <Alert tone="info">
+          The split looked clean, so grading started automatically.{" "}
+          <Link href={boardHref(assignmentId, "all")}>Follow it on the Submissions board</Link>
+        </Alert>
+      )}
       <Alert tone="success">
         Created {plural(scan.createdCount ?? 0, "paper")}
         {skipped}. They&apos;re being graded now.

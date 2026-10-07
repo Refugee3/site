@@ -4,6 +4,7 @@ import { PdfFrame } from "@/components/pdf-frame";
 import { CollapsedOnPhones } from "@/components/teacher/collapsed-on-phones";
 import { KeyEditor } from "@/components/teacher/key-editor";
 import { KeyUpload } from "@/components/teacher/key-upload";
+import { EstimatedProgress } from "@/components/teacher/progress-widgets";
 import { RetryExtractionButton } from "@/components/teacher/retry-extraction-button";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
@@ -12,6 +13,7 @@ import { cx } from "@/components/ui/cx";
 import { LinkButton } from "@/components/ui/link-button";
 import { Spinner } from "@/components/ui/spinner";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
+import { now } from "@/lib/clock";
 import { isKeyApproved } from "@/lib/grading/key";
 import { getKeyEditorView } from "@/lib/services/views";
 import type { Assignment, KeyEditorView } from "@/lib/types";
@@ -66,12 +68,21 @@ function Processing({ view }: { view: KeyEditorView }) {
     <div className="flex flex-col gap-6">
       <Card>
         <div className="flex items-start gap-3">
-          <Spinner className="mt-0.5 size-6 text-brand-600" />
-          <div className="flex flex-col gap-1">
-            <p className="text-lg font-semibold">Reading your answer key…</p>
+          <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {view.extraction ? (
+              <EstimatedProgress
+                label="Reading the answer key…"
+                barLabel="Reading the answer key"
+                startedAt={view.extraction.extractionStartedAt}
+                typicalMs={view.extraction.typicalExtractionMs}
+                serverNow={now()}
+              />
+            ) : (
+              <p className="font-semibold">Reading the answer key…</p>
+            )}
             <p className="text-muted">
-              The AI is listing every question with its answer for you to check. This usually takes a minute or two, and
-              this page updates by itself.
+              The AI is listing every question with its answer for you to check. This page updates by itself.
             </p>
           </div>
         </div>

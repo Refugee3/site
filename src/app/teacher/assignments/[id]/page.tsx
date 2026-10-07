@@ -5,11 +5,14 @@ import { Board } from "@/components/teacher/board";
 import { BoardFilters } from "@/components/teacher/board-filters";
 import { boardHref, boardRefreshMs, firstNeedsReviewId, parseBoardFilter, reviewHref } from "@/components/teacher/board-helpers";
 import { BulkActions } from "@/components/teacher/bulk-actions";
+import { GradingProgressCard } from "@/components/teacher/progress-widgets";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
+import { now } from "@/lib/clock";
+import { getWorkerStatus } from "@/lib/jobs/queue";
 import { getBoardView } from "@/lib/services/views";
 import type { AssignmentStatus, BoardView } from "@/lib/types";
 
@@ -25,9 +28,19 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
   const { assignment } = await requireOwnedAssignment(id);
   const filter = parseBoardFilter((await props.searchParams).filter);
   const view = getBoardView(assignment, filter);
+  const worker = view.progress ? getWorkerStatus() : null;
 
   return (
     <div className="flex flex-col gap-5">
+      {/* Gone on the first refresh after the batch's last paper is done. */}
+      {view.progress && (
+        <GradingProgressCard
+          progress={view.progress}
+          serverNow={now()}
+          throttledUntil={worker?.throttledUntil ?? null}
+          halted={worker === null || worker.state !== "running"}
+        />
+      )}
       <ScanCallout assignmentId={assignment.id} scans={view.scans} />
       <ReviewCallout assignmentId={assignment.id} groups={view.groups} />
 
@@ -108,7 +121,8 @@ function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: Boa
     return (
       <Alert tone="info">
         The AI is finding where each student&apos;s paper starts in {scans.splitting === 1 ? "your scan" : `${scans.splitting} scans`}.
-        You&apos;ll check the split on the <Link href={uploadHref}>Upload homework</Link> tab before anything is graded.
+        If the split looks clean, its papers are graded automatically; if anything looks off, it waits for your check on
+        the <Link href={uploadHref}>Upload homework</Link> tab.
       </Alert>
     );
   }

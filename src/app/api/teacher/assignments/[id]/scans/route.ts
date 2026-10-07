@@ -15,7 +15,8 @@ const PagesPerPaperSchema = z.coerce.number(PAGES_MESSAGE).int(PAGES_MESSAGE).mi
 
 /**
  * One scan of a whole class's papers (`?mode=auto`, or `?mode=every&pagesPerPaper=N`), uploaded by the
- * teacher. Answers 201 with where to check the split; nothing is graded before the teacher has checked it.
+ * teacher. Answers 201 with where to check the split. A clean AI split is graded automatically; any other split waits
+ * for the teacher's check.
  */
 export async function POST(req: NextRequest, ctx: RouteContext<"/api/teacher/assignments/[id]/scans">): Promise<Response> {
   try {

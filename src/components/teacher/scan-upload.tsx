@@ -32,8 +32,8 @@ function splitQuery(mode: ScanSplitMode, pagesText: string): string | null {
 }
 
 /**
- * Uploads one scan of the whole class's papers as soon as it is chosen, then opens its split check. Nothing
- * is graded until the teacher has checked the split there.
+ * Uploads one scan of the whole class's papers as soon as it is chosen, then opens its split check. A clean AI
+ * split is graded automatically; one with anything flagged (and every "every N pages" split) waits for the teacher there.
  */
 export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProps) {
   const router = useRouter();

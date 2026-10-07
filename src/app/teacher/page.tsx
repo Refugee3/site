@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { connection } from "next/server";
+import { AutoRefresh } from "@/components/auto-refresh";
 import { AssignmentCard } from "@/components/teacher/assignment-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
@@ -8,10 +9,14 @@ import { getDashboardView } from "@/lib/services/views";
 
 export const metadata: Metadata = { title: "Assignments" };
 
+/** While any paper is being graded, a scan split or a key read, so the cards' bars and next steps keep up. */
+const BUSY_POLL_MS = 4000;
+
 export default async function TeacherDashboardPage() {
   await connection();
   const teacher = await requireTeacher();
   const view = getDashboardView(teacher);
+  const busy = view.assignments.some((a) => a.progress !== null || a.scans.splitting > 0 || a.keyStatus === "processing");
 
   return (
     <>
@@ -39,6 +44,8 @@ export default async function TeacherDashboardPage() {
           ))}
         </ul>
       )}
+
+      <AutoRefresh intervalMs={busy ? BUSY_POLL_MS : null} />
     </>
   );
 }
