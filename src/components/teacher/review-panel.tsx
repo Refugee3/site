@@ -113,6 +113,8 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
 function ReviewHeader({ assignmentId, view }: ReviewPanelProps) {
   const s = view.submission;
   const section = view.sectionLabel ?? (s.aiSectionRaw ? `“${s.aiSectionRaw}” (not matched)` : "No section");
+  const byHostedAgent = s.aiEngine === "agent" && (s.status === "graded" || s.status === "needs_review")
+    && !s.flags.includes("ai_refused");
   return (
     <div className="flex flex-col gap-2">
       <Link href={boardHref(assignmentId, "all")} className="self-start text-sm">
@@ -128,6 +130,7 @@ function ReviewHeader({ assignmentId, view }: ReviewPanelProps) {
       </div>
       <p className="text-sm text-muted">
         Submitted <LocalTime ms={s.createdAt} /> · {plural(s.pageCount, "page")}
+        {byHostedAgent && " · Graded by the hosted agent"}
       </p>
       {view.earlierAttempts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
@@ -151,6 +154,7 @@ function StatusNotices({ view }: { view: ReviewView }) {
     return (
       <Alert tone="info" title={s.status === "queued" ? "Waiting to be graded" : "The AI is reading this paper…"}>
         {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
+        {view.gradingEngine === "agent" && <p>The hosted agent takes a few minutes per paper.</p>}
         <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
       </Alert>
     );

@@ -5,11 +5,14 @@ import * as z from "zod";
 import { keySavedMessage } from "@/lib/api-key-messages";
 import { requireTeacher } from "@/lib/auth/dal";
 import { getConfig } from "@/lib/config";
+import { engineSavedMessage, HOSTED_AGENT_READY } from "@/lib/grader-engine-messages";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
-import { removeApiKey, saveApiKey, saveGradingPreferences, setStudentUploads } from "@/lib/services/settings";
-import type { ActionResult } from "@/lib/types";
+import {
+  removeApiKey, saveApiKey, saveGradingPreferences, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
+} from "@/lib/services/settings";
+import type { ActionResult, GradingEngineChoice } from "@/lib/types";
 
 // Shape only: saveApiKey checks the key's format, and saveGradingPreferences the preferences' length.
 const ApiKeyFormSchema = z.object({
@@ -21,6 +24,7 @@ const PreferencesFormSchema = z.object({
   gradingPreferences: z.string().max(8000, "Use at most 4000 characters."),
 });
 const EnabledSchema = z.boolean();
+const EngineSchema = z.enum(["agent", "direct"]);
 
 /** Checks the pasted key with Anthropic before saving it; the key itself never comes back to the browser. */
 export async function saveApiKeyAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
@@ -48,6 +52,24 @@ export async function setStudentUploadsAction(enabled: boolean): Promise<ActionR
   const result = await attempt(() => setStudentUploads(parseInput(EnabledSchema, enabled)));
   if (result.ok) refresh();
   return result;
+}
+
+/** Settings → Grader: switches the grading engine from the next paper on. */
+export async function setGradingEngineAction(engine: GradingEngineChoice): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attempt(() => setGradingEngine(parseInput(EngineSchema, engine)));
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: engineSavedMessage(engine) };
+}
+
+/** "Set up now" / "Set up again": sets up the hosted agent for the key in use, waiting at most a minute. */
+export async function setUpHostedAgentAction(): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attemptWithData(() => setUpHostedAgentAgain());
+  if (!result.ok) return result;
+  refresh();
+  return result.data.ok ? { ok: true, message: HOSTED_AGENT_READY } : { ok: false, error: result.data.error };
 }
 
 export async function saveGradingPreferencesAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {

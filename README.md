@@ -12,6 +12,7 @@ A small self-hosted web app that grades handwritten student work against a teach
 
 ## What's new
 
+- **Grading with an Anthropic-hosted agent:** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's the new default; the direct API is one click away in Settings.
 - **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. The AI finds where each paper starts (or you split it every N pages), and you check the split before anything is graded.
 - **Student uploads are off by default**, on new and upgraded servers alike. Turn them on in Settings when you want students to hand in work through a code or link.
 - **The grader learns from your corrections:** each correction (with your reason) becomes a lesson that later gradings of the assignment follow, together with your grading preferences.
@@ -51,6 +52,8 @@ All settings are listed, with defaults, in [`.env.example`](.env.example). The m
 | `TEACHER_SIGNUP_CODE` | — | Required to sign up, when set (see below). At least 12 characters. |
 | `MAX_UPLOAD_MB` / `MAX_PAGES` | `20` / `40` | Per-upload limits for students, teacher uploads and keys; also the limit for each paper cut from a scan. |
 | `MAX_SCAN_MB` / `MAX_SCAN_PAGES` | `100` / `200` | Limits for one scan of a whole class's stack (at most 200 MB / 500 pages). The reverse proxy must allow uploads this large. |
+| `AGENT_BUDGET_GRADE_USD` | `2.00` | Hosted agent: spending cap per paper, in US dollars at list prices. |
+| `AGENT_KEEP_SESSIONS` | `0` | `1` keeps hosted-agent sessions and uploads for debugging. Never with real student work. |
 
 The server checks the settings, the data directory and the database when it starts; if anything is wrong it logs the problem and exits with code 1 instead of serving errors.
 
@@ -77,6 +80,17 @@ It is not retrained. When you correct the AI on a paper — the points, the feed
 - Deleting a paper keeps the lessons from your corrections on it, with that student's answer and your notes: the Lessons tab marks them "Its paper was deleted", and you can delete them there.
 - A lesson shows the answer as the AI read it, so say in the reason when you corrected a misreading ("The student wrote x = -3; the minus is faint."). A correction of an answer the AI saw as blank or couldn't read is sent only once it has a reason, and a ruling without a reason that contradicts the answer key sends the paper to you instead of overriding the key. Points that no judgment gives exactly (3 of 5 on an all-or-nothing question) are passed on too, and matching answers on later papers come to you to set the points.
 - Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the board or the Lessons tab. Papers you already corrected or marked reviewed are left alone (you can still regrade one from its page); your overrides and edits are always kept.
+
+## Grading with the Anthropic-hosted agent
+
+New servers grade with the **Anthropic-hosted agent** (Claude Managed Agents). Instead of sending each paper to Claude in one request, the app gives Claude a private, temporary workspace on Anthropic's servers for each paper, answer key or batch of scanned pages. Claude reads the PDF there and, where handwriting is hard to read, can render a page larger, crop it or rotate it before deciding. It hands its result back through a strict form the app checks; if anything is missing or malformed, the agent is told what to fix and tries again.
+
+- **Same API key, same account.** The agent uses the key under **Settings → Anthropic API key** (or `ANTHROPIC_API_KEY`) and is billed to the same Anthropic account. A Claude Pro or Max subscription can't be used by the app.
+- **Set up automatically.** When a key is saved, or before the first paper, the app creates one environment and three agents (answer-key reader, paper grader, scan splitter) in the key's Anthropic workspace, named "PDF Auto-Grader: …". **Settings → Grader** shows "Ready", or the problem and a **Set up again** button. Don't edit or archive them in the Console; if you did, press Set up again. A key from another workspace gets its own set.
+- **Cost.** Tokens at the usual model prices plus **$0.08 per hour** of agent time. The agent reads in several steps, so a paper usually costs more than with the direct API; each assignment's Settings tab shows the actual cost. Every session has a spending cap — by default $2.00 per paper (`AGENT_BUDGET_GRADE_USD`), $3.00 per answer key (`AGENT_BUDGET_EXTRACT_USD`) and $1.50 per batch of up to 20 scanned pages (`AGENT_BUDGET_SCAN_USD`). A session that reaches its cap is retried once with double the cap; after that the paper waits for you to grade it.
+- **Speed.** Expect a few minutes per paper, slower than the direct API. Several papers are graded at once (`GRADING_CONCURRENCY`); each session stops after `AGENT_SESSION_TIMEOUT_MS` (20 minutes by default) and is retried later.
+- **Privacy.** Papers and answer keys are processed on Anthropic's servers. Each upload and each agent session is deleted from Anthropic as soon as its task finishes, successful or not; uploads also expire on their own after an hour, and sessions left behind by a crash are removed automatically by a later grading run. The workspace has no internet access and no web tools. **Claude Managed Agents is not eligible for Zero Data Retention (ZDR) or HIPAA BAA coverage**; if your school requires ZDR, use the direct API under a ZDR agreement. `AGENT_KEEP_SESSIONS=1` keeps sessions and uploads so you can inspect them in the Anthropic Console (the server log prints each session's Console path); never use it with real student work.
+- **Switching engines.** **Settings → Grader → Direct API** goes back to sending each paper in a single request. The switch applies from the next paper; papers already being graded finish as they started. Use the direct API if Managed Agents isn't available to your organization (it's in beta) or you need ZDR.
 
 ## Run exactly one instance
 
@@ -142,11 +156,11 @@ An upload is held in memory while it is checked: plan for about **3× the larges
 
 ## Privacy
 
-Student work — the PDFs and photos, including names written on them — and the answer key are sent to the Anthropic API for grading. Make sure that is acceptable under your school's policies before using real student work. Nothing is shared with other services, and pages are marked `noindex`.
+Student work — the PDFs and photos, including names written on them — and the answer key are sent to the Anthropic API for grading. Make sure that is acceptable under your school's policies before using real student work. With the hosted agent, see [Grading with the Anthropic-hosted agent](#grading-with-the-anthropic-hosted-agent): each paper's upload and session are deleted after grading, and Managed Agents isn't eligible for Zero Data Retention. Nothing is shared with other services, and pages are marked `noindex`.
 
 ## Cost
 
-Roughly **$0.10–0.30 per paper** with the default model (`claude-opus-5-5`, $4 / $20 per million input / output tokens). Output and thinking tokens dominate; `ANTHROPIC_EFFORT=medium` is the main lever for lowering cost. The answer key, your lessons and your grading preferences are cached between papers, so their cost is small. Splitting a whole-class scan with the AI costs about **$0.01 per scanned page** on top (splitting every N pages is free). Each assignment's Settings tab shows its token usage and estimated cost, added up over every AI call (regrades, retries, reading the key and splitting scans included).
+Roughly **$0.10–0.30 per paper** with the default model (`claude-opus-5-5`, $4 / $20 per million input / output tokens). Output and thinking tokens dominate; `ANTHROPIC_EFFORT=medium` is the main lever for lowering cost. The answer key, your lessons and your grading preferences are cached between papers, so their cost is small. Splitting a whole-class scan with the AI costs about **$0.01 per scanned page** on top (splitting every N pages is free). Each assignment's Settings tab shows its token usage and estimated cost, added up over every AI call (regrades, retries, reading the key and splitting scans included). With the hosted agent, add $0.08 per hour of agent time and expect more tokens per paper, because the agent reads in several steps; each assignment's Settings tab shows the actual cost.
 
 ## Development
 

@@ -4,6 +4,7 @@ import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { DangerZone } from "@/components/teacher/danger-zone";
 import { Card } from "@/components/ui/card";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
+import { formatAgentTime } from "@/lib/grader-engine-messages";
 import { studentUploadsEnabled } from "@/lib/services/settings";
 import { getSettingsView } from "@/lib/services/views";
 import type { AssignmentFormInput, SettingsView } from "@/lib/types";
@@ -47,9 +48,14 @@ const tokens = new Intl.NumberFormat("en-US");
 const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function Usage({ usage }: { usage: SettingsView["usage"] }) {
+  const agentUsed = usage.agentSessions > 0;
+  const agentRows: Array<[string, string]> = agentUsed
+    ? [["Hosted-agent sessions", tokens.format(usage.agentSessions)], ["Hosted-agent time", formatAgentTime(usage.agentActiveSeconds)]]
+    : [];
   const rows: Array<[string, string]> = [
     ["AI calls", tokens.format(usage.calls)],
     ["Papers read by the AI", tokens.format(usage.papers)],
+    ...agentRows,
     ["Input tokens", tokens.format(usage.inputTokens)],
     ["Cached input tokens read", tokens.format(usage.cacheReadTokens)],
     ["Cached input tokens written", tokens.format(usage.cacheWriteTokens)],
@@ -70,6 +76,7 @@ function Usage({ usage }: { usage: SettingsView["usage"] }) {
         Totals cover every AI call for this assignment: grading, regrades, retries, reading the answer key, and papers
         deleted since. The key is cached between papers, so most calls should show cached reads; if they don&apos;t,
         caching has stopped working and each paper costs more.
+        {agentUsed && " Hosted-agent sessions are counted at Anthropic's list prices, including $0.08 per hour of agent time."}
       </p>
     </div>
   );
