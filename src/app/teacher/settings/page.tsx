@@ -22,7 +22,7 @@ export default async function TeacherSettingsPage() {
         <ApiKeyForm apiKey={view.apiKey} aiMode={view.aiMode} model={view.model} keyIssue={view.worker?.keyIssue ?? null} />
       </Card>
       <Card title="Student submissions">
-        <StudentUploadsSwitch enabled={view.studentsCanUpload} />
+        <StudentUploadsSwitch enabled={view.studentsCanUpload} openAssignmentCount={view.openAssignmentCount} />
       </Card>
       <Card title="Grading preferences">
         <PreferencesForm preferences={view.gradingPreferences} />

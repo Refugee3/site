@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { TONE_CLASSES } from "@/components/ui/tone";
 import { ATTEMPT_LABEL, CORRECTNESS_LABEL, formatPoints } from "@/lib/format";
 import type { Attempt, Correctness, LessonNotSentReason, LessonView } from "@/lib/types";
+import { addToPreferencesBlocker } from "./lesson-preferences";
 import { leaveUnsavedMessage, orderUnsaved } from "./unsaved-edits";
 import { UnsavedEditsContext, useReportUnsaved, useUnsavedEditsTracker } from "./unsaved-edits-context";
 import { useActionRunner } from "./use-action-runner";
@@ -21,6 +22,7 @@ import { useSyncedState } from "./use-synced-state";
 const NOT_SENT_TEXT: Record<Exclude<LessonNotSentReason, "inactive" | "unknown_item">, string> = {
   agrees: "Not sent: same as the AI's judgment, with no reason",
   no_reading: "Not sent: the AI never read this answer",
+  reading_fix: "Not sent: the AI couldn't read this answer. Add a reason to send it",
   limit: "Not sent: only the newest lessons fit",
 };
 
@@ -81,13 +83,19 @@ export function LessonCard({ entry }: { entry: LessonView }) {
     );
   }
 
+  /** Only a lesson whose paper was deleted can be deleted; one whose paper still exists is turned off (see deleteLesson). */
   function remove() {
-    if (!window.confirm("Delete this lesson? The grader stops using it. Your points and feedback on the paper stay as they are.")) return;
+    if (!window.confirm("Delete this lesson? The grader stops using it, and its student's answer and your notes are removed.")) return;
     setMessage(null);
-    runner.run(() => deleteLessonAction(lesson.id));
+    runner.run(
+      () => deleteLessonAction(lesson.id),
+      (result) => {
+        if (result.data?.deleted === false) setMessage("Its paper still has your correction, so the lesson was turned off instead.");
+      },
+    );
   }
 
-  const hasReason = lesson.reason.trim() !== "";
+  const addBlocker = addToPreferencesBlocker(reason, lesson.reason);
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-line bg-surface p-4 shadow-sm">
       <LessonBadges entry={entry} />
@@ -125,6 +133,13 @@ export function LessonCard({ entry }: { entry: LessonView }) {
         </Button>
       </form>
 
+      {entry.paperDeleted && (
+        <p className="text-sm text-muted">
+          Its paper was deleted. The lesson keeps that student&apos;s answer and your notes; delete it if you don&apos;t want them
+          kept.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="secondary" size="sm" disabled={runner.pending} onClick={() => setActive(!lesson.active)}>
           {lesson.active ? "Turn off" : "Turn on"}
@@ -132,15 +147,17 @@ export function LessonCard({ entry }: { entry: LessonView }) {
         <Button
           variant="secondary"
           size="sm"
-          disabled={!hasReason || runner.pending}
-          title={hasReason ? undefined : "Write a reason first"}
+          disabled={addBlocker !== null || runner.pending}
+          title={addBlocker ?? undefined}
           onClick={addToPreferences}
         >
           Add to my grading preferences
         </Button>
-        <Button variant="danger" size="sm" disabled={runner.pending} onClick={remove}>
-          Delete
-        </Button>
+        {entry.paperDeleted && (
+          <Button variant="danger" size="sm" disabled={runner.pending} onClick={remove}>
+            Delete
+          </Button>
+        )}
         {entry.paperHref && (
           <Link href={entry.paperHref} className="flex min-h-11 items-center px-1 text-sm sm:min-h-9">
             Open the paper

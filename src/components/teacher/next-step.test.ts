@@ -8,11 +8,13 @@ type Card = DashboardView["assignments"][number];
 function card(o: Partial<Card> = {}): Card {
   return {
     id: "a1", title: "Quiz", status: "open", shareCode: "K7M4QX", keyStatus: "ready", keyApproved: true,
-    counts: { queued: 0, grading: 0, graded: 4, needs_review: 0, failed: 0, total: 4 }, released: false, createdAt: 0, ...o,
+    counts: { queued: 0, grading: 0, graded: 4, needs_review: 0, failed: 0, total: 4 },
+    scans: { splitting: 0, review: 0, failed: 0, firstReviewId: null }, released: false, createdAt: 0, ...o,
   };
 }
 
 const counts = (o: Partial<Card["counts"]>): Card["counts"] => ({ ...card().counts, ...o });
+const scans = (o: Partial<Card["scans"]>): Card["scans"] => ({ ...card().scans, ...o });
 
 const ON = { studentsCanUpload: true };
 const OFF = { studentsCanUpload: false };
@@ -83,6 +85,41 @@ describe("nextStep while students can't upload", () => {
     expect(nextStep(card(), OFF)).toBeNull();
     expect(nextStep(card({ status: "closed", counts: counts({ graded: 1, total: 1 }) }), OFF)).toBeNull();
     expect(nextStep(card({ counts: counts({ graded: 0, queued: 2, total: 2 }) }), OFF)).toBeNull();
+  });
+});
+
+describe("nextStep with a scan of the class's papers", () => {
+  const empty = counts({ graded: 0, total: 0 });
+
+  it.each([["on", ON], ["off", OFF]] as const)("asks to check a split scan before the other steps, uploads %s", (_, mode) => {
+    expect(nextStep(card({ counts: empty, scans: scans({ review: 1, firstReviewId: "s1" }) }), mode)).toEqual({
+      text: "Check the split of your scan", href: "/teacher/assignments/a1/scans/s1", tone: "warning",
+    });
+    // With papers already there (an earlier scan), and with several scans, which the upload tab lists.
+    expect(nextStep(card({ scans: scans({ review: 2, failed: 1, firstReviewId: "s1" }) }), mode)).toEqual({
+      text: "Check the split of 2 scans", href: "/teacher/assignments/a1/upload", tone: "warning",
+    });
+  });
+
+  it.each([["on", ON], ["off", OFF]] as const)("points to a scan that couldn't be split, uploads %s", (_, mode) => {
+    expect(nextStep(card({ counts: empty, scans: scans({ failed: 1 }) }), mode)).toEqual({
+      text: "A scan couldn't be split", href: "/teacher/assignments/a1/upload", tone: "danger",
+    });
+    expect(nextStep(card({ scans: scans({ failed: 2 }) }), mode)?.text).toBe("2 scans couldn't be split");
+  });
+
+  it("says a scan is being split only while there are no papers yet", () => {
+    expect(nextStep(card({ status: "draft", counts: empty, scans: scans({ splitting: 1 }) }), OFF)).toEqual({
+      text: "Splitting your scan…", href: "/teacher/assignments/a1/upload", tone: "info",
+    });
+    expect(nextStep(card({ counts: empty, scans: scans({ splitting: 1 }) }), ON)?.text).toBe("Splitting your scan…");
+    expect(nextStep(card({ scans: scans({ splitting: 1 }) }), OFF)).toBeNull();
+  });
+
+  it("keeps the key and paper steps first", () => {
+    expect(nextStep(card({ keyApproved: false, scans: scans({ review: 1 }) }), OFF)?.text).toBe("Check and approve the answer key");
+    expect(nextStep(card({ counts: counts({ needs_review: 1 }), scans: scans({ review: 1 }) }), OFF)?.text).toBe("1 paper to review");
+    expect(nextStep(card({ counts: counts({ failed: 1 }), scans: scans({ review: 1 }) }), OFF)?.text).toBe("1 paper failed to grade");
   });
 });
 

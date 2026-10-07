@@ -10,7 +10,7 @@ import { useActionRunner } from "./use-action-runner";
 
 export interface RegradeGuidanceButtonProps {
   assignmentId: string;
-  /** Unreviewed papers graded before the latest lessons or grading preferences. */
+  /** Papers not reviewed or corrected yet, graded before the latest lessons or grading preferences. */
   count: number;
 }
 
@@ -25,7 +25,7 @@ export function RegradeGuidanceButton({ assignmentId, count }: RegradeGuidanceBu
   if (count === 0 && message === null && runner.error === null) return null;
 
   function regrade() {
-    const question = `Regrade ${plural(count, "paper")} you haven't reviewed yet, using your latest lessons and grading preferences? Your overrides and edits are kept.`;
+    const question = `Regrade ${plural(count, "paper")} you haven't reviewed or corrected yet, using your latest lessons and grading preferences? Papers you corrected or marked reviewed are left alone (you can still regrade one on its page). Your overrides and edits are kept.`;
     if (!window.confirm(question)) return;
     setMessage(null);
     runner.run(

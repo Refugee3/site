@@ -30,7 +30,8 @@ export function AssignmentCard({ assignment: a, studentsCanUpload }: AssignmentC
           </Link>
         </h2>
         <div className="flex flex-wrap gap-1.5">
-          {studentsCanUpload && <StatusBadge status={a.status} />}
+          {/* While uploads are off, "Open" still shows: such an assignment takes uploads again once they are on. */}
+          {(studentsCanUpload || a.status === "open") && <StatusBadge status={a.status} />}
           {a.released && <Badge tone="info">Feedback released</Badge>}
         </div>
       </div>

@@ -32,7 +32,8 @@ export default async function LessonsPage(props: PageProps<"/teacher/assignments
         <p className="text-muted">
           When you correct the AI on a paper — the points, the feedback or “What you did” — the correction becomes a
           lesson. The grader reads your active lessons and your grading preferences every time it grades a paper for
-          this assignment. It isn&apos;t retrained: lessons are notes it reads each time.
+          this assignment. It isn&apos;t retrained: lessons are notes it reads each time. A lesson stays with your
+          correction on its paper: turn it off to stop the grader using it.
         </p>
         <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
           <span className="font-medium">

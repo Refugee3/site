@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { Board } from "@/components/teacher/board";
@@ -5,6 +6,7 @@ import { BoardFilters } from "@/components/teacher/board-filters";
 import { boardHref, boardRefreshMs, firstNeedsReviewId, parseBoardFilter, reviewHref } from "@/components/teacher/board-helpers";
 import { BulkActions } from "@/components/teacher/bulk-actions";
 import { plural } from "@/components/teacher/text";
+import { Alert } from "@/components/ui/alert";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
@@ -26,6 +28,7 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
 
   return (
     <div className="flex flex-col gap-5">
+      <ScanCallout assignmentId={assignment.id} scans={view.scans} />
       <ReviewCallout assignmentId={assignment.id} groups={view.groups} />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -74,6 +77,42 @@ function NoPapers(props: { assignmentId: string; status: AssignmentStatus; stude
       action={<LinkButton href={uploadHref} variant="secondary">Upload scanned papers</LinkButton>}
     />
   );
+}
+
+/**
+ * A scan of the class's papers waiting for the teacher (its papers appear only once they check the split), or one the
+ * AI couldn't split or is still splitting. Scans are listed on the Upload homework tab.
+ */
+function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: BoardView["scans"] }) {
+  const uploadHref = `/teacher/assignments/${assignmentId}/upload`;
+  if (scans.review > 0) {
+    const href = scans.review === 1 && scans.firstReviewId ? `/teacher/assignments/${assignmentId}/scans/${scans.firstReviewId}` : uploadHref;
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning-200 bg-warning-50 px-4 py-3">
+        <p className="font-medium text-warning-800">
+          {scans.review === 1 ? "A scan is" : `${scans.review} scans are`} split and waiting for your check. No paper is made
+          from {scans.review === 1 ? "it" : "them"} until you do.
+        </p>
+        <LinkButton href={href}>Check the split</LinkButton>
+      </div>
+    );
+  }
+  if (scans.failed > 0) {
+    return (
+      <Alert tone="danger" title={scans.failed === 1 ? "A scan couldn't be split" : `${scans.failed} scans couldn't be split`}>
+        Split it every few pages or try the AI again on the <Link href={uploadHref}>Upload homework</Link> tab.
+      </Alert>
+    );
+  }
+  if (scans.splitting > 0) {
+    return (
+      <Alert tone="info">
+        The AI is finding where each student&apos;s paper starts in {scans.splitting === 1 ? "your scan" : `${scans.splitting} scans`}.
+        You&apos;ll check the split on the <Link href={uploadHref}>Upload homework</Link> tab before anything is graded.
+      </Alert>
+    );
+  }
+  return null;
 }
 
 /** The board's main call to action: how many papers wait for the teacher, and a button to start on the first. */

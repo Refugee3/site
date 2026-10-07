@@ -27,9 +27,10 @@ export async function setLessonActiveAction(lessonId: string, active: boolean): 
   return result;
 }
 
-export async function deleteLessonAction(lessonId: string): Promise<ActionResult> {
+/** `deleted` is false when the lesson's paper still exists: the lesson is turned off instead (see deleteLesson). */
+export async function deleteLessonAction(lessonId: string): Promise<ActionResult<{ deleted: boolean }>> {
   const { lesson } = await requireOwnedLesson(lessonId);
-  const result = await attempt(() => deleteLesson(lesson));
+  const result = await attemptWithData(() => deleteLesson(lesson));
   if (result.ok) refresh();
   return result;
 }

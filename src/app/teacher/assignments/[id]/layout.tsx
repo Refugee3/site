@@ -40,7 +40,8 @@ export default async function AssignmentLayout({ params, children }: Props) {
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="min-w-0 break-words text-2xl font-semibold">{assignment.title}</h1>
-          {header.studentsCanUpload && <StatusBadge status={assignment.status} />}
+          {/* While uploads are off, "Open" still shows: the assignment takes uploads again once they are on. */}
+          {(header.studentsCanUpload || assignment.status === "open") && <StatusBadge status={assignment.status} />}
         </div>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
           <span>Answer key:</span>

@@ -285,7 +285,12 @@ function ReviewFooter({ assignmentId, view, unsaved }: ReviewPanelProps & { unsa
   }
 
   function remove() {
-    if (!window.confirm("Delete this paper? Its grade is lost and the student's receipt link stops working.")) return;
+    // Lessons outlive their paper (the grader keeps learning from them), so say so: the teacher may be erasing a student.
+    const lessons = view.items.filter((entry) => entry.lesson !== null).length;
+    const them = lessons === 1 ? "it" : "them";
+    const kept = lessons === 0 ? "" : ` The ${plural(lessons, "lesson")} from your corrections on it stay on the Lessons tab with this`
+      + ` student's answer and your notes; delete ${them} there if you don't want ${them} kept.`;
+    if (!window.confirm(`Delete this paper? Its grade is lost and the student's receipt link stops working.${kept}`)) return;
     // On success the action redirects to the board.
     runner.run(() => deleteSubmissionAction(s.id));
   }

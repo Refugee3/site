@@ -36,7 +36,7 @@ export default async function NewAssignmentPage() {
           : "After saving you'll add the answer key, then upload the homework."}
       </p>
       <Card>
-        <AssignmentForm mode="create" action={createAssignmentAction} defaults={defaults} />
+        <AssignmentForm mode="create" action={createAssignmentAction} defaults={defaults} studentsCanUpload={studentUploadsEnabled()} />
       </Card>
     </div>
   );

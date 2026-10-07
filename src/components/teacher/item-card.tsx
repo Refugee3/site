@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { Tone } from "@/components/ui/tone";
 import { ANSWER_TYPE_LABEL, ATTEMPT_LABEL, CORRECTNESS_LABEL, formatPoints, REVIEW_REASON_LABEL } from "@/lib/format";
 import type { Attempt, Confidence, Correctness, ItemJudgment, Legibility, ReviewItemView } from "@/lib/types";
+import { lessonStatusText, overrideFormState, overrideRequest, type OverrideContext, type OverrideTexts } from "./override-form";
 import { parsePointsOverride, pointsInputText } from "./points";
 import { useReportUnsaved } from "./unsaved-edits-context";
 import { useActionRunner } from "./use-action-runner";
@@ -153,16 +154,11 @@ export function itemFormKey(itemId: string): string {
   return `item:${itemId}`;
 }
 
-/** Text left as the AI wrote it is not an override, so a later regrade can still replace it. */
-function overrideText(text: string, aiText: string): string | null {
-  const trimmed = text.trim();
-  return trimmed === aiText.trim() ? null : trimmed;
-}
-
 /**
  * Points override, the two notes the student reads ("what you did" and feedback), and why the teacher made
  * the correction (the grader learns from it). All are saved together (the action stores them all); "Clear"
  * and the "Use the AI's …" buttons save at once, leaving the other fields, the reason included, as stored.
+ * The unsaved/save logic is in override-form.ts.
  */
 function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: string; submissionId: string; entry: ReviewItemView }) {
   const { item, result, score, lesson } = entry;
@@ -182,11 +178,17 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
   const [pointsError, setPointsError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const runner = useActionRunner();
-  const dirty = points !== storedPoints || feedback !== storedFeedback || note !== storedNote || reason !== storedReason;
-  useReportUnsaved(itemFormKey(item.id), `Question ${item.label}`, dirty);
+  const ctx: OverrideContext = {
+    stored: { points: storedPoints, feedback: storedFeedback, note: storedNote, reason: storedReason },
+    aiFeedback,
+    aiNote,
+    hasOverride: hasPointsOverride || hasFeedbackOverride || hasNoteOverride,
+    // A paper graded by hand has no AI judgment to learn from (a lesson kept from an earlier reading still counts).
+    learnable: (result?.judgment ?? null) !== null || (lesson !== null && lesson.notSent !== "no_reading"),
+  };
   // A reason is kept only with a correction, so it can be written once there is one, stored or about to be saved.
-  const correcting = hasPointsOverride || hasFeedbackOverride || hasNoteOverride
-    || points.trim() !== "" || overrideText(feedback, aiFeedback) !== null || overrideText(note, aiNote) !== null;
+  const { correcting, reasonLive, dirty } = overrideFormState({ points, feedback, note, reason }, ctx);
+  useReportUnsaved(itemFormKey(item.id), `Question ${item.label}`, dirty);
   const ids = {
     points: `override-${item.id}-points`,
     feedback: `override-${item.id}-feedback`,
@@ -202,22 +204,18 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
     }
     setPointsError(null);
     setSaved(false);
+    const texts: OverrideTexts = { points: pointsText, feedback: feedbackText, note: noteText, reason: reasonText };
+    const request = overrideRequest(texts, parsed.centi, ctx);
     // Each field that changes takes the stored version once saved; the others keep any unsaved edit.
     const expect = (on: boolean) => {
       if (pointsText !== storedPoints) expectSavedPoints(on);
       if (feedbackText !== storedFeedback) expectSavedFeedback(on);
       if (noteText !== storedNote) expectSavedNote(on);
-      if (reasonText !== storedReason) expectSavedReason(on);
+      if (request.reason !== undefined) expectSavedReason(on);
     };
     expect(true);
     runner.run(
-      () => saveItemOverrideAction(submissionId, item.id, {
-        pointsCenti: parsed.centi,
-        feedback: overrideText(feedbackText, aiFeedback),
-        whatStudentDid: overrideText(noteText, aiNote),
-        // Omitted when unchanged, so the stored reason stays.
-        ...(reasonText !== storedReason ? { reason: reasonText } : {}),
-      }),
+      () => saveItemOverrideAction(submissionId, item.id, request),
       () => setSaved(true),
       () => expect(false),
     );
@@ -304,15 +302,19 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
           maxLength={1000}
           aria-describedby={`${ids.reason}-hint`}
           className="sm:text-sm"
-          disabled={!correcting}
+          disabled={!reasonLive}
           readOnly={runner.pending}
-          value={reason}
+          // A reason typed before the correction was undone is kept, but not shown (or saved) until there is one again.
+          value={reasonLive ? reason : storedReason}
           onChange={(e) => setReason(e.target.value)}
         />
         <p id={`${ids.reason}-hint`} className="text-xs text-muted">
-          {correcting
-            ? "Optional. Explain your correction, e.g. “Lowercase co2 is fine.” The grader reads it when it grades the next papers."
-            : "Change the points, feedback or note first."}
+          {!ctx.learnable
+            ? "The AI didn't read this answer, so the grader has nothing to learn from a correction here."
+            : correcting
+              ? "Optional. Explain your correction (e.g. “Lowercase co2 is fine.”), or say that the AI misread the answer. "
+                + "The grader reads it when it grades the next papers."
+              : "Change the points, feedback or note first."}
         </p>
       </div>
 
@@ -366,13 +368,7 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
   );
 }
 
-function lessonStatusText(lesson: ReviewItemView["lesson"], saved: boolean): string | null {
-  if (!lesson) return null;
-  if (!lesson.active) return "This lesson is turned off on the Lessons tab.";
-  return saved ? "Saved. The grader learns from this correction." : null;
-}
-
-/** What became of the correction: a lesson the grader learns from, or one turned off on the Lessons tab. */
+/** What became of the correction: a lesson the grader learns from, one it isn't sent (and why), or one turned off. */
 function LessonStatus({ assignmentId, lesson, saved }: { assignmentId: string; lesson: ReviewItemView["lesson"]; saved: boolean }) {
   const text = lessonStatusText(lesson, saved);
   return (

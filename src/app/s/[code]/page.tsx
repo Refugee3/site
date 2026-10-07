@@ -46,7 +46,7 @@ export default async function StudentUploadPage(props: PageProps<"/s/[code]">) {
       <PublicPage>
         <h1 className="text-2xl font-semibold">Hand in your work</h1>
         <UploadsOffNotice />
-        <RecentSubmissionNotice code={code} />
+        <RecentSubmissionNotice code={code} canResubmit={false} />
       </PublicPage>
     );
   }
@@ -84,7 +84,7 @@ export default async function StudentUploadPage(props: PageProps<"/s/[code]">) {
         </Card>
       )}
 
-      <RecentSubmissionNotice code={view.code} />
+      <RecentSubmissionNotice code={view.code} canResubmit={view.accepting} />
 
       {view.accepting ? (
         <Card title="Hand in your pages">

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPapersFromScanAction, deleteScanAction, retryScanWithAiAction, splitScanEveryAction } from "@/actions/scans";
 import { PdfFrame } from "@/components/pdf-frame";
 import { Alert } from "@/components/ui/alert";
@@ -11,8 +11,8 @@ import { cx } from "@/components/ui/cx";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  describePapers, droppedReason, expectedPagesPerPaper, formatPageRanges, sameLayout, toggleDropped, toggleStart,
-  type ProposedPaper, type ScanPaperFlag,
+  aiProposedLayout, describePapers, droppedReason, expectedPagesPerPaper, formatPageRanges, paperNameLabel, sameLayout, toggleDropped,
+  toggleStart, type ProposedPaper, type ScanPaperFlag,
 } from "@/lib/scan-layout";
 import type { ScanLayout, ScanPageReading, ScanReviewView, ScanStatus } from "@/lib/types";
 import { plural } from "./text";
@@ -51,6 +51,13 @@ function flagText(flag: ScanPaperFlag, paper: ProposedPaper, expected: number | 
   }
 }
 
+/** Ids of a page's controls, so focus can follow the page when an edit moves its row or removes the control. */
+const pageControlId = {
+  start: (page: number) => `scan-page-${page}-start`,
+  leaveOut: (page: number) => `scan-page-${page}-leave-out`,
+  putBack: (page: number) => `scan-page-${page}-put-back`,
+};
+
 /** What the AI read on a page, in a few words for the page's row. */
 function readingText(reading: ScanPageReading | null): string {
   if (!reading) return "";
@@ -72,6 +79,20 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
   const runner = useActionRunner();
   const edited = !sameLayout(layout, stored);
   useLeaveGuard(edited, "Your changes to the split are not saved. Leave and lose them?");
+  // An edit moves the page's row to another paper (remounting it) or removes the control that was used, which would
+  // drop focus to the page itself; it goes to the page's control in its new place instead.
+  const focusAfterEdit = useRef<string | null>(null);
+  useEffect(() => {
+    const id = focusAfterEdit.current;
+    if (id === null) return;
+    focusAfterEdit.current = null;
+    document.getElementById(id)?.focus();
+  }, [layout]);
+
+  function edit(next: ScanLayout, focusId: string) {
+    focusAfterEdit.current = focusId;
+    setLayout(next);
+  }
 
   const papers = useMemo(
     () => describePapers(layout, scan.readings, { keyPageCount: view.keyPageCount, maxPagesPerPaper: view.maxPagesPerPaper }),
@@ -80,8 +101,10 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
   const expected = expectedPagesPerPaper(papers.map((paper) => paper.pages.length), view.keyPageCount);
   const keptCount = papers.reduce((sum, paper) => sum + paper.pages.length, 0);
   const droppedPages = layout.flatMap((page, i) => (page.dropped ? [i + 1] : []));
-  const proposed = scan.splitMode === "auto" ? scan.proposedLayout : null;
+  // Kept after a split every N pages, so the AI's split is never lost.
+  const proposed = aiProposedLayout(scan);
   const canReset = proposed !== null && !sameLayout(layout, proposed);
+  const namesRead = scan.readings.length > 0;
 
   function showPage(page: number) {
     setPdfView((current) => ({ page, jumps: current.jumps + 1 }));
@@ -95,14 +118,18 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
     runner.run(() => createPapersFromScanAction(scan.id, layout));
   }
 
-  const split = scan.splitMode === "every" ? ` · split every ${plural(scan.pagesPerPaper ?? 1, "page")}` : " · split by the AI";
+  const split = scan.splitMode === "every" && !(proposed !== null && sameLayout(layout, proposed))
+    ? ` · split every ${plural(scan.pagesPerPaper ?? 1, "page")}`
+    : " · split by the AI";
   return (
     <div className="flex flex-col gap-4">
-      <p className="font-medium">
+      {/* Announced after each change, which is otherwise silent for a screen reader. */}
+      <p role="status" className="font-medium">
         {plural(papers.length, "paper")} from {plural(keptCount, "page")}
         {droppedPages.length > 0 && ` · ${plural(droppedPages.length, "page")} left out`}
         {split}
       </p>
+      {!namesRead && <p className="text-sm text-muted">Names are read when each paper is graded.</p>}
       {papers.some((paper) => paper.flags.length > 0) && (
         <Alert tone="warning">Check the papers marked below before grading.</Alert>
       )}
@@ -121,12 +148,13 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
               <PaperCard
                 key={paper.pages[0]}
                 paper={paper}
+                name={paperNameLabel(paper, namesRead)}
                 firstKeptPage={papers[0].pages[0]}
                 readings={scan.readings}
                 describeFlag={(flag) => flagText(flag, paper, expected, view.maxPagesPerPaper)}
                 onShowPage={showPage}
-                onToggleStart={(page) => setLayout(toggleStart(layout, page - 1))}
-                onLeaveOut={(page) => setLayout(toggleDropped(layout, page - 1))}
+                onToggleStart={(page) => edit(toggleStart(layout, page - 1), pageControlId.start(page))}
+                onLeaveOut={(page) => edit(toggleDropped(layout, page - 1), pageControlId.putBack(page))}
               />
             ))}
           </ol>
@@ -143,7 +171,13 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
                       p.{page}
                     </Button>
                     <span className="text-muted">· {DROPPED_LABEL[droppedReason(scan.readings[page - 1] ?? null)]}</span>
-                    <Button variant="ghost" size="sm" onClick={() => setLayout(toggleDropped(layout, page - 1))}>
+                    <Button
+                      id={pageControlId.putBack(page)}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => edit(toggleDropped(layout, page - 1), pageControlId.leaveOut(page))}
+                      aria-label={`Put back page ${page}`}
+                    >
                       Put back
                     </Button>
                   </li>
@@ -157,6 +191,15 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
               scanId={scan.id}
               defaultPages={scan.pagesPerPaper ?? view.keyPageCount ?? 1}
               label={scan.splitMode === "auto" ? "Split every N pages instead" : "Split every N pages"}
+              confirmMessage={edited
+                ? (pages) => `Replace your changes to the split with one paper every ${plural(pages, "page")}? Your changes are lost.`
+                : undefined}
+            />
+            <RetryAiButton
+              scanId={scan.id}
+              label={namesRead ? "Have the AI split it again" : "Let the AI split it"}
+              confirmMessage={`Have the AI read all ${plural(scan.pageCount, "page")} of the scan${namesRead ? " again" : ""}? `
+                + "It takes a few AI calls, and the split shown here is replaced."}
             />
             <DeleteScanButton scanId={scan.id} status={scan.status} />
           </div>
@@ -178,6 +221,8 @@ export function ScanReview({ assignmentId, view }: ScanReviewProps) {
 
 interface PaperCardProps {
   paper: ProposedPaper;
+  /** paperNameLabel: null for a scan the AI never read. */
+  name: string | null;
   /** The scan's first kept page always starts a paper. */
   firstKeptPage: number;
   readings: Array<ScanPageReading | null>;
@@ -187,7 +232,7 @@ interface PaperCardProps {
   onLeaveOut: (page: number) => void;
 }
 
-function PaperCard({ paper, firstKeptPage, readings, describeFlag, onShowPage, onToggleStart, onLeaveOut }: PaperCardProps) {
+function PaperCard({ paper, name, firstKeptPage, readings, describeFlag, onShowPage, onToggleStart, onLeaveOut }: PaperCardProps) {
   const headingId = `scan-paper-${paper.pages[0]}`;
   return (
     <li
@@ -200,7 +245,7 @@ function PaperCard({ paper, firstKeptPage, readings, describeFlag, onShowPage, o
       <header className="flex flex-col gap-1">
         <h3 id={headingId} className="flex flex-wrap items-baseline gap-x-2 font-semibold">
           Paper {paper.index}
-          <span className="font-normal">· {paper.name ?? "No name found"}</span>
+          {name !== null && <span className="font-normal">· {name}</span>}
           {paper.section && <span className="font-normal text-muted">· {paper.section}</span>}
         </h3>
         <p className="text-sm text-muted">
@@ -224,10 +269,22 @@ function PaperCard({ paper, firstKeptPage, readings, describeFlag, onShowPage, o
             </Button>
             <span className="min-w-0 flex-1 basis-32 break-words text-sm text-muted empty:hidden">{readingText(readings[page - 1] ?? null)}</span>
             <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm sm:min-h-9">
-              <Input type="checkbox" checked={i === 0} disabled={page === firstKeptPage} onChange={() => onToggleStart(page)} />
+              <Input
+                id={pageControlId.start(page)}
+                type="checkbox"
+                checked={i === 0}
+                disabled={page === firstKeptPage}
+                onChange={() => onToggleStart(page)}
+              />
               New paper starts here<span className="sr-only"> (page {page})</span>
             </label>
-            <Button variant="ghost" size="sm" onClick={() => onLeaveOut(page)} aria-label={`Leave out page ${page}`}>
+            <Button
+              id={pageControlId.leaveOut(page)}
+              variant="ghost"
+              size="sm"
+              onClick={() => onLeaveOut(page)}
+              aria-label={`Leave out page ${page}`}
+            >
               Leave out
             </Button>
           </li>
@@ -244,7 +301,7 @@ interface GradeBarProps {
   pending: boolean;
   error: string | null;
   onGrade: () => void;
-  /** Null when the layout is the AI's own proposal (or the scan was split every N pages). */
+  /** Null when the layout is the AI's own proposal (or the AI never split the scan). */
   onReset: (() => void) | null;
 }
 
@@ -294,10 +351,12 @@ export interface SplitEveryFormProps {
   scanId: string;
   defaultPages: number;
   label: string;
+  /** Asked before the split is replaced, when that loses something (the teacher's unsaved changes). */
+  confirmMessage?: (pages: number) => string;
 }
 
 /** Splits the scan into papers of the same number of pages, replacing the current split. */
-export function SplitEveryForm({ scanId, defaultPages, label }: SplitEveryFormProps) {
+export function SplitEveryForm({ scanId, defaultPages, label, confirmMessage }: SplitEveryFormProps) {
   const runner = useActionRunner();
   const [pagesText, setPagesText] = useState(String(defaultPages));
   const [error, setError] = useState<string | null>(null);
@@ -311,6 +370,7 @@ export function SplitEveryForm({ scanId, defaultPages, label }: SplitEveryFormPr
       return;
     }
     setError(null);
+    if (confirmMessage && !window.confirm(confirmMessage(pages))) return;
     runner.run(() => splitScanEveryAction(scanId, pages));
   }
 
@@ -345,14 +405,20 @@ export function SplitEveryForm({ scanId, defaultPages, label }: SplitEveryFormPr
   );
 }
 
-/** Sends the scan to the AI again, from its first page. */
-export function RetryAiButton({ scanId }: { scanId: string }) {
+/** Sends the scan to the AI again, from its first page; `confirmMessage` is asked first. */
+export function RetryAiButton({ scanId, label = "Try the AI again", confirmMessage }: { scanId: string; label?: string; confirmMessage?: string }) {
   const runner = useActionRunner();
+
+  function retry() {
+    if (confirmMessage && !window.confirm(confirmMessage)) return;
+    runner.run(() => retryScanWithAiAction(scanId));
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <Button variant="secondary" className="self-start" disabled={runner.pending} onClick={() => runner.run(() => retryScanWithAiAction(scanId))}>
+      <Button variant="secondary" className="self-start" disabled={runner.pending} onClick={retry}>
         {runner.pending && <Spinner className="size-4" />}
-        Try the AI again
+        {label}
       </Button>
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
     </div>

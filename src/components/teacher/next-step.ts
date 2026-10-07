@@ -34,8 +34,10 @@ export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean
   if (a.counts.failed > 0) {
     return { text: `${plural(a.counts.failed, "paper")} failed to grade`, href: boardHref(a.id, "failed"), tone: "danger" };
   }
+  const scanStep = pendingScanStep(a);
+  if (scanStep) return scanStep;
   if (!o.studentsCanUpload) {
-    return a.counts.total === 0 ? { text: "Upload homework", href: `/teacher/assignments/${a.id}/upload`, tone: "info" } : null;
+    return a.counts.total === 0 ? { text: "Upload homework", href: uploadHref(a.id), tone: "info" } : null;
   }
   if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
   // Everything is graded and checked, but students still see only "received": the switch is on the assignment page.
@@ -43,5 +45,29 @@ export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean
   if (!a.released && a.counts.graded > 0 && inProgress === 0) {
     return { text: `Release feedback on ${plural(a.counts.graded, "graded paper")}`, href: boardHref(a.id, "all"), tone: "info" };
   }
+  return null;
+}
+
+function uploadHref(assignmentId: string): string {
+  return `/teacher/assignments/${assignmentId}/upload`;
+}
+
+/**
+ * A scan of the class's papers waiting for the teacher: no paper is made from it until they check its split. One
+ * that failed to split needs them too. One still being split is mentioned only while there are no papers to show.
+ */
+function pendingScanStep(a: DashboardAssignment): NextStep | null {
+  const { review, failed, splitting, firstReviewId } = a.scans;
+  if (review > 0) {
+    return {
+      text: review === 1 ? "Check the split of your scan" : `Check the split of ${review} scans`,
+      href: review === 1 && firstReviewId ? `/teacher/assignments/${a.id}/scans/${firstReviewId}` : uploadHref(a.id),
+      tone: "warning",
+    };
+  }
+  if (failed > 0) {
+    return { text: failed === 1 ? "A scan couldn't be split" : `${failed} scans couldn't be split`, href: uploadHref(a.id), tone: "danger" };
+  }
+  if (splitting > 0 && a.counts.total === 0) return { text: "Splitting your scan…", href: uploadHref(a.id), tone: "info" };
   return null;
 }

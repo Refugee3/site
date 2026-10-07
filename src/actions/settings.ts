@@ -2,7 +2,9 @@
 
 import { refresh } from "next/cache";
 import * as z from "zod";
+import { keySavedMessage } from "@/lib/api-key-messages";
 import { requireTeacher } from "@/lib/auth/dal";
+import { getConfig } from "@/lib/config";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
@@ -30,7 +32,7 @@ export async function saveApiKeyAction(_prev: ActionResult | null, fd: FormData)
   });
   if (!result.ok) return result;
   refresh();
-  return { ok: true, message: result.data.warning ?? "Key saved and checked. Grading uses it from now on." };
+  return { ok: true, message: result.data.warning ?? keySavedMessage(getConfig().aiMode) };
 }
 
 export async function removeApiKeyAction(): Promise<ActionResult> {

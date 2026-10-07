@@ -18,7 +18,10 @@ export interface LifecycleButtonsProps {
   keyApproved: boolean;
   released: boolean;
   needsReviewCount: number;
-  /** Off: only teachers upload, so there is nothing to open or close; only the feedback switch shows. */
+  /**
+   * Off: only teachers upload, so there is nothing to open; only the feedback switch shows, plus "Close submissions"
+   * for an assignment left open, which takes student uploads again as soon as they are turned on.
+   */
   studentsCanUpload: boolean;
 }
 
@@ -29,6 +32,7 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
   const release = useActionRunner();
 
   const setStatus = (to: "open" | "closed") => lifecycle.run(() => setAssignmentStatusAction(assignmentId, to));
+  const showSubmissions = studentsCanUpload || status === "open";
   // The switch moves at once; it settles on the stored value when the action and refresh finish (or fail).
   const [shownReleased, setShownReleased] = useOptimistic(released);
   const setReleased = (next: boolean) =>
@@ -40,10 +44,10 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
   return (
     <section aria-labelledby="lifecycle-heading" className="flex flex-col gap-4 rounded-xl border border-line bg-surface p-4 shadow-sm">
       <h2 id="lifecycle-heading" className="text-sm font-semibold text-muted">
-        {studentsCanUpload ? "Submissions and feedback" : "Feedback to students"}
+        {showSubmissions ? "Submissions and feedback" : "Feedback to students"}
       </h2>
 
-      {studentsCanUpload && (
+      {showSubmissions && (
         <div className="flex flex-col gap-2">
           {status === "open" ? (
             <Button variant="secondary" disabled={lifecycle.pending} onClick={() => setStatus("closed")}>
@@ -56,6 +60,12 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
               {status === "draft" ? "Open for students" : "Reopen submissions"}
             </Button>
           )}
+          {!studentsCanUpload && (
+            <p className="text-sm text-muted">
+              Student uploads are turned off in <Link href="/teacher/settings">Settings</Link>, but this assignment is still
+              open: students can hand in work again as soon as they&apos;re turned on. Close it if they shouldn&apos;t.
+            </p>
+          )}
           {!keyApproved && status !== "open" && (
             <p className="text-sm text-muted">
               Check and save the <Link href={`/teacher/assignments/${assignmentId}/key`}>answer key</Link> before opening.
@@ -65,7 +75,7 @@ export function LifecycleButtons(props: LifecycleButtonsProps) {
         </div>
       )}
 
-      <div className={cx("flex flex-col gap-2", studentsCanUpload && "border-t border-line pt-4")}>
+      <div className={cx("flex flex-col gap-2", showSubmissions && "border-t border-line pt-4")}>
         <label className="flex min-h-11 cursor-pointer items-center gap-3">
           <input
             type="checkbox"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { removeApiKeyAction, saveApiKeyAction } from "@/actions/settings";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
 import { SubmitButton } from "@/components/ui/submit-button";
+import { isKeySavedMessage, keySavedMessage, removeKeyQuestion } from "@/lib/api-key-messages";
 import type { ActionResult, TeacherSettingsView, WorkerStatus } from "@/lib/types";
 import { useActionRunner } from "./use-action-runner";
 
@@ -20,9 +21,6 @@ export interface ApiKeyFormProps {
   model: string;
   keyIssue: WorkerStatus["keyIssue"];
 }
-
-// saveApiKeyAction's message when the key was saved and checked; any other success message is a warning.
-const SAVED_AND_CHECKED = "Key saved and checked. Grading uses it from now on.";
 
 /**
  * The app's Anthropic API key: which key grading uses, and a form to save a new one. The key is only ever
@@ -35,15 +33,18 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
   const [removed, setRemoved] = useState(false);
   const saveResult = removed ? null : state;
   const fieldError = saveResult && !saveResult.ok ? saveResult.fieldErrors?.apiKey : undefined;
-  const formError = saveResult && !saveResult.ok && !fieldError ? saveResult.error : null;
-  const notice = removed ? "Saved key removed." : saveResult?.ok ? (saveResult.message ?? SAVED_AND_CHECKED) : null;
-  const warning = !removed && notice !== null && notice !== SAVED_AND_CHECKED;
+  // Also for a field error (a rejected key): the alert is announced, while the list under the field is not.
+  const formError = saveResult && !saveResult.ok ? saveResult.error : null;
+  const notice = removed ? "Saved key removed." : saveResult?.ok ? (saveResult.message ?? keySavedMessage(aiMode)) : null;
+  const warning = !removed && notice !== null && !isKeySavedMessage(notice);
+  // React clears the uncontrolled input after each save; a rejected key puts the focus back in it.
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (fieldError) inputRef.current?.focus();
+  }, [fieldError]);
 
   function removeKey() {
-    const question = apiKey.envKeySet
-      ? "Remove the saved key? Grading switches to the server's ANTHROPIC_API_KEY."
-      : "Remove the saved key? Grading pauses until a key is added again.";
-    if (!window.confirm(question)) return;
+    if (!window.confirm(removeKeyQuestion({ aiMode, envKeySet: apiKey.envKeySet, unreadable: apiKey.unreadable }))) return;
     remove.run(removeApiKeyAction, () => setRemoved(true));
   }
 
@@ -54,7 +55,7 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
         again in full. Create one in the Anthropic Console under API keys.
       </p>
 
-      <KeyStatus apiKey={apiKey} aiMode={aiMode} keyIssue={keyIssue} />
+      <KeyStatus apiKey={apiKey} aiMode={aiMode} model={model} keyIssue={keyIssue} />
 
       <form action={formAction} onSubmit={() => setRemoved(false)} className="flex flex-col gap-3">
         {formError && <Alert tone="danger">{formError}</Alert>}
@@ -65,6 +66,7 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
           error={fieldError}
         >
           <Input
+            ref={inputRef}
             id="api-key"
             type="password"
             name="apiKey"
@@ -75,7 +77,8 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
         </Field>
         <div className="flex flex-wrap items-center gap-3">
           <SubmitButton pendingText="Checking…">Save key</SubmitButton>
-          {apiKey.source === "app" && (
+          {/* A key that can't be read any more can be removed too, e.g. to keep grading with ANTHROPIC_API_KEY. */}
+          {(apiKey.source === "app" || apiKey.unreadable) && (
             <Button variant="secondary" disabled={remove.pending} onClick={removeKey}>
               {remove.pending && <Spinner className="size-4" />}
               Remove saved key
@@ -96,7 +99,7 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
 }
 
 /** Which key grading uses right now; the first problem found wins. */
-function KeyStatus({ apiKey, aiMode, keyIssue }: Omit<ApiKeyFormProps, "model">) {
+function KeyStatus({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps) {
   if (aiMode === "fake") {
     return (
       <>
@@ -104,15 +107,28 @@ function KeyStatus({ apiKey, aiMode, keyIssue }: Omit<ApiKeyFormProps, "model">)
           This server runs the practice grader (AI_MODE=fake), so no key is used. A key saved here is used once AI_MODE=claude.
         </Alert>
         {/* Still shown, so a teacher can tell which key is saved (and remove it) before switching to AI_MODE=claude. */}
-        {apiKey.source === "app" && <SavedKey apiKey={apiKey} />}
+        {apiKey.source === "app" && <SavedKey apiKey={apiKey} model={model} />}
+        {apiKey.unreadable && (
+          <p className="text-sm">
+            A key was saved here, but this server&apos;s secret changed since, so it can&apos;t be read. Enter it again or remove it.
+          </p>
+        )}
       </>
     );
   }
   if (apiKey.unreadable) {
     return (
-      <Alert tone="danger" title="The saved key can't be read">
-        This server&apos;s secret changed since the key was saved, so it can&apos;t be decrypted. Enter the key again.
-      </Alert>
+      <>
+        <Alert tone="danger" title="The saved key can't be read">
+          This server&apos;s secret changed since the key was saved, so it can&apos;t be decrypted. Enter the key again, or
+          remove it.
+        </Alert>
+        <p className="text-sm">
+          {apiKey.source === "env"
+            ? "In use meanwhile: the server's ANTHROPIC_API_KEY setting, until you enter the key again or remove the saved one."
+            : "Papers wait in the queue until you add a key."}
+        </p>
+      </>
     );
   }
   if (keyIssue === "rejected") {
@@ -124,7 +140,7 @@ function KeyStatus({ apiKey, aiMode, keyIssue }: Omit<ApiKeyFormProps, "model">)
   }
   switch (apiKey.source) {
     case "app":
-      return <SavedKey apiKey={apiKey} />;
+      return <SavedKey apiKey={apiKey} model={model} />;
     case "env":
       return <p className="text-sm">In use: the server&apos;s ANTHROPIC_API_KEY setting. A key saved here takes its place.</p>;
     case "none":
@@ -136,16 +152,25 @@ function KeyStatus({ apiKey, aiMode, keyIssue }: Omit<ApiKeyFormProps, "model">)
   }
 }
 
-/** The key saved on this page: masked, who saved it and when, and whether Anthropic has checked it. */
-function SavedKey({ apiKey }: { apiKey: ApiKeyFormProps["apiKey"] }) {
+/**
+ * The key saved on this page: masked, who saved it and when, and whether it is confirmed to work: a key Anthropic
+ * couldn't check, or that couldn't use the model, when it was saved is confirmed by the first AI call that succeeds.
+ */
+function SavedKey({ apiKey, model }: { apiKey: ApiKeyFormProps["apiKey"]; model: string }) {
   return (
     <div className="flex flex-col gap-1 text-sm">
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="break-words">
           In use: the key saved here — <span className="font-mono">{apiKey.masked}</span>
         </span>
-        {apiKey.check === "unverified" && <Badge tone="warning">Not checked yet</Badge>}
+        {apiKey.check === "unverified" && <Badge tone="warning">Not confirmed yet</Badge>}
       </p>
+      {apiKey.check === "unverified" && (
+        <p className="text-muted">
+          When it was saved, Anthropic couldn&apos;t confirm that this key can use <span className="font-mono">{model}</span>. This
+          clears once a paper is graded with it.
+        </p>
+      )}
       {apiKey.setAt !== null && (
         <p className="text-muted">
           Saved by {apiKey.setByName ?? "a teacher"} on <LocalTime ms={apiKey.setAt} />.

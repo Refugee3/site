@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import { deleteAssignmentAction, rotateShareCodeAction } from "@/actions/assignments";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { cx } from "@/components/ui/cx";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -14,14 +15,16 @@ import { useActionRunner } from "./use-action-runner";
 export interface DangerZoneProps {
   assignmentId: string;
   title: string;
+  /** Off: student codes are hidden everywhere, so there is no code to replace. */
+  studentsCanUpload: boolean;
 }
 
-/** Actions that break existing links or lose data: a new student code, and deleting the assignment. */
-export function DangerZone({ assignmentId, title }: DangerZoneProps) {
+/** Actions that break existing links or lose data: a new student code (while students can upload), and deleting the assignment. */
+export function DangerZone({ assignmentId, title, studentsCanUpload }: DangerZoneProps) {
   return (
     <div className="flex flex-col divide-y divide-line">
-      <RotateCode assignmentId={assignmentId} />
-      <DeleteAssignment assignmentId={assignmentId} title={title} />
+      {studentsCanUpload && <RotateCode assignmentId={assignmentId} />}
+      <DeleteAssignment assignmentId={assignmentId} title={title} separated={studentsCanUpload} />
     </div>
   );
 }
@@ -57,7 +60,8 @@ function RotateCode({ assignmentId }: { assignmentId: string }) {
   );
 }
 
-function DeleteAssignment({ assignmentId, title }: DangerZoneProps) {
+/** `separated`: below another section, so it keeps its distance from the divider. */
+function DeleteAssignment({ assignmentId, title, separated }: { assignmentId: string; title: string; separated: boolean }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(
     deleteAssignmentAction.bind(null, assignmentId),
     null,
@@ -68,7 +72,7 @@ function DeleteAssignment({ assignmentId, title }: DangerZoneProps) {
   const matches = confirmTitle.trim() === title.trim();
 
   return (
-    <form action={formAction} className="flex flex-col gap-3 pt-6">
+    <form action={formAction} className={cx("flex flex-col gap-3", separated && "pt-6")}>
       <h3 className="font-semibold text-danger-700">Delete this assignment</h3>
       <p className="text-sm text-muted">
         Deletes the answer key, every paper, all grades and feedback, and the students&apos; receipt links. This can&apos;t

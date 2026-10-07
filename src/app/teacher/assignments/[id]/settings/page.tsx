@@ -4,6 +4,7 @@ import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { DangerZone } from "@/components/teacher/danger-zone";
 import { Card } from "@/components/ui/card";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
+import { studentUploadsEnabled } from "@/lib/services/settings";
 import { getSettingsView } from "@/lib/services/views";
 import type { AssignmentFormInput, SettingsView } from "@/lib/types";
 
@@ -12,6 +13,7 @@ export default async function SettingsPage(props: PageProps<"/teacher/assignment
   const { id } = await props.params;
   const { assignment } = await requireOwnedAssignment(id);
   const view = getSettingsView(assignment);
+  const studentsCanUpload = studentUploadsEnabled();
   const defaults: AssignmentFormInput = {
     title: assignment.title,
     instructions: assignment.instructions,
@@ -24,13 +26,18 @@ export default async function SettingsPage(props: PageProps<"/teacher/assignment
   return (
     <div className="flex w-full max-w-3xl flex-col gap-6">
       <Card title="Settings">
-        <AssignmentForm mode="edit" action={updateAssignmentAction.bind(null, assignment.id)} defaults={defaults} />
+        <AssignmentForm
+          mode="edit"
+          action={updateAssignmentAction.bind(null, assignment.id)}
+          defaults={defaults}
+          studentsCanUpload={studentsCanUpload}
+        />
       </Card>
       <Card title="AI usage">
         <Usage usage={view.usage} />
       </Card>
       <Card title="Danger zone">
-        <DangerZone assignmentId={assignment.id} title={assignment.title} />
+        <DangerZone assignmentId={assignment.id} title={assignment.title} studentsCanUpload={studentsCanUpload} />
       </Card>
     </div>
   );

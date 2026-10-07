@@ -23,7 +23,8 @@ export function PreferencesForm({ preferences }: { preferences: string }) {
   const [text, setText, expectSaved] = useSyncedState(preferences);
   const dirty = text !== preferences;
   const fieldError = state && !state.ok ? state.fieldErrors?.gradingPreferences : undefined;
-  const formError = state && !state.ok && !fieldError ? state.error : null;
+  // Also for a field error: the alert is announced, while the list under the field is not.
+  const formError = state && !state.ok ? state.error : null;
   // "Saved" shows until the next edit.
   const savedMessage = state?.ok && !dirty ? state.message : null;
 

@@ -8,12 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult, AssignmentFormInput, GradingMode } from "@/lib/types";
+import { instructionsField } from "./assignment-form-text";
 import { useSyncedState } from "./use-synced-state";
 
 export interface AssignmentFormProps {
   mode: "create" | "edit";
   action: (prev: ActionResult | null, fd: FormData) => Promise<ActionResult>;
   defaults: AssignmentFormInput;
+  /** Off: there is no student upload page to show the instructions on. */
+  studentsCanUpload: boolean;
 }
 
 const GRADING_MODE_OPTIONS: Array<{ value: GradingMode; label: string; description: string }> = [
@@ -46,7 +49,7 @@ function toDraft(input: AssignmentFormInput): FormDraft {
 const sameDraft = (a: FormDraft, b: FormDraft) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Create and settings form. Field names are the AssignmentFormInput keys the actions parse. */
-export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) {
+export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: AssignmentFormProps) {
   const [state, dispatch, pending] = useActionState(action, null);
   // Controlled and submitted without React's automatic form reset, so a rejected save keeps every choice.
   const initial = toDraft(defaults);
@@ -83,9 +86,9 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
       </Field>
 
       <Field
-        label="Instructions for students (optional)"
+        label={instructionsField(studentsCanUpload).label}
         htmlFor="assignment-instructions"
-        hint="Shown on the upload page, under the title."
+        hint={instructionsField(studentsCanUpload).hint}
         error={errors.instructions}
       >
         <Textarea
