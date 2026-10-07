@@ -1,4 +1,5 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { AppError } from "@/lib/errors";
 
 interface ScryptParams {
   N: number;
@@ -46,7 +47,54 @@ function parseStored(stored: string): { params: ScryptParams; salt: Buffer; hash
 }
 
 function deriveKey(pw: string, salt: Buffer, params: ScryptParams, keyLength: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+  return withScryptSlot(() => new Promise((resolve, reject) => {
     scrypt(pw, salt, keyLength, { ...params, maxmem: MAX_MEM }, (err, key) => (err ? reject(err) : resolve(key)));
-  });
+  }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Concurrency limit (process-wide: route handlers and server actions may load this module separately)
+//
+// scrypt runs on libuv's thread pool (4 threads by default), which file reads and writes share. A flood of
+// logins (each one costs a full hash, even for unknown emails) must not stall uploads and PDF reads, so at
+// most 2 hashes run at once, and once too many are waiting, further ones are refused at once.
+
+const MAX_CONCURRENT_HASHES = 2;
+const MAX_WAITING_HASHES = 32;
+
+interface HashSlots {
+  active: number;
+  waiting: Array<() => void>;
+}
+
+const HASH_SLOTS = Symbol.for("pag.hashSlots");
+
+function hashSlots(): HashSlots {
+  const slots = globalThis as unknown as Record<symbol, HashSlots | undefined>;
+  return (slots[HASH_SLOTS] ??= { active: 0, waiting: [] });
+}
+
+async function withScryptSlot<T>(work: () => Promise<T>): Promise<T> {
+  const slots = hashSlots();
+  if (slots.active < MAX_CONCURRENT_HASHES) {
+    slots.active++;
+  } else {
+    if (slots.waiting.length >= MAX_WAITING_HASHES) {
+      throw new AppError("rate_limited", "The server is busy. Try again in a moment.", { retryAfterMs: 5_000 });
+    }
+    await new Promise<void>((resolve) => slots.waiting.push(resolve)); // the releasing call hands its slot over
+  }
+  try {
+    return await work();
+  } finally {
+    const next = slots.waiting.shift();
+    if (next) next();
+    else slots.active--;
+  }
+}
+
+/** How many hashes are running and waiting right now. */
+export function hashLoadForTests(): { active: number; waiting: number } {
+  const slots = hashSlots();
+  return { active: slots.active, waiting: slots.waiting.length };
 }

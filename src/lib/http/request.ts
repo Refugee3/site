@@ -68,7 +68,7 @@ export async function formFiles(fd: FormData, field: string, max: number): Promi
   return Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
 }
 
-/** Step 5 of every upload handler (§2.2): the body within budget, its files, and their summed size within MAX_UPLOAD_MB. */
+/** Run by every upload handler after its cheap checks: the body within budget, its files, and their summed size within MAX_UPLOAD_MB. */
 export async function readUploadedFiles(req: Request, field: string, maxFiles: number): Promise<UploadedFile[]> {
   const { maxUploadBytes } = getConfig();
   const fd = await readLimitedFormData(req, maxUploadBytes + MULTIPART_OVERHEAD_BYTES);
@@ -105,7 +105,7 @@ export function assertSameOrigin(req: Request, o: { allowMissing?: boolean } = {
 
 /**
  * The rightmost X-Forwarded-For entry: the address the nearest proxy (or Next itself) saw. Best effort
- * without a proxy, since clients can send the header themselves (§8 "IP trust").
+ * without a proxy, since clients can send the header themselves.
  */
 export function clientIp(h: Headers): string | null {
   const ip = h.get("x-forwarded-for")?.split(",").at(-1)?.trim();

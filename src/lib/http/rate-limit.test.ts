@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { AppError } from "@/lib/errors";
 import {
-  checkCodeLookup, checkLogin, checkSignup, checkStudentUpload, hit, resetRateLimitsForTests,
+  checkCodeLookup, checkLogin, checkSignup, checkStudentUpload, countCodeLookupMiss, countStudentSubmission, hit,
+  resetRateLimitsForTests,
 } from "@/lib/http/rate-limit";
 
 const T0 = 1_700_000_000_000;
@@ -66,67 +67,161 @@ describe("hit", () => {
   });
 });
 
-describe("checkStudentUpload", () => {
-  it("allows 60 uploads per IP per 10 minutes", () => {
-    const error = refusalAfter(60, () => checkStudentUpload("203.0.113.7", "K7M4QX"));
+/** Calls `check` until it refuses, at most `max` times; returns how many calls passed. */
+function passesBeforeRefusal(check: () => void, max = 10_000): number {
+  for (let n = 0; n < max; n++) {
+    try {
+      check();
+    } catch (e) {
+      expect(e).toMatchObject({ code: "rate_limited" });
+      return n;
+    }
+  }
+  return max;
+}
+
+describe("checkCodeLookup and countCodeLookupMiss", () => {
+  it("count only misses: successful lookups from one address never trip the limit", () => {
+    for (let i = 0; i < 500; i++) checkCodeLookup("203.0.113.7");
+    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
+  });
+
+  it("refuse every lookup from an address after 60 misses in a minute, then forget them", () => {
+    for (let i = 0; i < 59; i++) countCodeLookupMiss("203.0.113.7");
+    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
+    countCodeLookupMiss("203.0.113.7");
+    const error = refusalAfter(0, () => checkCodeLookup("203.0.113.7"));
+    expect(error).toMatchObject({ code: "rate_limited", extra: { retryAfterMs: MINUTE } });
+    expect(error?.message).toContain("1 minute.");
+    expect(() => checkCodeLookup("203.0.113.8")).not.toThrow();
+
+    clock += MINUTE;
+    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
+  });
+
+  it("put lookups without an IP in one shared bucket", () => {
+    for (let i = 0; i < 60; i++) countCodeLookupMiss(null);
+    expect(() => checkCodeLookup(null)).toThrow(AppError);
+  });
+});
+
+describe("checkStudentUpload and countStudentSubmission", () => {
+  it("allow 120 uploads per address and assignment per 10 minutes (one class behind one NAT)", () => {
+    const error = refusalAfter(120, () => checkStudentUpload("203.0.113.7", "K7M4QX"));
     expect(error).toMatchObject({ code: "rate_limited", status: 429, extra: { retryAfterMs: 10 * MINUTE } });
     expect(error?.message).toContain("10 minutes");
+    expect(() => checkStudentUpload("203.0.113.7", "ABCDEF")).not.toThrow();
     expect(() => checkStudentUpload("203.0.113.8", "K7M4QX")).not.toThrow();
 
     clock += 10 * MINUTE;
     expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
   });
 
-  it("allows 300 uploads per assignment per hour, whatever the IPs", () => {
+  it("allow 300 uploads per address per 10 minutes over all assignments (several classes behind one NAT)", () => {
     let n = 0;
-    const error = refusalAfter(300, () => checkStudentUpload(`ip-${n++}`, "K7M4QX"));
-    expect(error).toMatchObject({ code: "rate_limited", extra: { retryAfterMs: 60 * MINUTE } });
-    expect(() => checkStudentUpload("203.0.113.7", "ABCDEF")).not.toThrow();
+    expect(passesBeforeRefusal(() => checkStudentUpload("203.0.113.7", `CODE${n++ % 5}`))).toBe(300);
+    expect(() => checkStudentUpload("203.0.113.8", "CODE0")).not.toThrow();
   });
 
-  it("allows 1000 anonymous uploads per hour in all", () => {
+  it("do not charge the shared budgets for uploads that create no submission", () => {
     let n = 0;
-    const error = refusalAfter(1000, () => checkStudentUpload(`ip-${n}`, `CODE${n++ % 4}`));
-    expect(error).toMatchObject({ code: "rate_limited" });
+    for (let i = 0; i < 2000; i++) checkStudentUpload(`ip-${n++}`, "K7M4QX");
+    expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
   });
 
-  it("puts uploads without an IP in one shared bucket", () => {
-    expect(refusalAfter(60, () => checkStudentUpload(null, "K7M4QX"))).toMatchObject({ code: "rate_limited" });
+  it("allow 300 new submissions per assignment per hour, whatever the addresses, and refuse before reading", () => {
+    for (let i = 0; i < 299; i++) countStudentSubmission("K7M4QX");
+    expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
+    countStudentSubmission("K7M4QX");
+    expect(refusalAfter(0, () => checkStudentUpload("203.0.113.9", "K7M4QX")))
+      .toMatchObject({ code: "rate_limited", extra: { retryAfterMs: 60 * MINUTE } });
+    expect(() => checkStudentUpload("203.0.113.9", "ABCDEF")).not.toThrow();
   });
 
-  it("counts a refused upload against no rule at all", () => {
-    let n = 0;
-    refusalAfter(300, () => checkStudentUpload(`ip-${n++}`, "K7M4QX"));
-    for (let i = 0; i < 100; i++) expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).toThrow(AppError);
-    // Those refusals used none of this IP's own allowance.
-    expect(refusalAfter(60, () => checkStudentUpload("203.0.113.7", "ABCDEF"))).toMatchObject({ code: "rate_limited" });
+  it("allow 1000 new submissions per hour in all", () => {
+    for (let i = 0; i < 1000; i++) countStudentSubmission(`CODE${i % 4}`);
+    expect(refusalAfter(0, () => checkStudentUpload("203.0.113.7", "OTHER1"))).toMatchObject({ code: "rate_limited" });
+  });
+
+  it("count a refused upload against no rule at all", () => {
+    for (let i = 0; i < 300; i++) countStudentSubmission("K7M4QX");
+    for (let i = 0; i < 200; i++) expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).toThrow(AppError);
+    // Those refusals used none of this address's own allowance.
+    expect(refusalAfter(120, () => checkStudentUpload("203.0.113.7", "ABCDEF"))).toMatchObject({ code: "rate_limited" });
+  });
+
+  it("put uploads without an IP in one shared bucket", () => {
+    expect(refusalAfter(120, () => checkStudentUpload(null, "K7M4QX"))).toMatchObject({ code: "rate_limited" });
   });
 });
 
 describe("checkLogin", () => {
-  it("allows 10 attempts per email per 15 minutes, from any IP and in any spelling", () => {
+  /** A failed login: counted, and never given back. */
+  const fail = (ip: string | null, email: string) => void checkLogin(ip, email);
+
+  it("allows 10 failures per email and address per 15 minutes, in any spelling of the email", () => {
     let n = 0;
     const spellings = ["maria@example.com", " Maria@Example.com "];
-    const error = refusalAfter(10, () => checkLogin(`ip-${n}`, spellings[n++ % 2]));
+    const error = refusalAfter(10, () => fail("6.6.6.6", spellings[n++ % 2]));
     expect(error).toMatchObject({ code: "rate_limited", extra: { retryAfterMs: 15 * MINUTE } });
-    expect(() => checkLogin("ip-x", "other@example.com")).not.toThrow();
+    expect(() => checkLogin("6.6.6.6", "other@example.com")).not.toThrow();
   });
 
-  it("allows 30 attempts per IP per 15 minutes", () => {
+  it("does not let failures from one address lock the teacher out from another", () => {
+    for (let i = 0; i < 10; i++) fail("6.6.6.6", "teacher@school.org");
+    expect(() => checkLogin("6.6.6.6", "teacher@school.org")).toThrow(AppError);
+    expect(() => checkLogin("1.2.3.4", "Teacher@School.org")).not.toThrow();
+  });
+
+  it("caps failures per email at 100 per 15 minutes, however many addresses they come from", () => {
     let n = 0;
-    expect(refusalAfter(30, () => checkLogin("203.0.113.7", `user${n++}@example.com`))).toMatchObject({ code: "rate_limited" });
+    expect(passesBeforeRefusal(() => fail(`ip-${n++ % 50}`, "teacher@school.org"))).toBe(100);
+    expect(() => checkLogin("1.2.3.4", "teacher@school.org")).toThrow(AppError);
+    expect(() => checkLogin("1.2.3.4", "other@school.org")).not.toThrow();
+  });
+
+  it("allows 30 failures per address per 15 minutes", () => {
+    let n = 0;
+    expect(refusalAfter(30, () => fail("203.0.113.7", `user${n++}@example.com`))).toMatchObject({ code: "rate_limited" });
+  });
+
+  it("gives refunded attempts back, so successful logins use up nothing", () => {
+    for (let i = 0; i < 200; i++) checkLogin("203.0.113.7", "maria@example.com").refund();
+    for (let i = 0; i < 9; i++) fail("203.0.113.7", "maria@example.com");
+    expect(() => checkLogin("203.0.113.7", "maria@example.com")).not.toThrow();
+    expect(() => checkLogin("203.0.113.7", "maria@example.com")).toThrow(AppError);
+  });
+
+  it("refunds an attempt only once, and not into a later window", () => {
+    const attempt = checkLogin("203.0.113.7", "maria@example.com");
+    for (let i = 0; i < 5; i++) fail("203.0.113.7", "maria@example.com");
+    attempt.refund();
+    attempt.refund();
+    expect(refusalAfter(5, () => fail("203.0.113.7", "maria@example.com"))).toMatchObject({ code: "rate_limited" });
+
+    const late = checkLogin("198.51.100.1", "late@example.com");
+    clock += 15 * MINUTE;
+    for (let i = 0; i < 10; i++) fail("198.51.100.1", "late@example.com");
+    late.refund(); // its window has ended; the new window keeps all 10
+    expect(() => checkLogin("198.51.100.1", "late@example.com")).toThrow(AppError);
   });
 });
 
-describe("checkSignup and checkCodeLookup", () => {
-  it("allow 5 signups per IP per hour", () => {
-    expect(refusalAfter(5, () => checkSignup("203.0.113.7"))).toMatchObject({ extra: { retryAfterMs: 60 * MINUTE } });
+describe("checkSignup", () => {
+  it("allows 5 signups per address per hour", () => {
+    expect(refusalAfter(5, () => checkSignup("203.0.113.7").refund())).toMatchObject({ extra: { retryAfterMs: 60 * MINUTE } });
     expect(() => checkSignup("203.0.113.8")).not.toThrow();
   });
 
-  it("allow 60 code lookups per IP per minute", () => {
-    const error = refusalAfter(60, () => checkCodeLookup("203.0.113.7"));
-    expect(error).toMatchObject({ extra: { retryAfterMs: MINUTE } });
-    expect(error?.message).toContain("1 minute.");
+  it("allows 20 wrong signup codes per hour in all, whatever the addresses", () => {
+    let n = 0;
+    const error = refusalAfter(20, () => void checkSignup(`ip-${n++}`));
+    expect(error).toMatchObject({ code: "rate_limited", extra: { retryAfterMs: 60 * MINUTE } });
+    expect(error?.message).toContain("Too many sign-up attempts.");
+  });
+
+  it("does not count refunded attempts (anything but a wrong code) against the code budget", () => {
+    for (let i = 0; i < 100; i++) checkSignup(`ip-${i}`).refund();
+    expect(() => checkSignup("203.0.113.7")).not.toThrow();
   });
 });

@@ -8,8 +8,10 @@ function allowedOrigins(): string[] | undefined {
 
 const SECURITY_HEADERS = [
   { key: "X-Content-Type-Options", value: "nosniff" },
-  // Receipt links carry tokens; keep them out of Referer.
-  { key: "Referrer-Policy", value: "no-referrer" },
+  // Receipt links carry tokens; keep them out of every cross-origin Referer. Not "no-referrer": under it,
+  // browsers send "Origin: null" on plain form posts, and Next then rejects server-action forms submitted
+  // before hydration (login, logout, delete) as cross-origin.
+  { key: "Referrer-Policy", value: "same-origin" },
   // Our own pages embed PDFs in same-origin iframes.
   { key: "X-Frame-Options", value: "SAMEORIGIN" },
   // No object-src 'none': Chromium's PDF viewer counts as plugin content and would blank the PDF iframes.

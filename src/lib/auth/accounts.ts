@@ -3,9 +3,10 @@ import * as z from "zod";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { countTeachers, findTeacherAuthByEmail, insertTeacher } from "@/lib/db/repos/teachers";
-import { AppError } from "@/lib/errors";
+import { AppError, isAppError } from "@/lib/errors";
 import { sha256Hex } from "@/lib/ids";
 import { DUMMY_HASH, hashPassword, verifyPassword } from "@/lib/auth/password";
+import { checkLogin, checkSignup } from "@/lib/http/rate-limit";
 import { parseInput } from "@/lib/http/validation";
 import type { Teacher } from "@/lib/types";
 
@@ -18,15 +19,42 @@ const SignupSchema = z.object({
   code: z.string().trim().nullable(),
 });
 
-/** The first teacher signs up freely; everyone after needs TEACHER_SIGNUP_CODE, and without one signups are closed. */
+/**
+ * With TEACHER_SIGNUP_CODE set, every signup needs it, the first one included. Without it, only the first
+ * teacher can sign up and signups are closed after that.
+ */
 export function signupPolicy(): SignupPolicy {
-  if (countTeachers() === 0) return "open_first";
-  return getConfig().teacherSignupCode !== null ? "code_required" : "closed";
+  if (getConfig().teacherSignupCode !== null) return "code_required";
+  return countTeachers() === 0 ? "open_first" : "closed";
+}
+
+/** True until the first teacher account exists. */
+export function isFirstSignup(): boolean {
+  return countTeachers() === 0;
+}
+
+/**
+ * `registerTeacher` behind the signup limits (`checkSignup`, by the caller's IP): only an attempt that
+ * fails on a wrong signup code uses up the server-wide budget of code guesses.
+ */
+export async function signUpTeacher(
+  ip: string | null,
+  i: { email: string; displayName: string; password: string; code: string | null },
+): Promise<Teacher> {
+  const codeGuess = checkSignup(ip);
+  try {
+    const teacher = await registerTeacher(i);
+    codeGuess.refund();
+    return teacher;
+  } catch (e) {
+    if (!isAppError(e) || e.code !== "bad_signup_code") codeGuess.refund();
+    throw e;
+  }
 }
 
 /**
  * Creates a teacher account. The policy is checked again inside the transaction that inserts, so two
- * simultaneous "first teacher" signups cannot both skip the code.
+ * simultaneous "first teacher" signups (no code configured) cannot both get in.
  */
 export async function registerTeacher(i: { email: string; displayName: string; password: string; code: string | null }): Promise<Teacher> {
   const input = parseInput(SignupSchema, i);
@@ -52,6 +80,24 @@ function matchesSignupCode(code: string | null): boolean {
   const expected = getConfig().teacherSignupCode;
   if (!code || expected === null) return false;
   return timingSafeEqual(Buffer.from(sha256Hex(code)), Buffer.from(sha256Hex(expected)));
+}
+
+/**
+ * `authenticateTeacher` behind the login limits (`checkLogin`, by the caller's IP). The attempt is counted
+ * before the slow check, so a burst of concurrent guesses cannot all slip past, and given back unless the
+ * credentials are wrong: only failures use up the limits.
+ */
+export async function logInTeacher(ip: string | null, email: string, password: string): Promise<Teacher | null> {
+  const loginAttempt = checkLogin(ip, email);
+  let teacher: Teacher | null;
+  try {
+    teacher = await authenticateTeacher(email, password);
+  } catch (e) {
+    loginAttempt.refund();
+    throw e;
+  }
+  if (teacher) loginAttempt.refund();
+  return teacher;
 }
 
 /** The teacher for these credentials, or null. Unknown emails still pay for a hash check (against DUMMY_HASH). */

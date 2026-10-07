@@ -11,7 +11,7 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/teacher/ass
     const teacher = await requireRouteTeacher();
     assertSameOrigin(req);
     const assignment = ownedAssignmentOr404((await ctx.params).id, teacher);
-    // Checked before reading the body (§8); ingestTeacherUpload checks again.
+    // Checked before reading the body, so a refused upload is never read; ingestTeacherUpload checks again.
     if (!loadKeyState(assignment.id).approved) {
       throw new AppError("key_not_ready", "Approve the answer key before uploading papers.");
     }

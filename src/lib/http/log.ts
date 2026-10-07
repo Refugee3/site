@@ -1,6 +1,6 @@
 /**
  * Logs an unexpected error by class, code and stack frames only. Messages are left out because they
- * can quote user input, and logs must never carry names, PDFs or tokens (§8).
+ * can quote user input, and logs must never carry names, PDFs or tokens.
  */
 export function logUnexpectedError(context: string, err: unknown): void {
   console.error(`${context}: ${describeError(err)}`);

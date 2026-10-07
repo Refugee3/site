@@ -4,6 +4,8 @@ import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 import * as z from "zod";
 import { requireOwnedAssignment, requireOwnedSubmission } from "@/lib/auth/dal";
+import { formatPoints } from "@/lib/format";
+import { MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { parseInput } from "@/lib/http/validation";
 import {
@@ -16,14 +18,16 @@ import type { ActionResult } from "@/lib/types";
 const PointsCentiSchema = z
   .number("Enter the points as a number.")
   .int("Use at most two decimals.")
-  .min(0, "Points can't be negative.")
-  .max(100_000, "Points can be at most 1000.")
-  .nullable();
+  .min(0, "Points can't be negative.");
 
 const ItemOverrideSchema = z.object({
-  pointsCenti: PointsCentiSchema,
+  pointsCenti: PointsCentiSchema.max(MAX_ITEM_POINTS_CENTI, `Points can be at most ${formatPoints(MAX_ITEM_POINTS_CENTI)}.`).nullable(),
   feedback: z.string().max(2000, "Use at most 2000 characters.").nullable(),
+  whatStudentDid: z.string().max(1000, "Use at most 1000 characters.").nullable().optional(),
 });
+
+// A total override is not limited to one item's maximum: scoring clamps it to the key's total.
+const TotalOverrideSchema = PointsCentiSchema.nullable();
 
 // Length and section membership are checked by the services, which know the limits and the section list.
 const ItemIdSchema = z.string();
@@ -33,7 +37,7 @@ const IdentitySchema = z.object({ studentName: z.string(), sectionId: z.string()
 export async function saveItemOverrideAction(
   submissionId: string,
   itemId: string,
-  input: { pointsCenti: number | null; feedback: string | null },
+  input: { pointsCenti: number | null; feedback: string | null; whatStudentDid?: string | null },
 ): Promise<ActionResult> {
   const { submission } = await requireOwnedSubmission(submissionId);
   const result = await attempt(() =>
@@ -44,7 +48,7 @@ export async function saveItemOverrideAction(
 
 export async function setTotalOverrideAction(submissionId: string, pointsCenti: number | null): Promise<ActionResult> {
   const { submission } = await requireOwnedSubmission(submissionId);
-  const result = await attempt(() => setTotalOverride(submission, parseInput(PointsCentiSchema, pointsCenti)));
+  const result = await attempt(() => setTotalOverride(submission, parseInput(TotalOverrideSchema, pointsCenti)));
   if (result.ok) refresh();
   return result;
 }

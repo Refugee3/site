@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import { now } from "@/lib/clock";
@@ -7,11 +7,13 @@ import { findSessionTeacher } from "@/lib/db/repos/sessions";
 import { getSubmissionForTeacher } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
 import { isId } from "@/lib/ids";
+import { RETURN_TO_HEADER, safeNextPath, TEACHER_HOME } from "@/lib/auth/next-path";
 import { SESSION_COOKIE, sessionTokenHash } from "@/lib/auth/session";
 import type { Assignment, Submission, Teacher } from "@/lib/types";
 
 // The data access layer is the auth boundary (authentication.md): every teacher page, action and route
-// handler goes through it, because layouts are not re-checked on navigation and there is no proxy.
+// handler goes through it, because layouts are not re-checked on navigation. src/proxy.ts checks nothing;
+// it only passes the requested teacher page along, for the way back after logging in.
 
 /** The signed-in teacher, looked up once per request. */
 export const getCurrentTeacher = cache(async (): Promise<Teacher | null> => {
@@ -22,8 +24,12 @@ export const getCurrentTeacher = cache(async (): Promise<Teacher | null> => {
 // ---------------------------------------------------------------------------------------------
 // Pages and server actions: redirect() to log in, notFound() for anything not the teacher's own.
 
+/** Without a session, redirects to /login?next=<the teacher page asked for>, so logging in leads back there. */
 export async function requireTeacher(): Promise<Teacher> {
-  return (await getCurrentTeacher()) ?? redirect("/login");
+  const teacher = await getCurrentTeacher();
+  if (teacher) return teacher;
+  const back = safeNextPath((await headers()).get(RETURN_TO_HEADER));
+  redirect(back === TEACHER_HOME ? "/login" : `/login?next=${encodeURIComponent(back)}`);
 }
 
 export async function requireOwnedAssignment(id: string): Promise<{ teacher: Teacher; assignment: Assignment }> {
