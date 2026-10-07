@@ -1,16 +1,20 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { CopyButton } from "@/components/copy-button";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { buttonClasses } from "@/components/ui/button-styles";
 import { cx } from "@/components/ui/cx";
+import { useHydrated } from "@/components/ui/use-hydrated";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { formatBytes, isPdfFile } from "@/lib/client/upload-files";
 import { createTaskQueue } from "./task-queue";
 import { plural } from "./text";
 import { parseTeacherUploadResult } from "./upload-result";
+import { isRetryable, uploadErrorCode } from "./upload-retry";
+import { useLeaveGuard } from "./use-leave-guard";
 
 export interface BulkUploadProps {
   /** `/api/teacher/assignments/<id>/submissions` */
@@ -27,6 +31,8 @@ interface Entry {
   progress: number;
   receiptUrl: string | null;
   error: string | null;
+  /** The server's error code for a failed upload; null when no usable answer came back. */
+  code: string | null;
 }
 
 /** Two uploads at a time: quick for a stack of scans without flooding the server or a classroom connection. */
@@ -37,6 +43,8 @@ const PARALLEL_UPLOADS = 2;
  * they are added; each finished one shows its receipt link for the teacher to hand to the student.
  */
 export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
+  const router = useRouter();
+  const hydrated = useHydrated();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -45,9 +53,13 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   const controllers = useRef(new Map<number, AbortController>());
   const unmounted = useRef(false);
 
-  const busy = entries.some((entry) => entry.state === "waiting" || entry.state === "uploading");
+  const remaining = entries.filter((entry) => entry.state === "waiting" || entry.state === "uploading").length;
+  const busy = remaining > 0;
   const done = entries.filter((entry) => entry.state === "done");
   const failed = entries.filter((entry) => entry.state === "failed");
+  // Failures the same file would get again (a duplicate, the answer key, a broken PDF) are not offered a retry.
+  const retryable = failed.filter((entry) => isRetryable(entry.code));
+  const wasBusy = useRef(false);
 
   // Leaving the page stops what is in flight and what is still waiting.
   useEffect(() => {
@@ -59,12 +71,16 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
     };
   }, []);
 
+  useLeaveGuard(
+    busy,
+    `${plural(remaining, "upload")} ${remaining === 1 ? "hasn't" : "haven't"} finished. Leaving this page cancels ${remaining === 1 ? "it" : "them"}. Leave anyway?`,
+  );
+
+  // Once the queue drains, refresh the server-rendered counts (the header's paper count); this list stays as is.
   useEffect(() => {
-    if (!busy) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [busy]);
+    if (wasBusy.current && !busy && done.length > 0) router.refresh();
+    wasBusy.current = busy;
+  }, [busy, done.length, router]);
 
   function patch(id: number, change: Partial<Entry>) {
     setEntries((current) => current.map((entry) => (entry.id === id ? { ...entry, ...change } : entry)));
@@ -74,15 +90,21 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
     if (unmounted.current) return;
     const controller = new AbortController();
     controllers.current.set(entry.id, controller);
-    patch(entry.id, { state: "uploading", progress: 0, error: null });
+    patch(entry.id, { state: "uploading", progress: 0, error: null, code: null });
 
     const body = new FormData();
     body.append("file", entry.file, entry.file.name);
     try {
       const result = await uploadWithProgress(uploadUrl, body, (progress) => patch(entry.id, { progress }), controller.signal);
       const uploaded = result.status === 201 ? parseTeacherUploadResult(result.json) : null;
-      if (uploaded) patch(entry.id, { state: "done", receiptUrl: uploaded.receiptUrl });
-      else patch(entry.id, { state: "failed", error: result.status === 201 ? "The server sent an unexpected answer." : readUploadError(result).message });
+      if (uploaded) {
+        patch(entry.id, { state: "done", receiptUrl: uploaded.receiptUrl });
+      } else if (result.status === 201) {
+        patch(entry.id, { state: "failed", error: "The server sent an unexpected answer." });
+      } else {
+        const error = readUploadError(result);
+        patch(entry.id, { state: "failed", error: error.message, code: uploadErrorCode(result.status, error.code) });
+      }
     } catch (e) {
       const message = isAbortError(e) ? "Cancelled." : "The upload didn't go through. Check your connection and retry.";
       patch(entry.id, { state: "failed", error: message });
@@ -106,6 +128,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
       progress: 0,
       receiptUrl: null,
       error: null,
+      code: null,
     }));
     setEntries((current) => [...current, ...added]);
     enqueue(added);
@@ -124,8 +147,8 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   }
 
   function retryFailed() {
-    failed.forEach((entry) => patch(entry.id, { state: "waiting", error: null, progress: 0 }));
-    enqueue(failed);
+    retryable.forEach((entry) => patch(entry.id, { state: "waiting", error: null, code: null, progress: 0 }));
+    enqueue(retryable);
   }
 
   function clearFinished() {
@@ -149,12 +172,19 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
         )}
       >
         <label
-          aria-disabled={disabled || undefined}
+          aria-disabled={disabled || !hydrated || undefined}
           className={buttonClasses({
             className: "cursor-pointer focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
           })}
         >
-          <input type="file" multiple accept="application/pdf" disabled={disabled} onChange={onPick} className="sr-only" />
+          <input
+            type="file"
+            multiple
+            accept="application/pdf"
+            disabled={disabled || !hydrated}
+            onChange={onPick}
+            className="sr-only"
+          />
           Choose PDFs
         </label>
         <p className="text-sm text-muted">…or drop them here. One PDF per student; uploads start right away.</p>
@@ -178,9 +208,9 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {failed.length > 0 && (
+            {retryable.length > 0 && (
               <Button variant="secondary" size="sm" onClick={retryFailed}>
-                Retry failed ({failed.length})
+                Retry failed ({retryable.length})
               </Button>
             )}
             {done.length > 0 && <CopyButton value={allLinks} label="Copy all receipt links" />}

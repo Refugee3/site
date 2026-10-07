@@ -19,11 +19,14 @@ import { STATUS_LABEL } from "@/lib/format";
 import type { ReviewItemView, ReviewView } from "@/lib/types";
 import { boardHref, reviewHref } from "./board-helpers";
 import { IdentityForm } from "./identity-form";
-import { ItemCard } from "./item-card";
+import { ItemCard, itemFormKey } from "./item-card";
 import { OverallFeedbackForm } from "./overall-feedback-form";
 import { ScoreSummary } from "./score-summary";
 import { plural } from "./text";
+import { describeUnsaved, leaveUnsavedMessage, orderUnsaved } from "./unsaved-edits";
+import { UnsavedEditsContext, useUnsavedEditsTracker } from "./unsaved-edits-context";
 import { useActionRunner } from "./use-action-runner";
+import { useLeaveGuard } from "./use-leave-guard";
 
 export interface ReviewPanelProps {
   assignmentId: string;
@@ -33,6 +36,9 @@ export interface ReviewPanelProps {
 /**
  * The review page: the student's PDF beside (on phones: above) everything the teacher checks and corrects,
  * with the paper-level actions in a bar pinned to the bottom of the screen.
+ *
+ * Each card saves on its own, so the forms report unsaved edits to the panel: leaving through a link asks
+ * first, and marking the paper reviewed or regrading it waits until they are saved or undone.
  */
 export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
   const s = view.submission;
@@ -40,6 +46,9 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
   const [pdfView, setPdfView] = useState<{ page: number | null; jumps: number }>({ page: null, jumps: 0 });
   const pdfRef = useRef<HTMLDivElement>(null);
   const graded = s.status === "graded" || s.status === "needs_review";
+  const [unsavedForms, unsavedTracker] = useUnsavedEditsTracker();
+  const unsaved = orderUnsaved(unsavedForms, ["identity", "total", "overall", ...view.items.map((entry) => itemFormKey(entry.item.id))]);
+  useLeaveGuard(unsaved.length > 0, leaveUnsavedMessage(unsaved));
 
   function showPage(page: number) {
     setPdfView((current) => ({ page, jumps: current.jumps + 1 }));
@@ -49,53 +58,55 @@ export function ReviewPanel({ assignmentId, view }: ReviewPanelProps) {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <ReviewHeader assignmentId={assignmentId} view={view} />
+    <UnsavedEditsContext value={unsavedTracker}>
+      <div className="flex flex-col gap-4">
+        <ReviewHeader assignmentId={assignmentId} view={view} />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-        <div ref={pdfRef} className="scroll-mt-4 lg:sticky lg:top-4 lg:self-start">
-          {/* Remounting makes every browser's PDF viewer open at the page; a changed #page alone often does nothing. */}
-          <PdfFrame key={pdfView.jumps} src={view.pdfUrl} title="The student's paper" page={pdfView.page} />
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+          <div ref={pdfRef} className="scroll-mt-4 lg:sticky lg:top-4 lg:self-start">
+            {/* Remounting makes every browser's PDF viewer open at the page; a changed #page alone often does nothing. */}
+            <PdfFrame key={pdfView.jumps} src={view.pdfUrl} title="The student's paper" page={pdfView.page} />
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-4">
+            <StatusNotices view={view} />
+
+            <Card title="Student">
+              <IdentityForm submission={s} sections={view.sections} />
+            </Card>
+
+            {s.flags.length > 0 && (
+              <Card title="Flags">
+                <FlagChips flags={s.flags} detailed />
+              </Card>
+            )}
+
+            <TeacherNotes view={view} />
+
+            {graded && (
+              <Card title="Score">
+                <ScoreSummary
+                  submissionId={s.id}
+                  score={view.score}
+                  totalOverrideCenti={s.totalOverrideCenti}
+                  itemCount={view.items.length}
+                />
+              </Card>
+            )}
+
+            {graded && (
+              <Card>
+                <OverallFeedbackForm submissionId={s.id} overallFeedback={s.overallFeedback} edited={s.overallFeedbackEdited} />
+              </Card>
+            )}
+
+            <ItemList submissionId={s.id} items={view.items} onShowPage={showPage} />
+          </div>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-4">
-          <StatusNotices view={view} />
-
-          <Card title="Student">
-            <IdentityForm submission={s} sections={view.sections} />
-          </Card>
-
-          {view.flags.length > 0 && (
-            <Card title="Flags">
-              <FlagChips flags={s.flags} detailed />
-            </Card>
-          )}
-
-          <TeacherNotes view={view} />
-
-          {graded && (
-            <Card title="Score">
-              <ScoreSummary
-                submissionId={s.id}
-                score={view.score}
-                totalOverrideCenti={s.totalOverrideCenti}
-                itemCount={view.items.length}
-              />
-            </Card>
-          )}
-
-          {graded && (
-            <Card>
-              <OverallFeedbackForm submissionId={s.id} overallFeedback={s.overallFeedback} edited={s.overallFeedbackEdited} />
-            </Card>
-          )}
-
-          <ItemList submissionId={s.id} items={view.items} onShowPage={showPage} />
-        </div>
+        <ReviewFooter assignmentId={assignmentId} view={view} unsaved={unsaved} />
       </div>
-
-      <ReviewFooter assignmentId={assignmentId} view={view} />
-    </div>
+    </UnsavedEditsContext>
   );
 }
 
@@ -140,7 +151,7 @@ function StatusNotices({ view }: { view: ReviewView }) {
     return (
       <Alert tone="info" title={s.status === "queued" ? "Waiting to be graded" : "The AI is reading this paper…"}>
         {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
-        <p>This page updates by itself. Changes you make now are kept.</p>
+        <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
       </Alert>
     );
   }
@@ -214,14 +225,29 @@ function ItemList({ submissionId, items, onShowPage }: { submissionId: string; i
   );
 }
 
-function ReviewFooter({ assignmentId, view }: ReviewPanelProps) {
+type HeldAction = "review" | "regrade";
+
+const HELD: Record<HeldAction, { before: string; anyway: string }> = {
+  review: { before: "marking this paper reviewed", anyway: "Mark reviewed without saving" },
+  regrade: { before: "regrading", anyway: "Regrade without saving" },
+};
+
+function ReviewFooter({ assignmentId, view, unsaved }: ReviewPanelProps & { unsaved: string[] }) {
   const s = view.submission;
   const router = useRouter();
   const runner = useActionRunner();
   const [allDone, setAllDone] = useState(false);
+  // An action the teacher asked for while forms held unsaved edits; it waits for them to be saved or undone.
+  const [held, setHeld] = useState<HeldAction | null>(null);
   const canRegrade = s.status === "graded" || s.status === "needs_review" || s.status === "failed";
+  if (held !== null && unsaved.length === 0) setHeld(null);
 
-  function markReviewedAndNext() {
+  function markReviewedAndNext(withUnsaved = false) {
+    if (!withUnsaved && unsaved.length > 0) {
+      setHeld("review");
+      return;
+    }
+    setHeld(null);
     runner.run(
       () => markReviewedAction(s.id),
       (result) => {
@@ -232,7 +258,12 @@ function ReviewFooter({ assignmentId, view }: ReviewPanelProps) {
     );
   }
 
-  function regrade() {
+  function regrade(withUnsaved = false) {
+    if (!withUnsaved && unsaved.length > 0) {
+      setHeld("regrade");
+      return;
+    }
+    setHeld(null);
     if (!window.confirm("Grade this paper again with the AI? Your point overrides, feedback edits and name changes are kept.")) return;
     runner.run(() => regradeSubmissionAction(s.id));
   }
@@ -245,8 +276,27 @@ function ReviewFooter({ assignmentId, view }: ReviewPanelProps) {
 
   return (
     <div className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t border-line bg-surface/95 px-4 py-3 shadow-[0_-4px_12px_rgb(0_0_0/0.06)] backdrop-blur">
+      {held !== null && (
+        <Alert tone="warning" title="You have unsaved changes">
+          <p>{describeUnsaved(unsaved, HELD[held].before)}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={runner.pending}
+              onClick={() => (held === "review" ? markReviewedAndNext(true) : regrade(true))}
+            >
+              {HELD[held].anyway}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setHeld(null)}>
+              Keep editing
+            </Button>
+          </div>
+        </Alert>
+      )}
       {allDone && (
         <Alert tone="success" title="No more papers need review">
+          {!view.released && <p>Students see their grades and notes once you release feedback on the Submissions page.</p>}
           <Link href={boardHref(assignmentId, "all")}>Back to all papers</Link>
         </Alert>
       )}
@@ -259,7 +309,7 @@ function ReviewFooter({ assignmentId, view }: ReviewPanelProps) {
         <span className="hidden flex-1 sm:block" />
         <CopyButton value={view.receiptUrl} label="Copy student link" />
         {canRegrade && (
-          <Button variant="secondary" size="sm" disabled={runner.pending} onClick={regrade}>
+          <Button variant="secondary" size="sm" disabled={runner.pending} onClick={() => regrade()}>
             Regrade
           </Button>
         )}
@@ -267,7 +317,7 @@ function ReviewFooter({ assignmentId, view }: ReviewPanelProps) {
           Delete
         </Button>
         {s.status === "needs_review" && (
-          <Button disabled={runner.pending} onClick={markReviewedAndNext}>
+          <Button disabled={runner.pending} onClick={() => markReviewedAndNext()}>
             {runner.pending && <Spinner className="size-4" />}
             Mark reviewed &amp; next
           </Button>

@@ -17,8 +17,3 @@ export function parsePointsOverride(text: string, maxCenti: number): PointsInput
 export function pointsInputText(centi: number | null): string {
   return centi === null ? "" : formatPoints(centi);
 }
-
-/** `part` as a share of `whole` in tenths of a percent, rounded half up like the server's percentages. */
-export function shareTenths(part: number, whole: number): number | null {
-  return whole > 0 ? Math.floor((2 * part * 1000 + whole) / (2 * whole)) : null;
-}

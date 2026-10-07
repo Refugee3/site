@@ -31,10 +31,26 @@ describe("nextStep", () => {
     });
   });
 
-  it("suggests opening a draft with an approved key, and is quiet otherwise", () => {
+  it("suggests opening a draft with an approved key", () => {
     expect(nextStep(card({ status: "draft" }))).toMatchObject({ text: "Open it for students", href: "/teacher/assignments/a1" });
-    expect(nextStep(card())).toBeNull();
-    expect(nextStep(card({ status: "closed" }))).toBeNull();
+  });
+
+  it("asks to release feedback once every paper is graded and checked", () => {
+    expect(nextStep(card())).toEqual({ text: "Release feedback on 4 graded papers", href: "/teacher/assignments/a1", tone: "info" });
+    expect(nextStep(card({ status: "closed", counts: counts({ graded: 1, total: 1 }) }))?.text).toBe("Release feedback on 1 graded paper");
+  });
+
+  it("does not ask to release before papers are done, or once released", () => {
+    expect(nextStep(card({ counts: counts({ needs_review: 1 }) }))?.text).toBe("1 paper to review");
+    expect(nextStep(card({ counts: counts({ failed: 1 }) }))?.text).toBe("1 paper failed to grade");
+    expect(nextStep(card({ counts: counts({ queued: 2 }) }))).toBeNull();
+    expect(nextStep(card({ counts: counts({ grading: 1 }) }))).toBeNull();
+    expect(nextStep(card({ counts: counts({ graded: 0, total: 0 }) }))).toBeNull();
+  });
+
+  it("is quiet once feedback is released and nothing is pending", () => {
+    expect(nextStep(card({ released: true }))).toBeNull();
+    expect(nextStep(card({ released: true, status: "closed" }))).toBeNull();
   });
 });
 

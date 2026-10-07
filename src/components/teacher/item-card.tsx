@@ -13,6 +13,7 @@ import type { Tone } from "@/components/ui/tone";
 import { ANSWER_TYPE_LABEL, ATTEMPT_LABEL, CORRECTNESS_LABEL, formatPoints, REVIEW_REASON_LABEL } from "@/lib/format";
 import type { Attempt, Confidence, Correctness, ItemJudgment, Legibility, ReviewItemView } from "@/lib/types";
 import { parsePointsOverride, pointsInputText } from "./points";
+import { useReportUnsaved } from "./unsaved-edits-context";
 import { useActionRunner } from "./use-action-runner";
 import { useSyncedState } from "./use-synced-state";
 
@@ -109,12 +110,6 @@ export function ItemCard({ submissionId, entry, onShowPage }: ItemCardProps) {
 
       {judgment && <JudgmentChips judgment={judgment} />}
 
-      {judgment?.whatStudentDid && (
-        <div className="text-sm">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted">What you did (the student sees this)</p>
-          <p className="whitespace-pre-wrap">{judgment.whatStudentDid}</p>
-        </div>
-      )}
       {judgment?.teacherNote && (
         <p className="whitespace-pre-wrap rounded-md border border-info-200 bg-info-50 px-3 py-2 text-sm text-info-800">
           <span className="font-semibold">Note for you: </span>
@@ -151,44 +146,107 @@ function JudgmentChips({ judgment: j }: { judgment: ItemJudgment }) {
   );
 }
 
+/** The key under which an item's override form reports unsaved edits to the review page. */
+export function itemFormKey(itemId: string): string {
+  return `item:${itemId}`;
+}
+
+/** Text left as the AI wrote it is not an override, so a later regrade can still replace it. */
+function overrideText(text: string, aiText: string): string | null {
+  const trimmed = text.trim();
+  return trimmed === aiText.trim() ? null : trimmed;
+}
+
 /**
- * Points override and the feedback the student reads. Both are saved together (the action stores both);
- * "Clear" and "Use the AI's feedback" save at once, leaving the other field as stored.
+ * Points override and the two notes the student reads ("what you did" and feedback). All are saved
+ * together (the action stores them all); "Clear" and the "Use the AI's …" buttons save at once,
+ * leaving the other fields as stored.
  */
 function OverrideForm({ submissionId, entry }: { submissionId: string; entry: ReviewItemView }) {
   const { item, result, score } = entry;
   const aiFeedback = result?.judgment?.feedback ?? "";
+  const aiNote = result?.judgment?.whatStudentDid ?? "";
   const storedPoints = pointsInputText(result?.overrideCenti ?? null);
   const storedFeedback = result?.overrideFeedback ?? aiFeedback;
+  const storedNote = result?.overrideWhatStudentDid ?? aiNote;
   const hasPointsOverride = result !== null && result.overrideCenti !== null;
   const hasFeedbackOverride = result !== null && result.overrideFeedback !== null;
-  const [points, setPoints] = useSyncedState(storedPoints);
-  const [feedback, setFeedback] = useSyncedState(storedFeedback);
+  const hasNoteOverride = result !== null && result.overrideWhatStudentDid !== null;
+  const [points, setPoints, expectSavedPoints] = useSyncedState(storedPoints);
+  const [feedback, setFeedback, expectSavedFeedback] = useSyncedState(storedFeedback);
+  const [note, setNote, expectSavedNote] = useSyncedState(storedNote);
   const [pointsError, setPointsError] = useState<string | null>(null);
   const runner = useActionRunner();
-  const dirty = points !== storedPoints || feedback !== storedFeedback;
-  const ids = { points: `override-${item.id}-points`, feedback: `override-${item.id}-feedback` };
+  const dirty = points !== storedPoints || feedback !== storedFeedback || note !== storedNote;
+  useReportUnsaved(itemFormKey(item.id), `Question ${item.label}`, dirty);
+  const ids = { points: `override-${item.id}-points`, feedback: `override-${item.id}-feedback`, note: `override-${item.id}-note` };
 
-  function save(pointsText: string, feedbackText: string) {
+  function save(pointsText: string, feedbackText: string, noteText: string) {
     const parsed = parsePointsOverride(pointsText, score.maxCenti);
     if (!parsed.ok) {
       setPointsError(parsed.error);
       return;
     }
     setPointsError(null);
-    const text = feedbackText.trim();
-    // Feedback left as the AI wrote it is not an override, so a later regrade can still replace it.
-    const feedbackOverride = text === aiFeedback.trim() ? null : text;
-    runner.run(() => saveItemOverrideAction(submissionId, item.id, { pointsCenti: parsed.centi, feedback: feedbackOverride }));
+    // Each field that changes takes the stored version once saved; the others keep any unsaved edit.
+    const expect = (on: boolean) => {
+      if (pointsText !== storedPoints) expectSavedPoints(on);
+      if (feedbackText !== storedFeedback) expectSavedFeedback(on);
+      if (noteText !== storedNote) expectSavedNote(on);
+    };
+    expect(true);
+    runner.run(
+      () => saveItemOverrideAction(submissionId, item.id, {
+        pointsCenti: parsed.centi,
+        feedback: overrideText(feedbackText, aiFeedback),
+        whatStudentDid: overrideText(noteText, aiNote),
+      }),
+      undefined,
+      () => expect(false),
+    );
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    save(points, feedback);
+    save(points, feedback, note);
   }
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3 border-t border-line pt-3">
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <label htmlFor={ids.note} className="text-sm font-medium">
+            What you did (the student sees this)
+          </label>
+          {hasNoteOverride && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={runner.pending}
+              onClick={() => {
+                setNote(aiNote);
+                save(storedPoints, storedFeedback, aiNote);
+              }}
+            >
+              Use the AI&apos;s note
+            </Button>
+          )}
+        </div>
+        <Textarea
+          id={ids.note}
+          rows={2}
+          maxLength={1000}
+          aria-describedby={`${ids.note}-hint`}
+          className="sm:text-sm"
+          readOnly={runner.pending}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <p id={`${ids.note}-hint`} className="text-xs text-muted">
+          Correct it if the AI misread the work; leave it empty to hide it.
+        </p>
+      </div>
+
       <div className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <label htmlFor={ids.feedback} className="text-sm font-medium">
@@ -201,7 +259,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
               disabled={runner.pending}
               onClick={() => {
                 setFeedback(aiFeedback);
-                save(storedPoints, aiFeedback);
+                save(storedPoints, aiFeedback, storedNote);
               }}
             >
               Use the AI&apos;s feedback
@@ -213,6 +271,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
           rows={2}
           maxLength={2000}
           className="sm:text-sm"
+          readOnly={runner.pending}
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
         />
@@ -232,6 +291,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
                 aria-invalid={pointsError ? true : undefined}
                 aria-describedby={`${ids.points}-hint`}
                 className="sm:min-h-9 sm:text-sm"
+                readOnly={runner.pending}
                 value={points}
                 onChange={(e) => setPoints(e.target.value)}
               />
@@ -246,7 +306,7 @@ function OverrideForm({ submissionId, entry }: { submissionId: string; entry: Re
             disabled={runner.pending}
             onClick={() => {
               setPoints("");
-              save("", storedFeedback);
+              save("", storedFeedback, storedNote);
             }}
           >
             Clear

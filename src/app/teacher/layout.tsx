@@ -23,7 +23,7 @@ export default async function TeacherLayout({ children }: LayoutProps<"/teacher"
             </Link>
           </nav>
           <div className="ml-auto flex items-center gap-3">
-            <span className="max-w-48 truncate text-sm text-muted">{teacher.displayName}</span>
+            <span className="hidden max-w-48 truncate text-sm text-muted sm:block">{teacher.displayName}</span>
             <form action={logoutAction}>
               <SubmitButton variant="ghost" size="sm" pendingText="Logging out…">
                 Log out

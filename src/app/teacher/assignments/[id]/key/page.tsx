@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { PdfFrame } from "@/components/pdf-frame";
+import { CollapsedOnPhones } from "@/components/teacher/collapsed-on-phones";
 import { KeyEditor } from "@/components/teacher/key-editor";
 import { KeyUpload } from "@/components/teacher/key-upload";
 import { RetryExtractionButton } from "@/components/teacher/retry-extraction-button";
@@ -131,15 +132,16 @@ function Failed(props: { assignmentId: string; view: KeyEditorView; uploadUrl: s
 
 function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: KeyEditorView }) {
   const { key, items, keyPdfUrl } = view;
+  const pdfLabel = `${key.sourceFilename ?? "Answer key"}${key.sourcePageCount !== null ? ` · ${plural(key.sourcePageCount, "page")}` : ""}`;
   return (
     <div className={cx("grid gap-6", keyPdfUrl && "xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
       {keyPdfUrl && (
         <div className="flex flex-col gap-2 xl:sticky xl:top-4 xl:self-start">
-          <p className="text-sm text-muted">
-            {key.sourceFilename ?? "Answer key"}
-            {key.sourcePageCount !== null && ` · ${plural(key.sourcePageCount, "page")}`}
-          </p>
-          <PdfFrame src={keyPdfUrl} title="Answer key PDF" />
+          {/* On phones the 70vh frame would push every item a screen down; it opens on request. */}
+          <CollapsedOnPhones summary={`Key PDF: ${pdfLabel}`}>
+            <p className="mb-2 text-sm text-muted max-md:hidden">{pdfLabel}</p>
+            <PdfFrame src={keyPdfUrl} title="Answer key PDF" />
+          </CollapsedOnPhones>
         </div>
       )}
       <KeyEditor

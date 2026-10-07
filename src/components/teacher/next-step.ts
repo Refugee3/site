@@ -32,5 +32,10 @@ export function nextStep(a: DashboardAssignment): NextStep | null {
     return { text: `${plural(a.counts.failed, "paper")} failed to grade`, href: boardHref(a.id, "failed"), tone: "danger" };
   }
   if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
+  // Everything is graded and checked, but students still see only "received": the switch is on the assignment page.
+  const inProgress = a.counts.queued + a.counts.grading;
+  if (!a.released && a.counts.graded > 0 && inProgress === 0) {
+    return { text: `Release feedback on ${plural(a.counts.graded, "graded paper")}`, href: boardHref(a.id, "all"), tone: "info" };
+  }
   return null;
 }

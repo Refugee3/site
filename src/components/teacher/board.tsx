@@ -40,7 +40,15 @@ function BoardGroup({ assignmentId, group }: { assignmentId: string; group: Boar
       </h2>
 
       <div className="hidden overflow-hidden rounded-xl border border-line bg-surface shadow-sm md:block">
-        <table className="w-full text-left text-sm">
+        {/* Fixed columns, the same in every section's table, so Status, Score and the rest line up down the page. */}
+        <table className="w-full table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[24%]" />
+            <col className="w-[18%]" />
+            <col className="w-[14%]" />
+            <col />
+            <col className="w-[19%]" />
+          </colgroup>
           <thead className="border-b border-line bg-subtle text-xs font-semibold uppercase tracking-wide text-muted">
             <tr>
               <th scope="col" className="px-4 py-2">Student</th>
@@ -53,7 +61,7 @@ function BoardGroup({ assignmentId, group }: { assignmentId: string; group: Boar
           <tbody className="divide-y divide-line">
             {rows.map((row) => (
               <tr key={row.submissionId} className={cx("align-top", rowBackground(row))}>
-                <td className="px-4 py-3">
+                <td className="break-words px-4 py-3">
                   <StudentCell assignmentId={assignmentId} row={row} />
                 </td>
                 <td className="px-4 py-3">
@@ -66,7 +74,7 @@ function BoardGroup({ assignmentId, group }: { assignmentId: string; group: Boar
                   <FlagChips flags={row.flags} />
                 </td>
                 <td className="px-4 py-3 text-muted">
-                  <SubmittedCell row={row} />
+                  <SubmittedCell row={row} stacked />
                 </td>
               </tr>
             ))}
@@ -127,11 +135,15 @@ function StudentCell({ assignmentId, row, stretched = false }: { assignmentId: s
       )}
       {row.earlier.length > 0 && (
         <details className="relative z-10 text-xs text-muted">
-          <summary className="cursor-pointer py-1">{plural(row.earlier.length, "earlier attempt")}</summary>
-          <ul className="mt-1 flex flex-col gap-1 pl-4">
+          {/* 44 px tap targets on phone cards, where a near miss would open the newest paper instead. */}
+          <summary className="cursor-pointer py-3.5 md:py-1">{plural(row.earlier.length, "earlier attempt")}</summary>
+          <ul className="flex flex-col pl-4 md:mt-1 md:gap-1">
             {row.earlier.map((attempt) => (
               <li key={attempt.submissionId}>
-                <Link href={reviewHref(assignmentId, attempt.submissionId)}>
+                <Link
+                  href={reviewHref(assignmentId, attempt.submissionId)}
+                  className="inline-flex min-h-11 items-center md:inline md:min-h-0"
+                >
                   <LocalTime ms={attempt.createdAt} />
                 </Link>{" "}
                 · {STATUS_LABEL[attempt.status]}
@@ -164,7 +176,7 @@ function ScoreCell({ row }: { row: BoardRow }) {
   if (row.scoreEarnedCenti === null || row.scoreMaxCenti === null) return <span className="text-muted">—</span>;
   return (
     <span className="flex flex-col items-end">
-      <span className="font-semibold tabular-nums">
+      <span className="whitespace-nowrap font-semibold tabular-nums">
         {formatPoints(row.scoreEarnedCenti)} / {formatPoints(row.scoreMaxCenti)}
       </span>
       <span className="text-xs tabular-nums text-muted">{formatPercent(row.percentTenths)}</span>
@@ -172,7 +184,16 @@ function ScoreCell({ row }: { row: BoardRow }) {
   );
 }
 
-function SubmittedCell({ row }: { row: BoardRow }) {
+/** When the paper came in and its length; `stacked` (the table) puts the page count on a line of its own. */
+function SubmittedCell({ row, stacked = false }: { row: BoardRow; stacked?: boolean }) {
+  if (stacked) {
+    return (
+      <>
+        <LocalTime ms={row.createdAt} className="block" />
+        <span className="block text-xs">{plural(row.pageCount, "page")}</span>
+      </>
+    );
+  }
   return (
     <>
       <LocalTime ms={row.createdAt} /> · {plural(row.pageCount, "page")}

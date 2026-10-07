@@ -29,7 +29,7 @@ export default async function TeacherDashboardPage() {
       ) : (
         <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {view.assignments.map((assignment) => (
-            <li key={assignment.id} className="flex flex-col [&>article]:flex-1">
+            <li key={assignment.id} className="flex min-w-0 flex-col [&>article]:flex-1">
               <AssignmentCard assignment={assignment} />
             </li>
           ))}

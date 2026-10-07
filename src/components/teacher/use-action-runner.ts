@@ -11,7 +11,10 @@ export interface ActionRunner {
   /** True from the call until the action's result and the page refresh it triggered have rendered. */
   pending: boolean;
   error: string | null;
-  /** `onFailure` also sees the field errors of a returned failure (not of a rejected call). */
+  /**
+   * `onFailure` runs for a returned failure (with its field errors) and for a rejected call (as
+   * UNREACHABLE_MESSAGE, without field errors), so callers can undo what they set up for a save.
+   */
   run: <T>(
     call: () => Promise<ActionResult<T>>,
     onSuccess?: (result: Success<T>) => void,
@@ -42,6 +45,8 @@ export function useActionRunner(): ActionRunner {
       } catch (e) {
         unstable_rethrow(e);
         setError(UNREACHABLE_MESSAGE);
+        // E.g. withdraws a form's expectSave, so a later refresh does not replace the unsaved text.
+        onFailure?.({ ok: false, error: UNREACHABLE_MESSAGE });
         return;
       }
       if (result.ok) {

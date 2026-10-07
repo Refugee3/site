@@ -1,4 +1,5 @@
 import { formatPoints, parsePointsInput } from "@/lib/format";
+import { MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import type { AnswerSource, AnswerType, Confidence, KeyItem, SaveKeyInput } from "@/lib/types";
 import { POINTS_FORMAT_ERROR } from "./points";
 
@@ -26,8 +27,6 @@ export interface DraftRow {
 type SaveKeyRow = SaveKeyInput["items"][number];
 export type RowField = Exclude<keyof SaveKeyRow, "id" | "partialCredit">;
 export type FieldErrors = Record<string, string[]>;
-
-const MAX_POINTS_CENTI = 100_000;
 
 export function draftFromItem(item: KeyItem): DraftRow {
   return {
@@ -99,7 +98,7 @@ export function parseItemPoints(text: string): { ok: true; centi: number } | { o
   if (centi === null) return { ok: false, error: "Enter the points for this item." };
   if (Number.isNaN(centi)) return { ok: false, error: POINTS_FORMAT_ERROR };
   if (centi === 0) return { ok: false, error: "Points must be more than 0." };
-  if (centi > MAX_POINTS_CENTI) return { ok: false, error: "Use at most 1000 points." };
+  if (centi > MAX_ITEM_POINTS_CENTI) return { ok: false, error: `Use at most ${formatPoints(MAX_ITEM_POINTS_CENTI)} points.` };
   return { ok: true, centi };
 }
 

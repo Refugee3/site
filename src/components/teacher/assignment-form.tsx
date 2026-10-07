@@ -50,7 +50,7 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
   const [state, dispatch, pending] = useActionState(action, null);
   // Controlled and submitted without React's automatic form reset, so a rejected save keeps every choice.
   const initial = toDraft(defaults);
-  const [values, setValues] = useSyncedState(initial, sameDraft);
+  const [values, setValues, expectSaved] = useSyncedState(initial, sameDraft);
   const errors = state && !state.ok ? (state.fieldErrors ?? {}) : {};
   // "Saved" shows until the next edit.
   const savedMessage = mode === "edit" && state?.ok && sameDraft(values, initial) ? (state.message ?? "Settings saved.") : null;
@@ -62,6 +62,8 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const fd = new FormData(event.currentTarget);
+    // The saved settings come back normalized (trimmed title, tidied sections); show them, not the typed text.
+    expectSaved();
     startTransition(() => dispatch(fd));
   }
 
@@ -110,7 +112,8 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
         hint={
           <>
             One class period or section per line. After a <code className="font-mono">|</code>, list other ways students
-            might write it, separated by commas. Papers are grouped by section; leave this empty for a single class.
+            might write it, separated by commas. Papers are grouped by section. For a single class, enter its one name so
+            every paper lands in one group; left empty, papers are grouped by whatever students wrote.
           </>
         }
         error={errors.sectionsText}

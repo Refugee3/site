@@ -1,13 +1,16 @@
+import { boardFilterCount } from "@/lib/grading/board";
 import type { BoardFilter, BoardView, StatusCounts } from "@/lib/types";
 
-/** The board's filters in display order, with how many papers each one shows. */
-export const BOARD_FILTERS: ReadonlyArray<{ filter: BoardFilter; label: string; count: (c: StatusCounts) => number }> = [
-  { filter: "all", label: "All", count: (c) => c.total },
-  { filter: "needs_review", label: "Needs review", count: (c) => c.needs_review },
-  { filter: "in_progress", label: "In progress", count: (c) => c.queued + c.grading },
-  { filter: "failed", label: "Failed", count: (c) => c.failed },
-  { filter: "graded", label: "Graded", count: (c) => c.graded },
-];
+/** The board's filters in display order, with how many papers each one shows (the same rule as the rows). */
+export const BOARD_FILTERS: ReadonlyArray<{ filter: BoardFilter; label: string; count: (c: StatusCounts) => number }> = (
+  [
+    ["all", "All"],
+    ["needs_review", "Needs review"],
+    ["in_progress", "In progress"],
+    ["failed", "Failed"],
+    ["graded", "Graded"],
+  ] as const
+).map(([filter, label]) => ({ filter, label, count: (c: StatusCounts) => boardFilterCount(filter, c) }));
 
 /** `?filter=` from the URL; anything unknown (or repeated) shows everything. */
 export function parseBoardFilter(value: string | string[] | undefined): BoardFilter {
@@ -26,7 +29,7 @@ export function reviewHref(assignmentId: string, submissionId: string): string {
 const ACTIVE_POLL_MS = 4000;
 const OPEN_POLL_MS = 15_000;
 
-/** §7: quick polling while papers are being graded, slow while students can still submit, else none. */
+/** Quick polling while papers are being graded, slow while students can still submit, else none. */
 export function boardRefreshMs(view: Pick<BoardView, "active" | "open">): number | null {
   if (view.active) return ACTIVE_POLL_MS;
   return view.open ? OPEN_POLL_MS : null;

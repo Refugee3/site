@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { saveKeyAction } from "@/actions/key";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import {
 } from "./key-rows";
 import { plural } from "./text";
 import { useActionRunner } from "./use-action-runner";
+import { useLeaveGuard } from "./use-leave-guard";
 
 export interface KeyEditorProps {
   assignmentId: string;
@@ -72,12 +73,7 @@ export function KeyEditor({ assignmentId, assignmentStatus, items, teacherNotes,
   );
   const errorLines = describeErrors(fieldErrors, rows);
 
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  useLeaveGuard(dirty, "Your answer-key edits are not saved. Leave and lose them?");
 
   const updateRow = useCallback((key: string, patch: Partial<DraftRow>) => {
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -143,50 +139,53 @@ export function KeyEditor({ assignmentId, assignmentStatus, items, teacherNotes,
 
   return (
     <div className="flex flex-col gap-4">
-      <Field
-        label="Teacher's notes for grading"
-        htmlFor="key-teacher-notes"
-        hint="The AI reads these with every paper, e.g. “Units are required on word problems” or “Accept any reasonable synonym”."
-        error={fieldErrors.teacherNotes}
-      >
-        <Textarea
-          id="key-teacher-notes"
-          rows={3}
-          maxLength={4000}
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-        />
-      </Field>
-
-      {gradedCount > 0 && (
-        <Alert tone="info">
-          {plural(gradedCount, "paper")} {gradedCount === 1 ? "is" : "are"} already graded. Points and partial-credit
-          changes rescore them at once; changes to questions, answers, criteria or notes mark them stale so you can
-          regrade them.
-        </Alert>
-      )}
-
-      <Toolbar rows={rows} onSetAllPoints={setAllPoints} onAdd={() => insertAfter(null)} />
-
-      <ol className="flex flex-col gap-3">
-        {rows.map((row, index) => (
-          <KeyRowCard
-            key={row.key}
-            row={row}
-            index={index}
-            count={rows.length}
-            errors={errorsByRow[index]}
-            onChange={updateRow}
-            onMove={moveRow}
-            onInsertAfter={insertAfter}
-            onRemove={removeRow}
+      {/* Locked while saving: the saved key replaces every row when it comes back, so later typing would be lost. */}
+      <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-4">
+        <Field
+          label="Teacher's notes for grading"
+          htmlFor="key-teacher-notes"
+          hint="The AI reads these with every paper, e.g. “Units are required on word problems” or “Accept any reasonable synonym”."
+          error={fieldErrors.teacherNotes}
+        >
+          <Textarea
+            id="key-teacher-notes"
+            rows={3}
+            maxLength={4000}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
           />
-        ))}
-      </ol>
+        </Field>
 
-      <Button variant="secondary" className="self-start" onClick={() => insertAfter(null)}>
-        + Add item
-      </Button>
+        {gradedCount > 0 && (
+          <Alert tone="info">
+            {plural(gradedCount, "paper")} {gradedCount === 1 ? "is" : "are"} already graded. Points and partial-credit
+            changes rescore them at once; changes to questions, answers, criteria or notes mark them stale so you can
+            regrade them.
+          </Alert>
+        )}
+
+        <Toolbar rows={rows} onSetAllPoints={setAllPoints} onAdd={() => insertAfter(null)} />
+
+        <ol className="flex flex-col gap-3">
+          {rows.map((row, index) => (
+            <KeyRowCard
+              key={row.key}
+              row={row}
+              index={index}
+              count={rows.length}
+              errors={errorsByRow[index]}
+              onChange={updateRow}
+              onMove={moveRow}
+              onInsertAfter={insertAfter}
+              onRemove={removeRow}
+            />
+          ))}
+        </ol>
+
+        <Button variant="secondary" className="self-start" onClick={() => insertAfter(null)}>
+          + Add item
+        </Button>
+      </fieldset>
 
       <div className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-3 border-t border-line bg-surface/95 px-4 py-3 shadow-[0_-4px_12px_rgb(0_0_0/0.06)] backdrop-blur sm:mx-0 sm:rounded-xl sm:border">
         {(errorLines.length > 0 || runner.error) && (
@@ -198,6 +197,7 @@ export function KeyEditor({ assignmentId, assignmentStatus, items, teacherNotes,
           <label className="flex min-h-11 cursor-pointer items-center gap-3">
             <Input
               type="checkbox"
+              disabled={runner.pending}
               checked={acknowledged}
               onChange={(e) => setAcknowledged(e.target.checked)}
               aria-invalid={fieldErrors.acknowledgeAiProposed ? true : undefined}

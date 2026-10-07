@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import { StatusBadge } from "@/components/status-badge";
 import { AssignmentTabs } from "@/components/teacher/assignment-tabs";
+import { CollapsedOnPhones } from "@/components/teacher/collapsed-on-phones";
 import { HiddenWhileReviewing } from "@/components/teacher/hidden-while-reviewing";
 import { LifecycleButtons } from "@/components/teacher/lifecycle-buttons";
 import { ShareCard } from "@/components/teacher/share-card";
@@ -10,7 +11,7 @@ import { plural } from "@/components/teacher/text";
 import { Badge } from "@/components/ui/badge";
 import type { Tone } from "@/components/ui/tone";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
-import { formatPoints } from "@/lib/format";
+import { formatPoints, formatShareCode } from "@/lib/format";
 import { getPublicOrigin } from "@/lib/http/request";
 import { getAssignmentHeader } from "@/lib/services/views";
 import type { AssignmentHeader } from "@/lib/types";
@@ -53,7 +54,16 @@ export default async function AssignmentLayout({ params, children }: Props) {
       </div>
 
       <HiddenWhileReviewing>
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <CollapsedOnPhones
+          summary={
+            <>
+              Code <span className="font-mono font-semibold tracking-wider">{formatShareCode(assignment.shareCode)}</span>
+              {" · "}
+              {assignment.feedbackReleasedAt !== null ? "Feedback released" : "Feedback hidden"}
+            </>
+          }
+          className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]"
+        >
           <ShareCard shareUrl={header.shareUrl} shareCode={assignment.shareCode} status={assignment.status} />
           <LifecycleButtons
             assignmentId={assignment.id}
@@ -63,7 +73,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
             released={assignment.feedbackReleasedAt !== null}
             needsReviewCount={header.counts.needs_review}
           />
-        </div>
+        </CollapsedOnPhones>
       </HiddenWhileReviewing>
 
       <AssignmentTabs

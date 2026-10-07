@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePointsOverride, pointsInputText, shareTenths } from "./points";
+import { parsePointsOverride, pointsInputText } from "./points";
 
 describe("parsePointsOverride", () => {
   it("treats blank as clearing the override", () => {
@@ -26,19 +26,5 @@ describe("pointsInputText", () => {
     expect(pointsInputText(null)).toBe("");
     expect(pointsInputText(0)).toBe("0");
     expect(pointsInputText(750)).toBe("7.5");
-  });
-});
-
-describe("shareTenths", () => {
-  it("rounds half up to tenths of a percent", () => {
-    expect(shareTenths(1, 3)).toBe(333);
-    expect(shareTenths(2, 3)).toBe(667);
-    expect(shareTenths(1, 8)).toBe(125);
-    expect(shareTenths(160, 200)).toBe(800);
-    expect(shareTenths(0, 200)).toBe(0);
-  });
-
-  it("is null for an empty key", () => {
-    expect(shareTenths(0, 0)).toBeNull();
   });
 });

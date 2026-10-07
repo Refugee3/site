@@ -41,12 +41,13 @@ const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "U
 
 function Usage({ usage }: { usage: SettingsView["usage"] }) {
   const rows: Array<[string, string]> = [
+    ["AI calls", tokens.format(usage.calls)],
     ["Papers read by the AI", tokens.format(usage.papers)],
     ["Input tokens", tokens.format(usage.inputTokens)],
     ["Cached input tokens read", tokens.format(usage.cacheReadTokens)],
     ["Cached input tokens written", tokens.format(usage.cacheWriteTokens)],
     ["Output tokens (including thinking)", tokens.format(usage.outputTokens)],
-    ["Estimated cost", usage.estimatedCostUsd === null ? "Not available for this model" : dollars.format(usage.estimatedCostUsd)],
+    ["Estimated cost", usage.estimatedCostUsd === null ? "Not available for these models" : dollars.format(usage.estimatedCostUsd)],
   ];
   return (
     <div className="flex flex-col gap-3">
@@ -59,8 +60,9 @@ function Usage({ usage }: { usage: SettingsView["usage"] }) {
         ))}
       </dl>
       <p className="text-sm text-muted">
-        Includes reading the answer key. The key is cached between papers, so most papers should show cached reads; if
-        they don&apos;t, caching has stopped working and each paper costs more.
+        Totals cover every AI call for this assignment: grading, regrades, retries, reading the answer key, and papers
+        deleted since. The key is cached between papers, so most calls should show cached reads; if they don&apos;t,
+        caching has stopped working and each paper costs more.
       </p>
     </div>
   );

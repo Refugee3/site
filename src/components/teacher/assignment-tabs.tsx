@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { cx } from "@/components/ui/cx";
 
 export interface AssignmentTabsProps {
@@ -11,8 +12,25 @@ export interface AssignmentTabsProps {
   keyNeedsAttention: boolean;
 }
 
+/**
+ * The assignment's pages. On phones the tabs wrap onto a second row, so every tab (Settings too) is in view;
+ * from `sm` up they stay on one row, scrolling sideways only if the notes make them too wide, with the
+ * current tab brought into view.
+ */
 export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttention }: AssignmentTabsProps) {
   const pathname = usePathname();
+  const navRef = useRef<HTMLElement>(null);
+
+  // Scrolls the strip itself (not the page) so the current tab is visible after a full page load.
+  useEffect(() => {
+    const nav = navRef.current;
+    const active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !active || nav.scrollWidth <= nav.clientWidth) return;
+    const strip = nav.getBoundingClientRect();
+    const tab = active.getBoundingClientRect();
+    if (tab.left < strip.left || tab.right > strip.right) nav.scrollLeft += tab.left - strip.left - 16;
+  }, [pathname]);
+
   const base = `/teacher/assignments/${assignmentId}`;
   const tabs = [
     {
@@ -28,8 +46,8 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
   ];
 
   return (
-    <nav aria-label="Assignment" className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-      <ul className="flex min-w-max gap-1 border-b border-line">
+    <nav ref={navRef} aria-label="Assignment" className="sm:overflow-x-auto">
+      <ul className="flex flex-wrap gap-x-1 border-b border-line sm:min-w-max sm:flex-nowrap">
         {tabs.map((tab) => (
           <li key={tab.href}>
             <Link

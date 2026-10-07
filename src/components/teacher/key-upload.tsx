@@ -5,6 +5,7 @@ import { useState, useTransition, type ChangeEvent } from "react";
 import { Alert } from "@/components/ui/alert";
 import { buttonClasses, type ButtonVariant } from "@/components/ui/button-styles";
 import { Spinner } from "@/components/ui/spinner";
+import { useHydrated } from "@/components/ui/use-hydrated";
 import { readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { isPdfFile } from "@/lib/client/upload-files";
 
@@ -22,10 +23,12 @@ export interface KeyUploadProps {
 export function KeyUpload(props: KeyUploadProps) {
   const { uploadUrl, disabled, label = "Upload answer key (PDF)", variant = "primary", confirmText } = props;
   const router = useRouter();
+  const hydrated = useHydrated();
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
   const busy = progress !== null || refreshing;
+  const pickerDisabled = !hydrated || disabled || busy;
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -55,7 +58,7 @@ export function KeyUpload(props: KeyUploadProps) {
   return (
     <div className="flex flex-col gap-2">
       <label
-        aria-disabled={disabled || busy || undefined}
+        aria-disabled={pickerDisabled || undefined}
         className={buttonClasses({
           variant,
           className: "cursor-pointer self-start focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
@@ -64,7 +67,7 @@ export function KeyUpload(props: KeyUploadProps) {
         <input
           type="file"
           accept="application/pdf"
-          disabled={disabled || busy}
+          disabled={pickerDisabled}
           onChange={upload}
           className="sr-only"
         />
