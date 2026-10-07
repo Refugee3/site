@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button";
 import { buttonClasses } from "@/components/ui/button-styles";
 import { cx } from "@/components/ui/cx";
 import { Spinner } from "@/components/ui/spinner";
+import { useHydrated } from "@/components/ui/use-hydrated";
 import { prepareImage } from "@/lib/client/images";
 import { receiptPathFrom, rememberSubmission } from "@/lib/client/recent-submissions";
-import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
+import { isAbortError, newUploadId, readUploadError, UPLOAD_ID_HEADER, uploadWithProgress } from "@/lib/client/upload";
 import { formatBytes, isPdfFile, moveItem } from "@/lib/client/upload-files";
 
 export interface UploadFormProps {
@@ -42,6 +43,7 @@ function revokePreview(part: Part): void {
 
 export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }: UploadFormProps) {
   const router = useRouter();
+  const hydrated = useHydrated();
   const [parts, setParts] = useState<Part[]>([]);
   const [preparing, setPreparing] = useState(0);
   const [notices, setNotices] = useState<string[]>([]);
@@ -49,6 +51,9 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
   const [error, setError] = useState<string | null>(null);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // One id per selection of pages: resending the same selection after an error reuses it, so the server
+  // can hand back that upload's receipt; any change to the pages starts a new upload.
+  const uploadId = useRef<{ parts: Part[]; id: string } | null>(null);
 
   // Thumbnails are object URLs; release whatever is still listed when the form goes away.
   const partsRef = useRef(parts);
@@ -61,6 +66,8 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
   const totalBytes = parts.reduce((sum, part) => sum + part.file.size, 0);
   const maxBytes = maxUploadMb * 1024 * 1024;
   const tooLarge = totalBytes > maxBytes;
+  // The pickers are disabled in the server HTML: a photo taken before hydration would be lost.
+  const pickersDisabled = !hydrated || busy || parts.length >= maxFiles;
 
   function appendPart(file: File, previewUrl: string | null) {
     const part: Part = { id: nextId.current++, file, previewUrl };
@@ -116,6 +123,8 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
 
     const body = new FormData();
     for (const part of parts) body.append("files", part.file, part.file.name);
+    if (uploadId.current?.parts !== parts) uploadId.current = { parts, id: newUploadId() };
+    const headers = { [UPLOAD_ID_HEADER]: uploadId.current.id };
     const controller = new AbortController();
     abortRef.current = controller;
     setError(null);
@@ -128,6 +137,7 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
         body,
         (fraction) => setUpload({ phase: "uploading", fraction }),
         controller.signal,
+        headers,
       );
       const receiptUrl = result.status < 300 ? receiptPathFrom(result.json) : null;
       if (receiptUrl) {
@@ -158,14 +168,14 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
           label="Take photos"
           accept="image/*"
           capture
-          disabled={busy || parts.length >= maxFiles}
+          disabled={pickersDisabled}
           onChange={addFiles}
           variant="primary"
         />
         <FilePicker
           label="Choose PDF or photos"
           accept="application/pdf,image/jpeg,image/png"
-          disabled={busy || parts.length >= maxFiles}
+          disabled={pickersDisabled}
           onChange={addFiles}
           variant="secondary"
         />

@@ -5,7 +5,7 @@ import { SignupForm } from "@/components/auth/signup-form";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { PublicPage } from "@/components/ui/public-page";
-import { signupPolicy } from "@/lib/auth/accounts";
+import { isFirstSignup, signupPolicy } from "@/lib/auth/accounts";
 
 export const metadata: Metadata = { title: "Create a teacher account" };
 
@@ -23,7 +23,7 @@ export default async function SignupPage() {
         </Alert>
       ) : (
         <>
-          {policy === "open_first" && (
+          {isFirstSignup() && (
             <Alert tone="info">You are creating the first teacher account on this server.</Alert>
           )}
           <Card>

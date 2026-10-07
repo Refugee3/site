@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
-import { CodeEntryForm } from "@/components/student/code-entry-form";
+import { CodeEntryForm, type CodeEntryError } from "@/components/student/code-entry-form";
 import { Card } from "@/components/ui/card";
 import { PublicPage } from "@/components/ui/public-page";
 import { getCurrentTeacher } from "@/lib/auth/dal";
@@ -18,11 +18,15 @@ export default async function HomePage(props: PageProps<"/">) {
         <p className="text-muted">Enter the code your teacher gave you.</p>
       </div>
       <Card>
-        <CodeEntryForm invalid={error === "code"} />
+        <CodeEntryForm error={codeEntryError(error)} />
       </Card>
       <p className="text-sm text-muted">
         Teacher? <Link href="/login">Log in</Link> or <Link href="/signup">create an account</Link>.
       </p>
     </PublicPage>
   );
+}
+
+function codeEntryError(error: string | string[] | undefined): CodeEntryError | null {
+  return error === "code" || error === "rate" || error === "server" ? error : null;
 }

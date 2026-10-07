@@ -2,16 +2,18 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { CopyButton } from "@/components/copy-button";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
-import { LinkButton } from "@/components/ui/link-button";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
 import { formatPercent, formatPoints } from "@/lib/format";
 import type { ReceiptNotice, ReceiptPhase, ReceiptView as ReceiptViewModel } from "@/lib/types";
+import { SubmitAgain } from "./submit-again";
 
 export interface ReceiptViewProps {
   view: ReceiptViewModel;
   /** Absolute link to this receipt, for the "save this link" box. */
   receiptUrl: string;
+  /** `/r/<token>`: this receipt's path, as the upload form remembers it. */
+  receiptPath: string;
 }
 
 const PHASE_STATUS: Record<ReceiptPhase, string> = {
@@ -40,12 +42,12 @@ function pagesText(count: number): string {
 }
 
 /** A student's receipt. Shows only what ReceiptView carries; AI text is rendered as plain text. */
-export function ReceiptView({ view, receiptUrl }: ReceiptViewProps) {
+export function ReceiptView({ view, receiptUrl, receiptPath }: ReceiptViewProps) {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
         <p className="text-sm font-medium uppercase tracking-wide text-muted">Receipt</p>
-        <h1 className="text-2xl font-semibold text-balance">{view.assignmentTitle}</h1>
+        <h1 className="text-2xl font-semibold text-balance break-words">{view.assignmentTitle}</h1>
         <p className="text-sm text-muted">
           Submitted <LocalTime ms={view.submittedAt} /> · {pagesText(view.pageCount)} ·{" "}
           <a href={view.pdfUrl} target="_blank" rel="noopener">
@@ -63,7 +65,7 @@ export function ReceiptView({ view, receiptUrl }: ReceiptViewProps) {
           Your teacher has been notified.
         </Alert>
       )}
-      {view.phase === "checked" && <Checked view={view} />}
+      {view.phase === "checked" && <Checked view={view} receiptPath={receiptPath} />}
       {view.phase === "released" && view.result && <Released result={view.result} />}
 
       <Card title="Save this link">
@@ -103,7 +105,7 @@ function identityText(name: string | null, section: string | null): { lead: stri
   return null;
 }
 
-function Checked({ view }: { view: ReceiptViewModel }) {
+function Checked({ view, receiptPath }: { view: ReceiptViewModel; receiptPath: string }) {
   const identity = identityText(view.detectedName, view.detectedSection);
   return (
     <Card title="Your paper has been read">
@@ -120,14 +122,10 @@ function Checked({ view }: { view: ReceiptViewModel }) {
                 <li key={notice}>{NOTICE_TEXT[notice]}</li>
               ))}
             </ul>
-            <p className="mt-2">If this is a mistake, submit again.</p>
+            <p className="mt-2">If something is wrong, fix your paper and submit it again.</p>
           </Alert>
         )}
-        {view.notices.length > 0 && (
-          <LinkButton href={`/s/${view.shareCode}`} variant="secondary" className="self-start">
-            Submit again
-          </LinkButton>
-        )}
+        {view.notices.length > 0 && <SubmitAgain receiptPath={receiptPath} />}
         <p className="text-muted">
           Your teacher will share your score and feedback when they are ready. Check this page again later.
         </p>

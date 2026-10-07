@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isAbortError, readUploadError, uploadWithProgress } from "./upload";
+import { isAbortError, newUploadId, readUploadError, uploadWithProgress } from "./upload";
 
 type Listener = (event: { lengthComputable: boolean; loaded: number; total: number }) => void;
 
@@ -69,6 +69,13 @@ describe("uploadWithProgress", () => {
     await expect(pending).resolves.toEqual({ status: 201, json: { receiptUrl: "/r/abc" } });
   });
 
+  it("sends extra headers, such as the upload id", async () => {
+    const pending = uploadWithProgress("/u", new FormData(), () => {}, undefined, { "Idempotency-Key": "abc" });
+    expect(lastXhr().headers).toEqual({ Accept: "application/json", "Idempotency-Key": "abc" });
+    lastXhr().respond(201, "{}");
+    await pending;
+  });
+
   it("resolves error statuses too, with json null for a non-JSON body", async () => {
     const pending = uploadWithProgress("/u", new FormData(), () => {});
     lastXhr().respond(413, "<html>Request Entity Too Large</html>");
@@ -135,5 +142,13 @@ describe("isAbortError", () => {
     expect(isAbortError(new DOMException("x", "AbortError"))).toBe(true);
     expect(isAbortError(new DOMException("x", "NotAllowedError"))).toBe(false);
     expect(isAbortError(new Error("AbortError"))).toBe(false);
+  });
+});
+
+describe("newUploadId", () => {
+  it("is 32 random hex characters", () => {
+    const id = newUploadId();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(newUploadId()).not.toBe(id);
   });
 });

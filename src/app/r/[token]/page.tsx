@@ -20,11 +20,12 @@ export default async function ReceiptPage(props: PageProps<"/r/[token]">) {
   await connection();
   const view = getReceiptView(token);
   if (!view) notFound();
-  const receiptUrl = `${getPublicOrigin(await headers())}/r/${token}`;
+  const receiptPath = `/r/${token}`;
+  const receiptUrl = `${getPublicOrigin(await headers())}${receiptPath}`;
 
   return (
     <PublicPage>
-      <ReceiptView view={view} receiptUrl={receiptUrl} />
+      <ReceiptView view={view} receiptUrl={receiptUrl} receiptPath={receiptPath} />
     </PublicPage>
   );
 }

@@ -21,6 +21,9 @@
   --color-subtle: #eef0f3;
   --color-line: #dde1e7;
   --color-line-strong: #b9c0ca;
+  /* Borders of text fields, selects and checkboxes: often their only visible edge, so they must stay at or
+     above 3:1 (WCAG 1.4.11) against surface, canvas, subtle and the -50 tones (globals.test.ts checks). */
+  --color-line-control: #7d8796;
   --color-ink: #17202b;
   --color-muted: #525d6c;
 

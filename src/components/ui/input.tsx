@@ -2,7 +2,7 @@ import type { ComponentProps } from "react";
 import { CONTROL_CLASSES } from "./control-styles";
 import { cx } from "./cx";
 
-const CHECK_CLASSES = "size-5 shrink-0 rounded border-line-strong accent-brand-600";
+const CHECK_CLASSES = "size-5 shrink-0 rounded border-line-control accent-brand-600";
 
 /** A native input. Checkboxes and radios get a compact style instead of the full-width text look. */
 export function Input({ className, type, ...props }: ComponentProps<"input">) {
