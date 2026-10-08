@@ -5,7 +5,7 @@ import { cx } from "@/components/ui/cx";
 import { LocalTime } from "@/components/ui/local-time";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { TONE_CLASSES } from "@/components/ui/tone";
-import { formatShareCode } from "@/lib/format";
+import { formatShareCode, KIND_LABEL } from "@/lib/format";
 import type { DashboardView } from "@/lib/types";
 import { nextStep } from "./next-step";
 
@@ -31,6 +31,7 @@ export function AssignmentCard({ assignment: a, studentsCanUpload }: AssignmentC
           </Link>
         </h2>
         <div className="flex flex-wrap gap-1.5">
+          <Badge tone={a.kind === "quiz" ? "info" : "neutral"}>{KIND_LABEL[a.kind]}</Badge>
           {/* While uploads are off, "Open" still shows: such an assignment takes uploads again once they are on. */}
           {(studentsCanUpload || a.status === "open") && <StatusBadge status={a.status} />}
           {a.released && <Badge tone="info">Feedback released</Badge>}

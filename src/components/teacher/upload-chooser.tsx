@@ -14,7 +14,7 @@ export interface UploadChooserProps {
 type UploadKind = "per_student" | "stack";
 
 /**
- * The two ways to upload homework: one PDF per student, or one scan of the whole stack that the AI splits.
+ * The two ways to upload papers: one file per student, or one scan of the whole stack that the AI splits.
  * Both uploaders stay mounted, so switching never cancels uploads that are still running.
  */
 export function UploadChooser({ assignmentId, view }: UploadChooserProps) {
@@ -22,13 +22,13 @@ export function UploadChooser({ assignmentId, view }: UploadChooserProps) {
   const options: Array<{ value: UploadKind; label: string; description: string }> = [
     {
       value: "per_student",
-      label: "One PDF per student",
-      description: `Scan each student's paper into its own PDF, up to ${view.maxUploadMb} MB and ${view.maxPages} pages each.`,
+      label: "One file per student",
+      description: `Each student's paper as its own PDF, photo, Word or text file, up to ${view.maxUploadMb} MB and ${view.maxPages} pages each.`,
     },
     {
       value: "stack",
       label: "One scan of the whole stack",
-      description: `Scan the whole class's papers into one PDF, up to ${view.maxScanMb} MB and ${view.maxScanPages} pages. The AI finds where each student's paper starts. A clean split is graded automatically; a split with anything to check waits for you.`,
+      description: `Scan the whole class's papers into one PDF (or a set of photos), up to ${view.maxScanMb} MB and ${view.maxScanPages} pages. The AI finds where each student's paper starts. A clean split is graded automatically; a split with anything to check waits for you.`,
     },
   ];
 

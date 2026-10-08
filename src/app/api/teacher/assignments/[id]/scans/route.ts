@@ -28,8 +28,8 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/teacher/ass
       throw new AppError("key_not_ready", "Approve the answer key before uploading papers.");
     }
     const options = splitOptions(req.nextUrl.searchParams);
-    const [file] = await readUploadedFiles(req, "file", 1, { maxBytes: getConfig().maxScanBytes });
-    const scan = await ingestScan(assignment, file, options);
+    const files = await readUploadedFiles(req, "file", getConfig().maxUploadFiles, { maxBytes: getConfig().maxScanBytes });
+    const scan = await ingestScan(assignment, files, options);
     return Response.json(
       { scanId: scan.id, reviewUrl: `/teacher/assignments/${assignment.id}/scans/${scan.id}` },
       { status: 201 },

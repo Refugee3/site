@@ -7,7 +7,8 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import type { ActionResult, AssignmentFormInput, GradingMode } from "@/lib/types";
+import { KIND_LABEL } from "@/lib/format";
+import { ASSIGNMENT_KINDS, type ActionResult, type AssignmentFormInput, type GradingMode } from "@/lib/types";
 import { instructionsField } from "./assignment-form-text";
 import { useSyncedState } from "./use-synced-state";
 
@@ -85,6 +86,33 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
         />
       </Field>
 
+      <fieldset className="flex flex-col gap-2" aria-describedby={errors.kind ? "assignment-kind-error" : undefined}>
+        <legend className="mb-1.5 text-sm font-medium text-ink">Type</legend>
+        <div className="flex flex-wrap gap-2">
+          {ASSIGNMENT_KINDS.map((kind) => (
+            <label
+              key={kind}
+              className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-line-strong bg-surface px-3 has-checked:border-brand-600 has-checked:bg-brand-50"
+            >
+              <input
+                type="radio"
+                name="kind"
+                value={kind}
+                checked={values.kind === kind}
+                onChange={() => update("kind", kind)}
+                className="size-5 shrink-0 accent-brand-600"
+              />
+              <span className="font-medium">{KIND_LABEL[kind]}</span>
+            </label>
+          ))}
+        </div>
+        {errors.kind && (
+          <p id="assignment-kind-error" className="text-sm font-medium text-danger-700">
+            {errors.kind.join(" ")}
+          </p>
+        )}
+      </fieldset>
+
       <Field
         label={instructionsField(studentsCanUpload).label}
         htmlFor="assignment-instructions"
@@ -161,7 +189,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" disabled={pending} aria-busy={pending || undefined}>
           {pending && <Spinner className="size-4" />}
-          {mode === "create" ? "Create assignment" : "Save settings"}
+          {mode === "create" ? `Create ${KIND_LABEL[values.kind].toLowerCase()}` : "Save settings"}
         </Button>
         <p role="status" className="text-sm text-success-800">
           {savedMessage}

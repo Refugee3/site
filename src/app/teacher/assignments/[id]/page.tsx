@@ -14,7 +14,8 @@ import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { getWorkerStatus } from "@/lib/jobs/queue";
 import { getBoardView } from "@/lib/services/views";
-import type { AssignmentStatus, BoardView } from "@/lib/types";
+import { kindNoun, uploadLabel } from "@/lib/format";
+import type { AssignmentKind, AssignmentStatus, BoardView } from "@/lib/types";
 
 const NO_PAPERS_HINT: Record<AssignmentStatus, string> = {
   draft: "Open the assignment, then share the code or link. Papers appear here as students hand them in, grouped by section.",
@@ -41,7 +42,7 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
           halted={worker === null || worker.state !== "running"}
         />
       )}
-      <ScanCallout assignmentId={assignment.id} scans={view.scans} />
+      <ScanCallout assignmentId={assignment.id} kind={assignment.kind} scans={view.scans} />
       <ReviewCallout assignmentId={assignment.id} groups={view.groups} />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -56,7 +57,7 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
       </div>
 
       {view.counts.total === 0 ? (
-        <NoPapers assignmentId={assignment.id} status={assignment.status} studentsCanUpload={view.studentsCanUpload} />
+        <NoPapers assignmentId={assignment.id} kind={assignment.kind} status={assignment.status} studentsCanUpload={view.studentsCanUpload} />
       ) : view.groups.length === 0 ? (
         <EmptyState
           title="No papers match this filter"
@@ -72,14 +73,15 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
 }
 
 /** While students can't upload, the teacher uploads every paper, so the empty board points there first. */
-function NoPapers(props: { assignmentId: string; status: AssignmentStatus; studentsCanUpload: boolean }) {
+function NoPapers(props: { assignmentId: string; kind: AssignmentKind; status: AssignmentStatus; studentsCanUpload: boolean }) {
   const uploadHref = `/teacher/assignments/${props.assignmentId}/upload`;
+  const upload = uploadLabel(props.kind);
   if (!props.studentsCanUpload) {
     return (
       <EmptyState
         title="No papers yet"
-        body="Upload the homework on the Upload homework tab: one PDF per student, or one scan of the whole stack. Papers appear here, grouped by section, as they're graded."
-        action={<LinkButton href={uploadHref}>Upload homework</LinkButton>}
+        body={`Upload the ${kindNoun(props.kind, true)} on the ${upload} tab: one file per student, or one scan of the whole stack. Papers appear here, grouped by section, as they're graded.`}
+        action={<LinkButton href={uploadHref}>{upload}</LinkButton>}
       />
     );
   }
@@ -94,10 +96,11 @@ function NoPapers(props: { assignmentId: string; status: AssignmentStatus; stude
 
 /**
  * A scan of the class's papers waiting for the teacher (its papers appear only once they check the split), or one the
- * AI couldn't split or is still splitting. Scans are listed on the Upload homework tab.
+ * AI couldn't split or is still splitting. Scans are listed on the upload tab.
  */
-function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: BoardView["scans"] }) {
+function ScanCallout({ assignmentId, kind, scans }: { assignmentId: string; kind: AssignmentKind; scans: BoardView["scans"] }) {
   const uploadHref = `/teacher/assignments/${assignmentId}/upload`;
+  const upload = uploadLabel(kind);
   if (scans.review > 0) {
     const href = scans.review === 1 && scans.firstReviewId ? `/teacher/assignments/${assignmentId}/scans/${scans.firstReviewId}` : uploadHref;
     return (
@@ -113,7 +116,7 @@ function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: Boa
   if (scans.failed > 0) {
     return (
       <Alert tone="danger" title={scans.failed === 1 ? "A scan couldn't be split" : `${scans.failed} scans couldn't be split`}>
-        Split it every few pages or try the AI again on the <Link href={uploadHref}>Upload homework</Link> tab.
+        Split it every few pages or try the AI again on the <Link href={uploadHref}>{upload}</Link> tab.
       </Alert>
     );
   }
@@ -122,7 +125,7 @@ function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: Boa
       <Alert tone="info">
         The AI is finding where each student&apos;s paper starts in {scans.splitting === 1 ? "your scan" : `${scans.splitting} scans`}.
         If the split looks clean, its papers are graded automatically; if anything looks off, it waits for your check on
-        the <Link href={uploadHref}>Upload homework</Link> tab.
+        the <Link href={uploadHref}>{upload}</Link> tab.
       </Alert>
     );
   }

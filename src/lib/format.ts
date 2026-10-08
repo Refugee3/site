@@ -1,4 +1,4 @@
-import type { AnswerType, Attempt, Correctness, ItemReviewReason, SubmissionStatus } from "@/lib/types";
+import type { AnswerType, AssignmentKind, Attempt, Correctness, ItemReviewReason, SubmissionStatus } from "@/lib/types";
 
 const NONE = "—";
 
@@ -37,6 +37,20 @@ export function formatShareCode(code: string): string {
 
 export function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** "Homework" / "Quiz": the assignment's badge and form label. */
+export const KIND_LABEL: Record<AssignmentKind, string> = { homework: "Homework", quiz: "Quiz" };
+
+/** The lowercase noun for wording that follows the kind: "homework" (never plural) or "quiz"/"quizzes". */
+export function kindNoun(kind: AssignmentKind, plural = false): string {
+  if (kind === "homework") return "homework";
+  return plural ? "quizzes" : "quiz";
+}
+
+/** The upload tab and buttons while the teacher uploads every paper: "Upload homework" / "Upload quizzes". */
+export function uploadLabel(kind: AssignmentKind): string {
+  return `Upload ${kindNoun(kind, true)}`;
 }
 
 export const STATUS_LABEL: Record<SubmissionStatus, string> = {

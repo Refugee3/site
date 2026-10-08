@@ -1,4 +1,5 @@
 import type { Tone } from "@/components/ui/tone";
+import { uploadLabel } from "@/lib/format";
 import type { DashboardView } from "@/lib/types";
 import { boardHref } from "./board-helpers";
 import { plural } from "./text";
@@ -13,7 +14,7 @@ type DashboardAssignment = DashboardView["assignments"][number];
 
 /**
  * The one thing an assignment card asks the teacher to do next, most urgent first; null when nothing is pending.
- * While students can't upload, the teacher uploads the homework, and there is nothing to open or remind about.
+ * While students can't upload, the teacher uploads the papers, and there is nothing to open or remind about.
  */
 export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean }): NextStep | null {
   const keyHref = `/teacher/assignments/${a.id}/key`;
@@ -37,7 +38,7 @@ export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean
   const scanStep = pendingScanStep(a);
   if (scanStep) return scanStep;
   if (!o.studentsCanUpload) {
-    return a.counts.total === 0 ? { text: "Upload homework", href: uploadHref(a.id), tone: "info" } : null;
+    return a.counts.total === 0 ? { text: uploadLabel(a.kind), href: uploadHref(a.id), tone: "info" } : null;
   }
   if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
   // Everything is graded and checked, but students still see only "received": the switch is on the assignment page.

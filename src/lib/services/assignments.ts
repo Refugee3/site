@@ -13,7 +13,7 @@ import { loadKeyState } from "@/lib/services/key-state";
 import { studentUploadsEnabled } from "@/lib/services/settings";
 import { rematchSections, rescoreAssignment } from "@/lib/services/submissions";
 import { removeAssignmentFiles } from "@/lib/storage/files";
-import { GRADING_MODES, type Assignment, type AssignmentFormInput, type Section } from "@/lib/types";
+import { ASSIGNMENT_KINDS, GRADING_MODES, type Assignment, type AssignmentFormInput, type Section } from "@/lib/types";
 
 const MAX_SECTIONS = 50;
 const SHARE_CODE_TRIES = 5;
@@ -28,6 +28,7 @@ function readSections(text: string): { sections: ParsedSection[]; errors: string
 /** The create/edit form. FormData numbers arrive as strings, hence the coercion. */
 export const AssignmentFormSchema: z.ZodType<AssignmentFormInput> = z.object({
   title: z.string().trim().min(1, "Give the assignment a title.").max(200, "Use at most 200 characters."),
+  kind: z.enum(ASSIGNMENT_KINDS, "Choose Homework or Quiz.").default("homework"),
   instructions: z.string().trim().max(2000, "Use at most 2000 characters.").default(""),
   gradingMode: z.enum(GRADING_MODES).default("completion"),
   accuracyWeight: z.coerce.number().int().min(0).max(100).multipleOf(5, "Use a multiple of 5.").default(50),
@@ -54,6 +55,7 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
       id: newId(),
       teacherId,
       title: i.title,
+      kind: i.kind,
       instructions: i.instructions,
       gradingMode: i.gradingMode,
       accuracyWeight: i.accuracyWeight,
@@ -73,6 +75,7 @@ export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignm
     const before = requireAssignment(a.id);
     const updated = updateAssignmentRow(a.id, {
       title: i.title,
+      kind: i.kind,
       instructions: i.instructions,
       gradingMode: i.gradingMode,
       accuracyWeight: i.accuracyWeight,

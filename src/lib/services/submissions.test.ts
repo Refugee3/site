@@ -186,9 +186,11 @@ describe("ingestTeacherUpload", () => {
     expect(jobRows(s.id)).toMatchObject([{ status: "queued", priority: PRIORITY.teacher }]);
   });
 
-  it("accepts only a PDF", async () => {
+  it("accepts photos as well as PDFs, but not unknown file types", async () => {
     await expect(ingestTeacherUpload(assignment, { filename: "photo.jpg", bytes: TINY_JPEG }, ORIGIN))
-      .rejects.toMatchObject({ code: "not_pdf" });
+      .resolves.toMatchObject({ submissionId: expect.any(String) });
+    await expect(ingestTeacherUpload(assignment, { filename: "notes.bin", bytes: new TextEncoder().encode("hello") }, ORIGIN))
+      .rejects.toMatchObject({ code: "unsupported_type" });
   });
 
   it("rejects a copy of any earlier paper", async () => {

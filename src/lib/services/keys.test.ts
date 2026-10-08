@@ -93,9 +93,9 @@ describe("ingestKeyPdf", () => {
     await expect(ingestKeyPdf(assignment, file)).resolves.toMatchObject({ status: "processing" });
   });
 
-  it("rejects a file that is not a PDF before storing anything", async () => {
+  it("rejects a file of an unknown type before storing anything", async () => {
     await expect(ingestKeyPdf(assignment, { filename: "key.pdf", bytes: new TextEncoder().encode("hello") }))
-      .rejects.toMatchObject({ code: "not_pdf" });
+      .rejects.toMatchObject({ code: "unsupported_type" });
     expect(getKey(assignment.id)!.status).toBe("empty");
   });
 });

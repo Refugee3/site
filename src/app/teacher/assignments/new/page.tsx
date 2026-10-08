@@ -9,13 +9,16 @@ import { defaultSectionsText } from "@/lib/services/assignments";
 import { studentUploadsEnabled } from "@/lib/services/settings";
 import type { AssignmentFormInput } from "@/lib/types";
 
-export const metadata: Metadata = { title: "New assignment" };
+export const metadata: Metadata = { title: "New homework or quiz" };
 
-export default async function NewAssignmentPage() {
+export default async function NewAssignmentPage(props: PageProps<"/teacher/assignments/new">) {
   await connection();
   const teacher = await requireTeacher();
+  // "?kind=quiz" preselects Quiz; Homework otherwise.
+  const kind = (await props.searchParams).kind === "quiz" ? "quiz" : "homework";
   const defaults: AssignmentFormInput = {
     title: "",
+    kind,
     instructions: "",
     gradingMode: "completion",
     accuracyWeight: 50,
@@ -29,11 +32,11 @@ export default async function NewAssignmentPage() {
       <Link href="/teacher" className="self-start text-sm">
         ← All assignments
       </Link>
-      <h1 className="text-2xl font-semibold">New assignment</h1>
+      <h1 className="text-2xl font-semibold">New homework or quiz</h1>
       <p className="text-muted">
         {studentUploadsEnabled()
           ? "After saving you'll add the answer key. Students can't submit until you open the assignment."
-          : "After saving you'll add the answer key, then upload the homework."}
+          : "After saving you'll add the answer key, then upload the students' papers."}
       </p>
       <Card>
         <AssignmentForm mode="create" action={createAssignmentAction} defaults={defaults} studentsCanUpload={studentUploadsEnabled()} />

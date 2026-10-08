@@ -354,7 +354,7 @@ describe("buildSubmissionPdf", () => {
     });
     expect(await rejection([file(TINY_JPEG, "photo1.jpg"), file(ascii("hello"), "fake.pdf")])).toEqual({
       code: "unsupported_type",
-      message: "File 2 (fake.pdf): Only PDF, JPEG and PNG files can be uploaded.",
+      message: "File 2 (fake.pdf): This file type can't be read here. Save it as PDF or .docx first, then upload it again. PDFs, photos, Word (.docx) and text files are accepted.",
     });
     expect((await rejection([file(TINY_JPEG), file(ENCRYPTED_PDF, "dir/locked‮.pdf")])).message).toMatch(
       /^File 2 \(locked\.pdf\): This PDF is password-protected/,
@@ -370,7 +370,7 @@ describe("buildSubmissionPdf", () => {
       /^This PDF could not be read\./,
     );
     await expect(buildSubmissionPdf([file(ascii("hello"), "fake.pdf")], OPTS)).rejects.toThrow(
-      /^Only PDF, JPEG and PNG files can be uploaded\.$/,
+      /^This file type can't be read here\. Save it as PDF or \.docx first/,
     );
   });
 });

@@ -8,10 +8,9 @@ import { buttonClasses } from "@/components/ui/button-styles";
 import { cx } from "@/components/ui/cx";
 import { Spinner } from "@/components/ui/spinner";
 import { useHydrated } from "@/components/ui/use-hydrated";
-import { prepareImage } from "@/lib/client/images";
 import { receiptPathFrom, rememberSubmission } from "@/lib/client/recent-submissions";
 import { isAbortError, newUploadId, readUploadError, UPLOAD_ID_HEADER, uploadWithProgress } from "@/lib/client/upload";
-import { formatBytes, isPdfFile, moveItem } from "@/lib/client/upload-files";
+import { fileTypeLabel, formatBytes, isImageFile, moveItem, prepareUploadFile, UPLOAD_ACCEPT } from "@/lib/client/upload-files";
 
 export interface UploadFormProps {
   /** The canonical share code. */
@@ -26,7 +25,7 @@ export interface UploadFormProps {
 interface Part {
   id: number;
   file: File;
-  /** Object URL of a photo's thumbnail; null for PDFs. */
+  /** Object URL of a photo's thumbnail; null for PDFs and documents. */
   previewUrl: string | null;
 }
 
@@ -90,13 +89,13 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
 
     // Files are prepared one at a time and appended in the order they were picked.
     for (const file of accepted) {
-      if (isPdfFile(file)) {
+      if (!isImageFile(file)) {
         appendPart(file, null);
         continue;
       }
       setPreparing((n) => n + 1);
       try {
-        const photo = await prepareImage(file);
+        const photo = await prepareUploadFile(file);
         appendPart(photo, URL.createObjectURL(photo));
       } catch {
         problems.push(`${file.name || "A photo"}: ${UNSUPPORTED_PHOTO}`);
@@ -173,8 +172,8 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
           variant="primary"
         />
         <FilePicker
-          label="Choose PDF or photos"
-          accept="application/pdf,image/jpeg,image/png"
+          label="Choose files"
+          accept={UPLOAD_ACCEPT}
           disabled={pickersDisabled}
           onChange={addFiles}
           variant="secondary"
@@ -245,7 +244,8 @@ export function UploadForm({ code, uploadUrl, maxUploadMb, maxFiles, maxPages }:
       )}
 
       <p className="text-sm text-muted">
-        Up to {maxFiles} files, {maxUploadMb} MB in total, {maxPages} pages. Photos are shrunk before uploading.
+        PDF, photos, Word or text files: up to {maxFiles} files, {maxUploadMb} MB in total, {maxPages} pages. Photos are
+        shrunk before uploading.
       </p>
     </form>
   );
@@ -305,7 +305,7 @@ function PartRow(props: {
           <img src={part.previewUrl} alt="" className="size-12 shrink-0 rounded border border-line object-cover" />
         ) : (
           <span className="flex size-12 shrink-0 items-center justify-center rounded border border-line bg-subtle text-xs font-semibold text-muted">
-            PDF
+            {fileTypeLabel(name)}
           </span>
         )}
         <span className="min-w-0 flex-1">

@@ -383,7 +383,7 @@ describe("migration 6 on a version-5 database", () => {
     const db = versionFiveDatabase();
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(6);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT id, queued_at, grading_started_at FROM submissions ORDER BY id").all()).toEqual([
       { id: "s1", queued_at: 10, grading_started_at: null }, { id: "s2", queued_at: 20, grading_started_at: null },
       { id: "s3", queued_at: 30, grading_started_at: null }, { id: "s4", queued_at: 5, grading_started_at: null },

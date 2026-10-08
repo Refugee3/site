@@ -7,7 +7,7 @@ type Card = DashboardView["assignments"][number];
 
 function card(o: Partial<Card> = {}): Card {
   return {
-    id: "a1", title: "Quiz", status: "open", shareCode: "K7M4QX", keyStatus: "ready", keyApproved: true,
+    id: "a1", title: "Quiz", kind: "homework", status: "open", shareCode: "K7M4QX", keyStatus: "ready", keyApproved: true,
     counts: { queued: 0, grading: 0, graded: 4, needs_review: 0, failed: 0, total: 4 },
     scans: { splitting: 0, review: 0, failed: 0, firstReviewId: null }, released: false, createdAt: 0, progress: null, ...o,
   };

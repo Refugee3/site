@@ -14,7 +14,7 @@ import {
 import type { ActionResult, AssignmentFormInput } from "@/lib/types";
 
 const ASSIGNMENT_FIELDS = [
-  "title", "instructions", "gradingMode", "accuracyWeight", "sectionsText", "maxSubmissions",
+  "title", "kind", "instructions", "gradingMode", "accuracyWeight", "sectionsText", "maxSubmissions",
 ] as const satisfies ReadonlyArray<keyof AssignmentFormInput>;
 
 const StatusSchema = z.enum(["open", "closed"]);

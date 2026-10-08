@@ -5,17 +5,21 @@ import {
 } from "pdf-lib";
 import { AppError, isAppError } from "@/lib/errors";
 import { sha256Hex } from "@/lib/ids";
+import { decodeTextFile, isDocx, isTextFilename, readDocxText, renderTextPdf, SAVE_AS_MESSAGE } from "@/lib/storage/documents";
 
 export interface UploadedFile {
   filename: string;
   bytes: Uint8Array;
 }
 
-export type FileKind = "pdf" | "jpeg" | "png" | "heic" | "unknown";
+/** "image": a picture format the server can't embed (WebP, GIF, TIFF, AVIF…); browsers convert those to JPEG first. */
+export type FileKind = "pdf" | "jpeg" | "png" | "heic" | "image" | "zip" | "ole" | "unknown";
 
 // Readers accept junk before the header, so the PDF signature may sit anywhere in the first KiB.
 const PDF_HEADER_WINDOW = 1024;
 const HEIC_BRANDS = new Set(["ftypheic", "ftypheix", "ftypmif1"]);
+const AVIF_BRANDS = new Set(["ftypavif", "ftypavis"]);
+const OTHER_IMAGE_EXTENSIONS = /\.(bmp|webp|gif|tiff?|avif|heic|heif|jxl|svg)$/i;
 // pdf-lib's ES5 build breaks instanceof checks on its error classes, so encryption is read from
 // `doc.isEncrypted` after a load that ignores it.
 const LOAD_OPTIONS = { ignoreEncryption: true, updateMetadata: false } as const;
@@ -40,6 +44,13 @@ export function sniffKind(b: Uint8Array): FileKind {
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpeg";
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
   if (HEIC_BRANDS.has(latin1(b, 4, 12))) return "heic";
+  if (AVIF_BRANDS.has(latin1(b, 4, 12)) || latin1(b, 0, 4) === "GIF8" || (latin1(b, 0, 4) === "RIFF" && latin1(b, 8, 12) === "WEBP")) {
+    return "image";
+  }
+  if (latin1(b, 0, 4) === "II*\0" || latin1(b, 0, 4) === "MM\0*") return "image";
+  if (latin1(b, 0, 4) === "PK\x03\x04") return "zip";
+  // The compound-file container of old Office files (.doc, .xls, .ppt).
+  if (latin1(b, 0, 8) === "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") return "ole";
   return "unknown";
 }
 
@@ -251,8 +262,8 @@ async function copyIntoNewPdf(source: PDFDocument, pages: number[]): Promise<Uin
 }
 
 /**
- * Turns the uploaded parts (PDFs and photos, in order) into the one PDF that is stored and graded.
- * A single PDF is kept byte for byte; anything else is merged into a new document.
+ * Turns the uploaded parts (PDFs, photos, Word and text files, in order) into the one PDF that is stored and
+ * graded. A single PDF is kept byte for byte; anything else is merged into a new document.
  */
 export async function buildSubmissionPdf(
   parts: UploadedFile[],
@@ -287,7 +298,7 @@ async function mergeParts(
 
   const doc = await PDFDocument.create();
   for (const [index, part] of prepared.entries()) {
-    await namingPart(parts, index, () => (part.kind === "pdf" ? appendPdf(doc, part.doc) : appendImage(doc, part)));
+    await namingPart(parts, index, () => (part.kind === "pdf" || part.kind === "text" ? appendPdf(doc, part.doc) : appendImage(doc, part)));
   }
   const bytes = await doc.save({ useObjectStreams: true });
   // Saved bytes embed timestamps, so duplicate detection hashes the inputs instead.
@@ -311,6 +322,8 @@ async function namingPart<T>(parts: UploadedFile[], index: number, step: () => P
 
 type PreparedPart =
   | { kind: "pdf"; doc: PDFDocument; pageCount: number }
+  /** A Word or text file rendered as text pages. */
+  | { kind: "text"; doc: PDFDocument; pageCount: number }
   | { kind: "jpeg"; bytes: Uint8Array; index: number; pageCount: 1 }
   | { kind: "png"; bytes: Uint8Array; index: number; pageCount: 1; pixels: number };
 
@@ -328,8 +341,17 @@ async function preparePart(part: UploadedFile, index: number, maxPages: number):
       return { kind, bytes: part.bytes, index, pageCount: 1, pixels: await checkPng(part.bytes, index) };
     case "heic":
       throw new AppError("unsupported_type", "HEIC photos are not supported. Use the Take photos button or export as JPEG.");
+    case "image":
+      throw unsupportedImage();
+    case "zip":
+      if (!isDocx(part.bytes)) throw new AppError("unsupported_type", SAVE_AS_MESSAGE);
+      return { kind: "text", ...(await renderTextPdf(await readDocxText(part.bytes), maxPages)) };
+    case "ole":
+      throw new AppError("unsupported_type", SAVE_AS_MESSAGE);
     case "unknown":
-      throw new AppError("unsupported_type", "Only PDF, JPEG and PNG files can be uploaded.");
+      if (isTextFilename(part.filename)) return { kind: "text", ...(await renderTextPdf(decodeTextFile(part.bytes), maxPages)) };
+      if (OTHER_IMAGE_EXTENSIONS.test(part.filename)) throw unsupportedImage();
+      throw new AppError("unsupported_type", `${SAVE_AS_MESSAGE} ${ACCEPTED_MESSAGE}`);
   }
 }
 
@@ -425,6 +447,12 @@ function inflatesWithin(data: Uint8Array, limit: number): Promise<boolean> {
   });
 }
 
+const ACCEPTED_MESSAGE = "PDFs, photos, Word (.docx) and text files are accepted.";
+
+function unsupportedImage(): AppError {
+  return new AppError("unsupported_type", "This kind of image can't be read here. Pick it again on the upload page so your browser converts it, or export it as JPEG or PDF.");
+}
+
 function unreadablePhoto(index: number): AppError {
   return new AppError("validation", `File ${index + 1} could not be read as a photo. Retake it or upload a PDF.`);
 }
@@ -439,6 +467,12 @@ function invalidPdf(): AppError {
 
 function tooManyPages(pageCount: number, maxPages: number): AppError {
   return new AppError("too_many_pages", `This upload has ${pageCount} pages; the limit is ${maxPages}.`);
+}
+
+/** The display name of an upload: the first file's name, plus how many more were merged into it. */
+export function uploadName(files: UploadedFile[]): string {
+  const first = sanitizeFilename(files[0]?.filename ?? "");
+  return files.length > 1 ? `${first} + ${files.length - 1} more` : first;
 }
 
 /** A display-only name: the basename without control characters, at most 200 characters. */

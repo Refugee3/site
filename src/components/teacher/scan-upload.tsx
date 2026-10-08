@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { useHydrated } from "@/components/ui/use-hydrated";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
-import { isPdfFile } from "@/lib/client/upload-files";
+import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
 import type { ScanSplitMode } from "@/lib/types";
 import { parseScanUploadResult } from "./scan-upload-result";
 import { useLeaveGuard } from "./use-leave-guard";
@@ -53,13 +53,9 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProp
   useLeaveGuard(uploading, "1 upload hasn't finished. Leaving this page cancels it. Leave anyway?");
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const picked = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
-    if (!isPdfFile(file)) {
-      setError("Choose a PDF file. Scan the papers into one PDF first.");
-      return;
-    }
+    if (picked.length === 0) return;
     const query = splitQuery(mode, pagesText);
     if (query === null) {
       setError(PAGES_ERROR);
@@ -67,12 +63,22 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProp
     }
 
     const body = new FormData();
-    body.append("file", file, file.name);
     const abort = new AbortController();
     controller.current = abort;
     setError(null);
     setProgress(0);
     try {
+      // Several files (photos of each page, for instance) are joined into one scan in the order picked.
+      for (const file of picked) {
+        let prepared: File;
+        try {
+          prepared = await prepareUploadFile(file);
+        } catch {
+          setError(`${file.name || "A photo"}: ${UNSUPPORTED_IMAGE}`);
+          return;
+        }
+        body.append("file", prepared, prepared.name);
+      }
       const result = await uploadWithProgress(`${uploadUrl}?${query}`, body, setProgress, abort.signal);
       const uploaded = result.status === 201 ? parseScanUploadResult(result.json) : null;
       if (uploaded) startOpening(() => router.push(uploaded.reviewUrl));
@@ -129,15 +135,16 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProp
           className: "cursor-pointer self-start focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
         })}
       >
-        <input type="file" accept="application/pdf" disabled={locked || !hydrated} onChange={upload} className="sr-only" />
+        <input type="file" multiple accept={UPLOAD_ACCEPT} disabled={locked || !hydrated} onChange={upload} className="sr-only" />
         {busy && <Spinner className="size-4" />}
-        Choose the scan (PDF)
+        Choose the scan
       </label>
+      <p className="text-sm text-muted">{UPLOAD_FORMATS}; several files are joined in the order you pick them.</p>
 
       <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
         {progress !== null && (
           <p className="text-sm text-muted">
-            {progress < 1 ? `Uploading… ${Math.round(progress * 100)}%` : "Uploaded. Checking the PDF…"}
+            {progress < 1 ? `Uploading… ${Math.round(progress * 100)}%` : "Uploaded. Checking the file…"}
           </p>
         )}
         {error && <Alert tone="danger">{error}</Alert>}

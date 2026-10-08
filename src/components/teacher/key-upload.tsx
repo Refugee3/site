@@ -1,13 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition, type ChangeEvent } from "react";
+import { useId, useState, useTransition, type ChangeEvent } from "react";
 import { Alert } from "@/components/ui/alert";
 import { buttonClasses, type ButtonVariant } from "@/components/ui/button-styles";
 import { Spinner } from "@/components/ui/spinner";
 import { useHydrated } from "@/components/ui/use-hydrated";
 import { readUploadError, uploadWithProgress } from "@/lib/client/upload";
-import { isPdfFile } from "@/lib/client/upload-files";
+import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
 
 export interface KeyUploadProps {
   /** `/api/teacher/assignments/<id>/key` */
@@ -19,11 +19,15 @@ export interface KeyUploadProps {
   confirmText?: string;
 }
 
-/** Uploads the answer-key PDF as soon as it is chosen; on 202 the page refreshes into its "processing" state. */
+/**
+ * Uploads the answer key as soon as it is chosen (several files are merged in order; images are converted to
+ * JPEG first); on 202 the page refreshes into its "processing" state.
+ */
 export function KeyUpload(props: KeyUploadProps) {
-  const { uploadUrl, disabled, label = "Upload answer key (PDF)", variant = "primary", confirmText } = props;
+  const { uploadUrl, disabled, label = "Upload answer key", variant = "primary", confirmText } = props;
   const router = useRouter();
   const hydrated = useHydrated();
+  const formatsId = useId();
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
@@ -31,20 +35,25 @@ export function KeyUpload(props: KeyUploadProps) {
   const pickerDisabled = !hydrated || disabled || busy;
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const picked = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
-    if (!isPdfFile(file)) {
-      setError("Choose a PDF file. Scan or export the key as a PDF first.");
-      return;
-    }
+    if (picked.length === 0) return;
     if (confirmText && !window.confirm(confirmText)) return;
 
     const body = new FormData();
-    body.append("file", file, file.name);
     setError(null);
     setProgress(0);
     try {
+      for (const file of picked) {
+        let prepared: File;
+        try {
+          prepared = await prepareUploadFile(file);
+        } catch {
+          setError(`${file.name || "A photo"}: ${UNSUPPORTED_IMAGE}`);
+          return;
+        }
+        body.append("file", prepared, prepared.name);
+      }
       const result = await uploadWithProgress(uploadUrl, body, setProgress);
       if (result.status === 202) startRefresh(() => router.refresh());
       else setError(readUploadError(result).message);
@@ -66,7 +75,9 @@ export function KeyUpload(props: KeyUploadProps) {
       >
         <input
           type="file"
-          accept="application/pdf"
+          multiple
+          accept={UPLOAD_ACCEPT}
+          aria-describedby={formatsId}
           disabled={pickerDisabled}
           onChange={upload}
           className="sr-only"
@@ -74,10 +85,13 @@ export function KeyUpload(props: KeyUploadProps) {
         {busy && <Spinner className="size-4" />}
         {label}
       </label>
+      <p id={formatsId} className="text-sm text-muted">
+        {UPLOAD_FORMATS}; several files are joined in the order you pick them.
+      </p>
       <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
         {progress !== null && (
           <p className="text-sm text-muted">
-            {progress < 1 ? `Uploading… ${Math.round(progress * 100)}%` : "Uploaded. Checking the PDF…"}
+            {progress < 1 ? `Uploading… ${Math.round(progress * 100)}%` : "Uploaded. Checking the file…"}
           </p>
         )}
         {refreshing && <p className="text-sm text-muted">Starting to read the key…</p>}

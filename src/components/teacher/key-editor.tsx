@@ -14,8 +14,8 @@ import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { moveItem } from "@/lib/client/upload-files";
-import { ANSWER_TYPE_LABEL, formatPoints } from "@/lib/format";
-import { ANSWER_TYPES, type AnswerType, type AssignmentStatus, type KeyItem } from "@/lib/types";
+import { ANSWER_TYPE_LABEL, formatPoints, uploadLabel } from "@/lib/format";
+import { ANSWER_TYPES, type AnswerType, type AssignmentKind, type AssignmentStatus, type KeyItem } from "@/lib/types";
 import { boardHref } from "./board-helpers";
 import {
   buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
@@ -35,8 +35,9 @@ export interface KeyEditorProps {
   approved: boolean;
   /** Papers already graded or awaiting review with the current key. */
   gradedCount: number;
-  /** Off: no "Save & open"; once approved, the next step is uploading the homework. */
+  /** Off: no "Save & open"; once approved, the next step is uploading the papers. */
   studentsCanUpload: boolean;
+  kind: AssignmentKind;
 }
 
 // Dense controls from the sm breakpoint up; phones keep 44 px targets and 16 px text (no zoom on focus).
@@ -48,7 +49,7 @@ function initialRows(items: KeyItem[]): DraftRow[] {
 
 /** The answer-key table: one card per gradable item, with the save bar pinned to the bottom of the screen. */
 export function KeyEditor(props: KeyEditorProps) {
-  const { assignmentId, assignmentStatus, items, teacherNotes, version, approved, gradedCount, studentsCanUpload } = props;
+  const { assignmentId, assignmentStatus, items, teacherNotes, version, approved, gradedCount, studentsCanUpload, kind } = props;
   const router = useRouter();
   const runner = useActionRunner();
   const [rows, setRows] = useState(() => initialRows(items));
@@ -224,7 +225,7 @@ export function KeyEditor(props: KeyEditorProps) {
           </p>
           {!studentsCanUpload && approved && !dirty && !runner.pending && (
             <LinkButton href={`/teacher/assignments/${assignmentId}/upload`} variant="secondary" size="sm">
-              Upload homework →
+              {uploadLabel(kind)} →
             </LinkButton>
           )}
         </div>

@@ -1,5 +1,7 @@
 export const ASSIGNMENT_STATUSES = ["draft", "open", "closed"] as const;
 export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
+export const ASSIGNMENT_KINDS = ["homework", "quiz"] as const;
+export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
 export const GRADING_MODES = ["completion", "accuracy", "blended"] as const;
 export type GradingMode = (typeof GRADING_MODES)[number];
 export const KEY_STATUSES = ["empty", "processing", "ready", "failed"] as const;
@@ -31,7 +33,7 @@ export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface Teacher { id: string; email: string; displayName: string; createdAt: number }
-export interface Assignment { id: string; teacherId: string; title: string; instructions: string; status: AssignmentStatus;
+export interface Assignment { id: string; teacherId: string; title: string; kind: AssignmentKind; instructions: string; status: AssignmentStatus;
   gradingMode: GradingMode; accuracyWeight: number; shareCode: string; maxSubmissions: number; feedbackReleasedAt: number | null;
   createdAt: number; updatedAt: number }
 export interface Section { id: string; assignmentId: string; label: string; aliases: string[]; canonicalKey: string; sortOrder: number }
@@ -75,7 +77,7 @@ export interface ScoreResult { items: ItemScore[]; earnedCenti: number; maxCenti
   completionCenti: number; accuracyCenti: number; totalOverridden: boolean; judgedCount: number }
 
 export type ActionResult<T = undefined> = { ok: true; data?: T; message?: string } | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
-export interface AssignmentFormInput { title: string; instructions: string; gradingMode: GradingMode; accuracyWeight: number; sectionsText: string; maxSubmissions: number }
+export interface AssignmentFormInput { title: string; kind: AssignmentKind; instructions: string; gradingMode: GradingMode; accuracyWeight: number; sectionsText: string; maxSubmissions: number }
 export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boolean; items: Array<{ id: string | null; label: string;
   groupLabel: string; prompt: string; answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string;
   pointsCenti: number; partialCredit: boolean; page: number | null }> }
@@ -127,7 +129,7 @@ export interface ScanSplitProgress {
   /** max(0, pageCount × typical ms per page - ms since splitStartedAt); typical: median of recent splits, else 2 000 per page. */
   etaMs: number;
 }
-export interface DashboardView { assignments: Array<{ id: string; title: string;
+export interface DashboardView { assignments: Array<{ id: string; title: string; kind: AssignmentKind;
   status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans;
   released: boolean; createdAt: number;
   /** The current grading batch (see GradingProgress); null while nothing is queued or grading. */

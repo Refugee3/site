@@ -6,7 +6,7 @@ import { listKeyItems, updateKey, upsertKeyItems } from "@/lib/db/repos/keys";
 import { listStaleIds } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
 import { keyFingerprint, validateSaveKey } from "@/lib/grading/key";
-import { newId, sha256Hex } from "@/lib/ids";
+import { newId } from "@/lib/ids";
 import { enqueueExtractKey } from "@/lib/jobs/queue";
 import { setAssignmentStatus } from "@/lib/services/assignments";
 import { isKeyLocked, requireKey } from "@/lib/services/key-state";
@@ -14,18 +14,19 @@ import { studentUploadsEnabled } from "@/lib/services/settings";
 import { rescoreAssignment } from "@/lib/services/submissions";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { keyPdfRel } from "@/lib/storage/paths";
-import { sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
+import { buildSubmissionPdf, uploadName, type UploadedFile } from "@/lib/storage/pdf";
 import type { AnswerKey, Assignment, SaveKeyInput } from "@/lib/types";
 
 /**
- * Stores a (replacement) key PDF and queues its extraction. The teacher's notes are kept; the old
- * PDF is removed once the new one is committed.
+ * Stores a (replacement) key and queues its extraction. The uploaded files (any accepted format) are merged
+ * into one PDF. The teacher's notes are kept; the old PDF is removed once the new one is committed.
  */
-export async function ingestKeyPdf(a: Assignment, f: UploadedFile): Promise<AnswerKey> {
-  const { pageCount } = await validatePdf(f.bytes, { maxPages: getConfig().maxPages });
+export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | UploadedFile[]): Promise<AnswerKey> {
+  const files = [upload].flat();
+  const { bytes, pageCount, contentSha256 } = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
   assertExtractable(a.id); // fail before writing the file; re-checked in the transaction
   const pdfPath = keyPdfRel(a.id, newId());
-  await writeFileAtomic(pdfPath, f.bytes);
+  await writeFileAtomic(pdfPath, bytes);
 
   let stored: { key: AnswerKey; previousPdfPath: string | null };
   try {
@@ -34,8 +35,8 @@ export async function ingestKeyPdf(a: Assignment, f: UploadedFile): Promise<Answ
       const key = updateKey(a.id, {
         status: "processing",
         sourcePdfPath: pdfPath,
-        sourceFilename: sanitizeFilename(f.filename),
-        sourceSha256: sha256Hex(f.bytes),
+        sourceFilename: uploadName(files),
+        sourceSha256: contentSha256,
         sourcePageCount: pageCount,
         documentKind: null, // the previous PDF's verdict; this one has not been read yet
         errorMessage: null,

@@ -17,6 +17,7 @@ export default async function SettingsPage(props: PageProps<"/teacher/assignment
   const studentsCanUpload = studentUploadsEnabled();
   const defaults: AssignmentFormInput = {
     title: assignment.title,
+    kind: assignment.kind,
     instructions: assignment.instructions,
     gradingMode: assignment.gradingMode,
     accuracyWeight: assignment.accuracyWeight,

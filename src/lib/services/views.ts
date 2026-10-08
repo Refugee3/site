@@ -49,6 +49,7 @@ export function getDashboardView(t: Teacher): DashboardView {
       return {
         id: a.id,
         title: a.title,
+        kind: a.kind,
         status: a.status,
         shareCode: a.shareCode,
         keyStatus: key.status,

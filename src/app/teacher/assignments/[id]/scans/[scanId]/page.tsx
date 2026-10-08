@@ -14,6 +14,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { requireOwnedScan } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { getScanReviewView } from "@/lib/services/views";
+import { uploadLabel } from "@/lib/format";
 import type { ScanReviewView } from "@/lib/types";
 
 const POLL_MS = 3000;
@@ -31,7 +32,7 @@ export default async function ScanPage(props: PageProps<"/teacher/assignments/[i
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <Link href={`/teacher/assignments/${assignment.id}/upload`} className="self-start text-sm">
-          ← Upload homework
+          ← {uploadLabel(assignment.kind)}
         </Link>
         <h2 className="text-xl font-semibold">Check the split</h2>
         <p className="break-words text-sm text-muted">

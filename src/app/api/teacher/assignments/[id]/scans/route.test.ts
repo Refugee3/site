@@ -138,8 +138,8 @@ describe("POST /api/teacher/assignments/[id]/scans", () => {
 
     const fits = new FormData();
     fits.append("file", new File([new Uint8Array(1_500_000)], "junk.pdf", { type: "application/pdf" }));
-    // Past the size limits, so the PDF check is what refuses it.
-    expect((await upload("mode=auto", fits)).status).toBe(422);
+    // Past the size limits, so the file-type check is what refuses it.
+    expect((await upload("mode=auto", fits)).status).toBe(415);
   });
 
   it("refuses the same scan twice", async () => {

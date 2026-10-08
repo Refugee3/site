@@ -29,7 +29,7 @@ beforeEach(() => {
 
 function form(o: Partial<AssignmentFormInput> = {}): AssignmentFormInput {
   return {
-    title: "Unit 4 Quiz", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500, ...o,
+    title: "Unit 4 Quiz", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500, ...o,
   };
 }
 
@@ -50,7 +50,7 @@ describe("AssignmentFormSchema", () => {
   it("coerces FormData strings and fills defaults", () => {
     const parsed = AssignmentFormSchema.parse({ title: "  Quiz 1 ", accuracyWeight: "40", maxSubmissions: "30" });
     expect(parsed).toEqual({
-      title: "Quiz 1", instructions: "", gradingMode: "completion", accuracyWeight: 40, sectionsText: "", maxSubmissions: 30,
+      title: "Quiz 1", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 40, sectionsText: "", maxSubmissions: 30,
     });
   });
 

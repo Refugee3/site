@@ -20,7 +20,7 @@ import type { Assignment, KeyEditorView } from "@/lib/types";
 
 const PROCESSING_POLL_MS = 3000;
 
-const REPLACE_CONFIRM = "Upload this PDF as the new key? The AI reads it and every current item is replaced.";
+const REPLACE_CONFIRM = "Upload this as the new key? The AI reads it and every current item is replaced.";
 
 const LOCKED_NOTE =
   "Papers have already been graded with this key, so its PDF can't be replaced or read again (that would replace every item). Edit the items instead.";
@@ -98,11 +98,11 @@ function AddKey({ uploadUrl }: { uploadUrl: string }) {
     <Card title="Add the answer key">
       <div className="flex flex-col gap-4">
         <p className="text-muted">
-          Upload the key as a PDF: typed or handwritten, a filled-in worksheet, a list of answers or a rubric. The AI
-          lists every question with its answer, and you check the list before any paper is graded.
+          Upload the key as a PDF, photos, or a Word or text file: typed or handwritten, a filled-in worksheet, a list of
+          answers or a rubric. The AI lists every question with its answer, and you check the list before any paper is graded.
         </p>
         <KeyUpload uploadUrl={uploadUrl} disabled={false} />
-        <p className="text-sm text-muted">No PDF? You can type the key in yourself instead.</p>
+        <p className="text-sm text-muted">No file? You can type the key in yourself instead.</p>
         <LinkButton href="?manual=1" variant="secondary" className="self-start">
           Build the key manually
         </LinkButton>
@@ -126,7 +126,7 @@ function Failed(props: { assignmentId: string; view: KeyEditorView; uploadUrl: s
           <KeyUpload
             uploadUrl={uploadUrl}
             disabled={view.locked}
-            label="Upload a different PDF"
+            label="Upload a different file"
             variant="secondary"
             confirmText={view.items.length > 0 ? REPLACE_CONFIRM : undefined}
           />
@@ -164,6 +164,7 @@ function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: Key
         approved={isKeyApproved(key, items.length)}
         gradedCount={view.gradedCount}
         studentsCanUpload={view.studentsCanUpload}
+        kind={assignment.kind}
       />
     </div>
   );
@@ -177,7 +178,7 @@ function ReplaceKey({ assignmentId, view, uploadUrl }: { assignmentId: string; v
           <p className="text-sm text-muted">{LOCKED_NOTE}</p>
         ) : (
           <p className="text-sm text-muted">
-            Uploading a new PDF, or reading this one again, replaces every item above, including your edits. Your notes
+            Uploading a new key, or reading this one again, replaces every item above, including your edits. Your notes
             for grading are kept.
           </p>
         )}
@@ -185,7 +186,7 @@ function ReplaceKey({ assignmentId, view, uploadUrl }: { assignmentId: string; v
           <KeyUpload
             uploadUrl={uploadUrl}
             disabled={view.locked}
-            label="Upload a new key PDF"
+            label="Upload a new key"
             variant="secondary"
             confirmText={REPLACE_CONFIRM}
           />

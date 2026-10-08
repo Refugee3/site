@@ -14,7 +14,7 @@ import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
-import { CutTooLargeError, extractPageSets, sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
+import { buildSubmissionPdf, CutTooLargeError, extractPageSets, uploadName, type UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, Scan, ScanLayout, ScanSplitMode, ScanStatus } from "@/lib/types";
 
 // One scan of a whole class's papers: split (by the AI, or every N pages), checked by the teacher, then
@@ -33,11 +33,15 @@ const STATUS_REFUSAL: Record<ScanStatus, string> = {
 };
 
 /** Stores the scan and, in automatic mode, queues the AI split; "every N pages" goes straight to review. */
-export async function ingestScan(a: Assignment, f: UploadedFile, o: { mode: ScanSplitMode; pagesPerPaper: number | null }): Promise<Scan> {
+export async function ingestScan(
+  a: Assignment,
+  upload: UploadedFile | UploadedFile[],
+  o: { mode: ScanSplitMode; pagesPerPaper: number | null },
+): Promise<Scan> {
   assertKeyApproved(a);
   const pagesPerPaper = o.mode === "every" ? readPagesPerPaper(o.pagesPerPaper) : null;
-  const { pageCount } = await validatePdf(f.bytes, { maxPages: getConfig().maxScanPages });
-  const sha = sha256Hex(f.bytes);
+  const files = [upload].flat();
+  const { bytes, pageCount, contentSha256: sha } = await buildSubmissionPdf(files, { maxPages: getConfig().maxScanPages });
   if (requireKey(a.id).sourceSha256 === sha) {
     throw new AppError("is_answer_key", "This file is the answer key, not the students' papers.");
   }
@@ -47,7 +51,7 @@ export async function ingestScan(a: Assignment, f: UploadedFile, o: { mode: Scan
 
   const id = newId();
   const pdfPath = scanPdfRel(a.id, id);
-  await writeFileAtomic(pdfPath, f.bytes);
+  await writeFileAtomic(pdfPath, bytes);
   try {
     return tx(() => {
       const scan = insertScan({
@@ -57,9 +61,9 @@ export async function ingestScan(a: Assignment, f: UploadedFile, o: { mode: Scan
         splitMode: o.mode,
         pagesPerPaper,
         pdfPath,
-        originalFilename: sanitizeFilename(f.filename),
+        originalFilename: uploadName(files),
         contentSha256: sha,
-        byteSize: f.bytes.byteLength,
+        byteSize: bytes.byteLength,
         pageCount,
         layout: pagesPerPaper === null ? null : everyNLayout(pageCount, pagesPerPaper),
       });

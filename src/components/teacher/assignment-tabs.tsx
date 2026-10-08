@@ -4,14 +4,17 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { cx } from "@/components/ui/cx";
+import { uploadLabel } from "@/lib/format";
+import type { AssignmentKind } from "@/lib/types";
 
 export interface AssignmentTabsProps {
   assignmentId: string;
   needsReviewCount: number;
   /** The key still needs the teacher (empty, failed or not approved). */
   keyNeedsAttention: boolean;
-  /** Off: the teacher uploads all the homework, so the upload tab is named for that. */
+  /** Off: the teacher uploads all the papers, so the upload tab is named for them ("Upload homework"/"Upload quizzes"). */
   studentsCanUpload: boolean;
+  kind: AssignmentKind;
 }
 
 /**
@@ -19,7 +22,7 @@ export interface AssignmentTabsProps {
  * from `sm` up they stay on one row, scrolling sideways only if the notes make them too wide, with the
  * current tab brought into view.
  */
-export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttention, studentsCanUpload }: AssignmentTabsProps) {
+export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttention, studentsCanUpload, kind }: AssignmentTabsProps) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
 
@@ -45,7 +48,7 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
     { href: `${base}/key`, label: "Answer key", active: pathname === `${base}/key`, note: keyNeedsAttention ? "needs you" : null },
     {
       href: `${base}/upload`,
-      label: studentsCanUpload ? "Upload papers" : "Upload homework",
+      label: studentsCanUpload ? "Upload papers" : uploadLabel(kind),
       // A scan's split is checked on its own page, under the Upload tab.
       active: pathname === `${base}/upload` || pathname.startsWith(`${base}/scans/`),
       note: null,

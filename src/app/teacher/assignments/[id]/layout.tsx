@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { cx } from "@/components/ui/cx";
 import type { Tone } from "@/components/ui/tone";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
-import { formatPoints, formatShareCode } from "@/lib/format";
+import { formatPoints, formatShareCode, KIND_LABEL } from "@/lib/format";
 import { getPublicOrigin } from "@/lib/http/request";
 import { getAssignmentHeader } from "@/lib/services/views";
 import type { AssignmentHeader } from "@/lib/types";
@@ -40,6 +40,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="min-w-0 break-words text-2xl font-semibold">{assignment.title}</h1>
+          <Badge tone={assignment.kind === "quiz" ? "info" : "neutral"}>{KIND_LABEL[assignment.kind]}</Badge>
           {/* While uploads are off, "Open" still shows: the assignment takes uploads again once they are on. */}
           {(header.studentsCanUpload || assignment.status === "open") && <StatusBadge status={assignment.status} />}
         </div>
@@ -91,6 +92,7 @@ export default async function AssignmentLayout({ params, children }: Props) {
         needsReviewCount={header.counts.needs_review}
         keyNeedsAttention={!header.keyApproved && header.keyStatus !== "processing"}
         studentsCanUpload={header.studentsCanUpload}
+        kind={assignment.kind}
       />
 
       {children}

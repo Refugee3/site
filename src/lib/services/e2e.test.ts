@@ -67,7 +67,7 @@ describe("end-to-end flow with the fake grader", () => {
     enableStudentUploads();
     const teacher = await registerTeacher({ email: "Rivera@Example.org", displayName: "Ms. Rivera", password: "correct horse battery", code: null });
     let a = createAssignment(teacher.id, {
-      title: "Unit 4 Quiz", instructions: "Show your work.", gradingMode: "completion", accuracyWeight: 50,
+      title: "Unit 4 Quiz", kind: "quiz", instructions: "Show your work.", gradingMode: "completion", accuracyWeight: 50,
       sectionsText: "Period 1 | P1\nPeriod 3", maxSubmissions: 500,
     });
     expect(a.status).toBe("draft");
@@ -189,7 +189,7 @@ describe("end-to-end flow with the fake grader", () => {
   it("grades one scan of the whole stack with student uploads off, and learns from a correction", async () => {
     const teacher = await registerTeacher({ email: "kim@example.org", displayName: "Mr. Kim", password: "correct horse battery", code: null });
     let a = createAssignment(teacher.id, {
-      title: "Photosynthesis", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500,
+      title: "Photosynthesis", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500,
     });
 
     // A three-page key; "Save & open" approves it but can't open the assignment while student uploads are off.

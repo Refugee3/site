@@ -348,6 +348,14 @@ ALTER TABLE scans ADD COLUMN auto_graded INTEGER NOT NULL DEFAULT 0 CHECK (auto_
 UPDATE scans SET split_started_at = created_at WHERE status = 'splitting';
 `,
   },
+  {
+    version: 7,
+    name: "assignment_kind",
+    sql: `
+-- Homework or quiz: graded the same way; only labels and the dashboard filter differ.
+ALTER TABLE assignments ADD COLUMN kind TEXT NOT NULL DEFAULT 'homework' CHECK (kind IN ('homework','quiz'));
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

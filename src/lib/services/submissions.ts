@@ -17,7 +17,7 @@ import { identityFlags } from "@/lib/grading/reconcile";
 import { computeScore, MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { resolveSection } from "@/lib/grading/sections";
 import { charLength } from "@/lib/grading/text";
-import { newId, newToken, sha256Hex } from "@/lib/ids";
+import { newId, newToken } from "@/lib/ids";
 import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { loadGuidance } from "@/lib/services/guidance";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
@@ -25,7 +25,7 @@ import { readLessonReason, syncLessonForItem } from "@/lib/services/lessons";
 import { studentUploadsEnabled, UPLOADS_OFF_MESSAGE } from "@/lib/services/settings";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
-import { buildSubmissionPdf, sanitizeFilename, validatePdf, type UploadedFile } from "@/lib/storage/pdf";
+import { buildSubmissionPdf, uploadName, type UploadedFile } from "@/lib/storage/pdf";
 import {
   FLAG_CODES,
   type Assignment, type FlagCode, type KeyItem, type Submission, type SubmissionItem, type SubmissionStatus,
@@ -80,12 +80,19 @@ export async function ingestStudentUpload(
   return { receiptUrl: receiptUrl(submission.receiptToken, ""), duplicate: false };
 }
 
-/** One scanned paper (one PDF = one student) uploaded by the teacher; needs an approved key, whatever the assignment status. */
-export async function ingestTeacherUpload(a: Assignment, file: UploadedFile, origin: string): Promise<{ submissionId: string; receiptUrl: string }> {
+/**
+ * One student's paper uploaded by the teacher (its files, in any accepted format, merged in order); needs an
+ * approved key, whatever the assignment status.
+ */
+export async function ingestTeacherUpload(
+  a: Assignment,
+  upload: UploadedFile | UploadedFile[],
+  origin: string,
+): Promise<{ submissionId: string; receiptUrl: string }> {
   assertKeyApproved(a);
-  const { pageCount } = await validatePdf(file.bytes, { maxPages: getConfig().maxPages });
-  const pdf = { bytes: file.bytes, pageCount, contentSha256: sha256Hex(file.bytes) };
-  const submission = await storeTeacherPaper(a, pdf, sanitizeFilename(file.filename));
+  const files = [upload].flat();
+  const pdf = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
+  const submission = await storeTeacherPaper(a, pdf, uploadName(files));
   if (!submission) throw new AppError("duplicate", DUPLICATE_MESSAGE);
   return { submissionId: submission.id, receiptUrl: receiptUrl(submission.receiptToken, origin) };
 }
@@ -148,11 +155,6 @@ function checkContentSha(
 
 function studentReplay(s: Submission): { receiptUrl: string; duplicate: boolean } {
   return { receiptUrl: receiptUrl(s.receiptToken, ""), duplicate: true };
-}
-
-function uploadName(files: UploadedFile[]): string {
-  const first = sanitizeFilename(files[0]?.filename ?? "");
-  return files.length > 1 ? `${first} + ${files.length - 1} more` : first;
 }
 
 /**

@@ -3,13 +3,12 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { CopyButton } from "@/components/copy-button";
-import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { buttonClasses } from "@/components/ui/button-styles";
 import { cx } from "@/components/ui/cx";
 import { useHydrated } from "@/components/ui/use-hydrated";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
-import { formatBytes, isPdfFile } from "@/lib/client/upload-files";
+import { formatBytes, prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
 import { createTaskQueue } from "./task-queue";
 import { plural } from "./text";
 import { parseTeacherUploadResult } from "./upload-result";
@@ -39,14 +38,14 @@ interface Entry {
 const PARALLEL_UPLOADS = 2;
 
 /**
- * Uploads scanned paper copies, one PDF per student and one request per PDF. Files start uploading as soon as
+ * Uploads scanned paper copies, one file per student (any accepted format; images are converted to JPEG
+ * first) and one request per file. Files start uploading as soon as
  * they are added; each finished one shows its receipt link for the teacher to hand to the student.
  */
 export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   const router = useRouter();
   const hydrated = useHydrated();
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [skipped, setSkipped] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const nextId = useRef(0);
   const queue = useRef<ReturnType<typeof createTaskQueue<Entry>> | null>(null);
@@ -93,8 +92,15 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
     patch(entry.id, { state: "uploading", progress: 0, error: null, code: null });
 
     const body = new FormData();
-    body.append("file", entry.file, entry.file.name);
     try {
+      let file: File;
+      try {
+        file = await prepareUploadFile(entry.file);
+      } catch {
+        patch(entry.id, { state: "failed", error: UNSUPPORTED_IMAGE, code: "unsupported_type" });
+        return;
+      }
+      body.append("file", file, file.name);
       const result = await uploadWithProgress(uploadUrl, body, (progress) => patch(entry.id, { progress }), controller.signal);
       const uploaded = result.status === 201 ? parseTeacherUploadResult(result.json) : null;
       if (uploaded) {
@@ -119,9 +125,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   }
 
   function addFiles(files: File[]) {
-    const pdfs = files.filter(isPdfFile);
-    setSkipped(files.filter((file) => !isPdfFile(file)).map((file) => file.name || "unnamed file"));
-    const added = pdfs.map((file): Entry => ({
+    const added = files.map((file): Entry => ({
       id: nextId.current++,
       file,
       state: "waiting",
@@ -180,21 +184,17 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
           <input
             type="file"
             multiple
-            accept="application/pdf"
+            accept={UPLOAD_ACCEPT}
             disabled={disabled || !hydrated}
             onChange={onPick}
             className="sr-only"
           />
-          Choose PDFs
+          Choose files
         </label>
-        <p className="text-sm text-muted">…or drop them here. One PDF per student; uploads start right away.</p>
+        <p className="text-sm text-muted">
+          …or drop them here. One file per student ({UPLOAD_FORMATS}); uploads start right away.
+        </p>
       </div>
-
-      {skipped.length > 0 && (
-        <Alert tone="warning" title={`Skipped ${plural(skipped.length, "file")} that ${skipped.length === 1 ? "isn't a PDF" : "aren't PDFs"}`}>
-          {skipped.join(", ")}
-        </Alert>
-      )}
 
       {entries.length > 0 && (
         <section aria-labelledby="bulk-upload-heading" className="flex flex-col gap-3">

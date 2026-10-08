@@ -2,8 +2,8 @@
 
 A small self-hosted web app that grades handwritten student work against a teacher's answer key.
 
-1. The teacher uploads an **answer key** (PDF). Claude turns it into a structured list of items, which the teacher reviews and edits.
-2. The teacher uploads the **homework**: one PDF per student, or **one scan of the whole stack** that Claude splits into papers for the teacher to check. Students can also hand in work themselves through a share link, once a teacher turns that on.
+1. The teacher uploads an **answer key** (PDF, photos, Word or text file). Claude turns it into a structured list of items, which the teacher reviews and edits.
+2. The teacher uploads the **homework or quiz**: one file per student, or **one scan of the whole stack** that Claude splits into papers for the teacher to check. Students can also hand in work themselves through a share link, once a teacher turns that on.
 3. Claude **reads every page**, in any handwriting, and judges each item against the key.
 4. The grade is **computed in code** from those judgments: by completion (the default), accuracy, or a blend of both.
 5. Each student gets **notes on what they did** and feedback per question, and the teacher sees papers **organized by section and name**, with anything doubtful flagged for review and a CSV export.
@@ -12,6 +12,8 @@ A small self-hosted web app that grades handwritten student work against a teach
 
 ## What's new
 
+- **Quizzes:** each assignment is now **Homework** or a **Quiz** (choose when creating it, or change it on its **Settings** tab). Both are graded exactly the same way; quizzes get a "Quiz" badge, "Upload quizzes" wording, and the dashboard can be filtered to **All**, **Homework** or **Quizzes**. Existing assignments become Homework.
+- **Any file format:** every upload (answer key, per-student papers, whole-stack scans and student uploads) accepts **PDFs, photos, Word (.docx) and text files (.txt, .md, .csv)**, and several files are joined into one paper in the order picked. Everything is turned into a PDF on the server before grading. JPEG and PNG become pages as they are; other images (iPhone HEIC, WebP, GIF, TIFF, AVIF…) are converted to JPEG in the browser first, so a browser that can't open a format says so. Word and text files become plain text pages (formatting and pictures in a Word file are dropped, so upload a PDF when layout or drawings matter). Old `.doc`, `.pages` and other formats are refused with "Save it as PDF or .docx first".
 - **Choose the AI model** under **Settings → AI model**: **Claude Sonnet 5.5** (the default, about half the cost, good for most homework) or **Claude Opus 5.5** (the most capable, for messy handwriting or tricky answers). Servers upgraded from an earlier version start on Sonnet 5.5 too. `ANTHROPIC_MODEL` is no longer used: if your `.env.local` still sets it, the server ignores it and logs a warning at startup, so delete the line.
 - **Grading with an Anthropic-hosted agent (optional, off by default):** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's slower and more expensive than the direct API, which is the default (also on upgraded servers, unless a teacher chose the hosted agent); switch under **Settings → Grader**.
 - **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. The AI finds where each paper starts (or you split it every N pages), and you check the split before anything is graded — unless the AI's split looks clean (every paper has one name, the usual number of pages, and every page was read confidently): then grading starts on its own and the scan's page says so.
