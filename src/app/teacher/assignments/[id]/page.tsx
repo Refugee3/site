@@ -120,6 +120,14 @@ function ScanCallout({ assignmentId, kind, scans }: { assignmentId: string; kind
       </Alert>
     );
   }
+  if (scans.splitting > 0 && scans.onePass === scans.splitting) {
+    return (
+      <Alert tone="info">
+        The AI is grading {scans.onePass === 1 ? "your scan" : `${scans.onePass} scans`} in one pass. Papers appear here as
+        they&apos;re graded; follow it on the <Link href={uploadHref}>{upload}</Link> tab.
+      </Alert>
+    );
+  }
   if (scans.splitting > 0) {
     return (
       <Alert tone="info">

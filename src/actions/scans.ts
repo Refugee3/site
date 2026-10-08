@@ -35,9 +35,12 @@ export async function splitScanEveryAction(scanId: string, pagesPerPaper: number
   return result;
 }
 
-export async function retryScanWithAiAction(scanId: string): Promise<ActionResult> {
+const RetryModeSchema = z.enum(["auto", "one_pass"], "Choose how the AI should read the scan.").optional();
+
+/** `mode`: split the scan first (`auto`) or grade it in one pass; omitted, the scan keeps its way (see retryScanWithAi). */
+export async function retryScanWithAiAction(scanId: string, mode?: "auto" | "one_pass"): Promise<ActionResult> {
   const { scan } = await requireOwnedScan(scanId);
-  const result = await attempt(() => retryScanWithAi(scan));
+  const result = await attempt(() => retryScanWithAi(scan, { mode: parseInput(RetryModeSchema, mode) }));
   if (result.ok) refresh();
   return result;
 }

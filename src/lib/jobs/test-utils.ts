@@ -18,14 +18,21 @@ export const FAKE_META: AiCallMeta = {
   durationMs: 0,
 };
 
-/** A grader whose methods default to the instant fake grader; override one (or the engine) to script a test. */
-export function scriptedGrader(o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages">> = {}): Grader {
+/**
+ * A grader whose methods default to the instant fake grader; override one (or the engine) to script a test. `gradePacketChunk:
+ * null` makes a grader that can't grade in one pass (as the hosted agent).
+ */
+export function scriptedGrader(
+  o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages">> & { gradePacketChunk?: Grader["gradePacketChunk"] | null } = {},
+): Grader {
+  const gradePacketChunk = o.gradePacketChunk === null ? undefined : (o.gradePacketChunk ?? instantFake.gradePacketChunk);
   return {
     mode: "fake",
     engine: o.engine ?? "fake",
     extractKey: o.extractKey ?? instantFake.extractKey,
     gradeSubmission: o.gradeSubmission ?? instantFake.gradeSubmission,
     readScanPages: o.readScanPages ?? instantFake.readScanPages,
+    ...(gradePacketChunk ? { gradePacketChunk } : {}),
   };
 }
 

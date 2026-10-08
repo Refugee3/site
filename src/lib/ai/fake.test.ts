@@ -3,8 +3,8 @@ import { normalizeScanReadings, proposeLayout } from "@/lib/grading/split";
 import type { GuidanceLesson } from "@/lib/types";
 import { AiError } from "./errors";
 import { createFakeGrader } from "./fake";
-import type { GradeInput, ReadScanInput } from "./grader";
-import { GradingOutputSchema, KeyExtractionSchema, ScanPagesSchema, withEmptyNotes } from "./schemas";
+import type { GradeInput, PacketChunkInput, ReadScanInput } from "./grader";
+import { GradingOutputSchema, KeyExtractionSchema, PacketOutputSchema, ScanPagesSchema, withEmptyNotes } from "./schemas";
 import { makeKeyItem, makeSection } from "./test-utils";
 
 const grader = createFakeGrader({ delayMs: 0 });
@@ -220,5 +220,32 @@ describe("fake scan reading", () => {
 
   it("rejects with a retryable abort when the signal fires", async () => {
     await expect(grader.readScanPages(scanInput(), { signal: AbortSignal.abort() })).rejects.toMatchObject({ code: "aborted" });
+  });
+});
+
+describe("fake grading of a scan in one pass", () => {
+  function chunk(firstPage: number, chunkPageCount: number, o: Partial<PacketChunkInput> = {}): PacketChunkInput {
+    const { assignment, teacherNotes, sections, items, keyPdf } = gradeInput(pdf("x"), 3);
+    return { assignment, teacherNotes, sections, items, keyPdf, chunkPdf: pdf(`chunk ${firstPage}`), firstPage, chunkPageCount, totalPages: 10, keyPageCount: 3, ...o };
+  }
+
+  it("finds a paper every key-page-count pages, cut off at the chunk's edges, each graded on every item", async () => {
+    const { output, refs } = await grader.gradePacketChunk!(chunk(3, 5));
+    expect(PacketOutputSchema.parse(output)).toEqual(output);
+    expect(refs).toEqual(["Q1", "Q2", "Q3"]);
+    expect(output.papers.map((p) => [p.first_page, p.last_page, p.continues_from_previous_chunk, p.may_continue_after_chunk])).toEqual([
+      [1, 1, true, false], [2, 4, false, false], [5, 5, false, true],
+    ]);
+    for (const p of output.papers) {
+      expect(p.items.map((item) => item.ref)).toEqual(refs);
+      for (const item of p.items) for (const page of item.pages) expect(page).toBeGreaterThanOrEqual(p.first_page);
+    }
+    expect(output.skipped_pages).toEqual([]);
+  });
+
+  it("lets no paper go on after the scan's last page, and writes no notes when they are off", async () => {
+    const { output } = await grader.gradePacketChunk!(chunk(7, 4, { writeNotes: false }));
+    expect(output.papers.map((p) => [p.first_page, p.last_page, p.may_continue_after_chunk])).toEqual([[1, 3, false], [4, 4, false]]);
+    expect(output.papers.every((p) => p.overall_feedback === "" && p.items.every((item) => item.feedback === ""))).toBe(true);
   });
 });

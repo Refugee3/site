@@ -73,6 +73,13 @@ describe("POST /api/teacher/assignments/[id]/scans", () => {
     expect(getScan(result?.scanId ?? "")).toMatchObject({ status: "splitting", splitMode: "auto", pageCount: 4, layout: null });
   });
 
+  it("stores a scan to grade in one pass", async () => {
+    const res = await upload("mode=one_pass", await scanForm());
+    expect(res.status).toBe(201);
+    const { scanId } = (await res.json()) as { scanId: string };
+    expect(getScan(scanId)).toMatchObject({ status: "splitting", splitMode: "one_pass", pageCount: 4, layout: null, onePass: null });
+  });
+
   it("splits every N pages at once when asked", async () => {
     const res = await upload("mode=every&pagesPerPaper=2", await scanForm());
     expect(res.status).toBe(201);

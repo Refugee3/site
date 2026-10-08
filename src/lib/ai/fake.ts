@@ -1,9 +1,9 @@
 import { sha256Hex } from "@/lib/ids";
 import type { Attempt, Correctness, GradingGuidance, Legibility } from "@/lib/types";
 import { AiError } from "./errors";
-import { type AiCallMeta, type CallOptions, type Grader, type ReadScanInput, writesNotes } from "./grader";
+import { type AiCallMeta, type CallOptions, type Grader, type PacketChunkInput, type ReadScanInput, writesNotes } from "./grader";
 import { itemRefs } from "./prompts";
-import { type GradingOutput, type KeyExtraction, type ScanPages, withEmptyNotes } from "./schemas";
+import { type GradingOutput, type KeyExtraction, type PacketOutput, type ScanPages, withEmptyNotes } from "./schemas";
 
 // AI_MODE=fake: a deterministic stand-in so the whole flow runs without an API key. Every "random"
 // choice is derived from the PDF's bytes and a named purpose, so the same paper always grades the same.
@@ -63,7 +63,53 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
       const meta = await simulateCall(seed, options);
       return { output: fakeScanPages(seed, input), meta };
     },
+    async gradePacketChunk(input, options = {}) {
+      const seed = seedFor(input.chunkPdf);
+      const meta = await simulateCall(seed, options);
+      const refs = itemRefs(input.items.length);
+      return { output: fakePacket(seed, input, refs), refs, keyPdfIncluded: false, meta };
+    },
   };
+}
+
+/**
+ * Grading a chunk of a scan in one pass, like fakeScanPages: identical worksheets of `keyPageCount` pages (2 without a key
+ * page count) from the scan's first page, each graded like a paper of its own (seeded by the chunk and the paper's first
+ * page). A paper cut off by the chunk's start continues from the chunk before; one cut off by its end may continue after it.
+ */
+function fakePacket(seed: Seed, input: PacketChunkInput, refs: string[]): PacketOutput {
+  const k = Math.max(1, input.keyPageCount ?? 2);
+  const lastPage = input.firstPage + input.chunkPageCount - 1;
+  const papers: PacketOutput["papers"] = [];
+  for (let paperStart = input.firstPage - ((input.firstPage - 1) % k); paperStart <= lastPage; paperStart += k) {
+    const first = Math.max(paperStart, input.firstPage);
+    const last = Math.min(paperStart + k - 1, lastPage, input.totalPages);
+    const paperSeed: Seed = (purpose) => seed(`paper:${first}:${purpose}`);
+    const pageCount = last - first + 1;
+    const toChunk = (paperPage: number) => paperPage + first - input.firstPage;
+    const grading: GradingOutput = {
+      student: fakeStudent(paperSeed, input.sections.map((section) => section.label)),
+      document_check: fakeDocumentCheck(paperSeed),
+      items: refs.map((ref, i) => {
+        const item = followRuling(fakeItem(paperSeed, ref, pageCount), input.items[i].id, input.guidance);
+        return { ...item, pages: item.pages.map(toChunk) };
+      }),
+      integrity: { grader_directed_text_found: false, excerpt: "" },
+      unmatched_work: "",
+      overall_feedback: "This is sample feedback from the practice grader. Keep showing your steps, "
+        + "and check each answer once more before you hand it in.",
+      teacher_summary: "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.",
+    };
+    papers.push({
+      first_page: toChunk(1),
+      last_page: toChunk(pageCount),
+      continues_from_previous_chunk: paperStart < input.firstPage,
+      may_continue_after_chunk: paperStart + k - 1 > lastPage && lastPage < input.totalPages,
+      boundary_confidence: "high",
+      ...(writesNotes(input) ? grading : withEmptyNotes(grading)),
+    });
+  }
+  return { papers, skipped_pages: [] };
 }
 
 function fakeKey(pageCount: number): KeyExtraction {

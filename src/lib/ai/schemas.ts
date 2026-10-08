@@ -38,10 +38,12 @@ const itemJudgment = z.object({
 });
 const integrity = z.object({ grader_directed_text_found: z.boolean(), excerpt: z.string() });
 
+const itemWithNotes = itemJudgment.extend({ what_student_did: z.string(), feedback: z.string(), teacher_note: z.string() });
+
 export const GradingOutputSchema = z.object({
   student: gradingStudent,
   document_check: documentCheck,
-  items: z.array(itemJudgment.extend({ what_student_did: z.string(), feedback: z.string(), teacher_note: z.string() })),
+  items: z.array(itemWithNotes),
   integrity,
   unmatched_work: z.string(),
   overall_feedback: z.string(),
@@ -76,6 +78,64 @@ export function withEmptyNotes(o: GradingOutputWithoutNotes): GradingOutput {
     unmatched_work: o.unmatched_work,
     overall_feedback: "",
     teacher_summary: "",
+  };
+}
+
+// Grading a whole-class scan in one pass: each chunk of pages comes back as the papers found in it, each graded like one
+// paper (same fields, in the same order), plus the pages that belong to no paper. Pages are chunk pages (1 = the chunk's
+// first page), including each item's pages.
+export const SKIPPED_PAGE_KINDS = ["blank", "cover_or_separator", "answer_key", "other"] as const;
+const packetBoundary = {
+  first_page: z.number(),
+  last_page: z.number(),
+  continues_from_previous_chunk: z.boolean(),
+  may_continue_after_chunk: z.boolean(),
+  boundary_confidence: conf,
+};
+const skippedPage = z.object({ page: z.number(), kind: z.enum(SKIPPED_PAGE_KINDS) });
+
+export const PacketOutputSchema = z.object({
+  papers: z.array(z.object({
+    ...packetBoundary,
+    student: gradingStudent,
+    document_check: documentCheck,
+    items: z.array(itemWithNotes),
+    integrity,
+    unmatched_work: z.string(),
+    overall_feedback: z.string(),
+    teacher_summary: z.string(),
+  })),
+  skipped_pages: z.array(skippedPage),
+});
+export type PacketOutput = z.infer<typeof PacketOutputSchema>;
+export type PacketPaper = PacketOutput["papers"][number];
+
+/** The chunk asked for when the assignment's notes are off (as GradingOutputWithoutNotesSchema is for one paper). */
+export const PacketOutputWithoutNotesSchema = z.object({
+  papers: z.array(z.object({
+    ...packetBoundary,
+    student: gradingStudent,
+    document_check: documentCheck,
+    items: z.array(itemJudgment),
+    integrity,
+    unmatched_work: z.string(),
+  })),
+  skipped_pages: z.array(skippedPage),
+});
+export type PacketOutputWithoutNotes = z.infer<typeof PacketOutputWithoutNotesSchema>;
+
+/** Every paper's notes empty, as withEmptyNotes does for one paper. */
+export function packetWithEmptyNotes(o: PacketOutputWithoutNotes): PacketOutput {
+  return {
+    papers: o.papers.map((paper) => ({
+      first_page: paper.first_page,
+      last_page: paper.last_page,
+      continues_from_previous_chunk: paper.continues_from_previous_chunk,
+      may_continue_after_chunk: paper.may_continue_after_chunk,
+      boundary_confidence: paper.boundary_confidence,
+      ...withEmptyNotes(paper),
+    })),
+    skipped_pages: o.skipped_pages,
   };
 }
 

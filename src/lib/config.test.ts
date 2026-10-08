@@ -7,6 +7,7 @@ const CONFIG_VARS = [
   "AI_FALLBACKS", "AI_CACHE_TTL", "AI_TIMEOUT_MS", "GRADING_CONCURRENCY", "JOB_MAX_ATTEMPTS", "TEACHER_SIGNUP_CODE",
   "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES", "AGENT_BUDGET_EXTRACT_USD",
   "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS", "SCAN_SPLIT_PARALLEL",
+  "ONE_PASS_CHUNK_PAGES",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -35,6 +36,7 @@ describe("getConfig", () => {
       maxTokensCeiling: 128_000,
       concurrency: 10,
       scanSplitParallel: 4,
+      onePassChunkPages: 18,
       jobMaxAttempts: 4,
       teacherSignupCode: null,
       cookieSecure: false,
@@ -64,6 +66,7 @@ describe("getConfig", () => {
       AI_TIMEOUT_MS: "30000",
       GRADING_CONCURRENCY: "32",
       SCAN_SPLIT_PARALLEL: "8",
+      ONE_PASS_CHUNK_PAGES: "40",
       JOB_MAX_ATTEMPTS: "1",
       TEACHER_SIGNUP_CODE: " maple-quartz-4417 ",
       MAX_UPLOAD_MB: "5",
@@ -88,6 +91,7 @@ describe("getConfig", () => {
       aiTimeoutMs: 30_000,
       concurrency: 32,
       scanSplitParallel: 8,
+      onePassChunkPages: 40,
       jobMaxAttempts: 1,
       teacherSignupCode: "maple-quartz-4417",
       cookieSecure: true,
@@ -229,6 +233,8 @@ describe("getConfig", () => {
     ["SCAN_SPLIT_PARALLEL", "0"],
     ["SCAN_SPLIT_PARALLEL", "9"],
     ["SCAN_SPLIT_PARALLEL", "1.5"],
+    ["ONE_PASS_CHUNK_PAGES", "0"],
+    ["ONE_PASS_CHUNK_PAGES", "41"],
     ["JOB_MAX_ATTEMPTS", "11"],
     ["MAX_UPLOAD_MB", "23"],
     ["MAX_PAGES", "0"],

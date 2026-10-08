@@ -9,14 +9,14 @@ import { loadKeyState } from "@/lib/services/key-state";
 import { ingestScan } from "@/lib/services/scans";
 import type { ScanSplitMode } from "@/lib/types";
 
-const SplitModeSchema = z.enum(["auto", "every"], "Choose how the scan should be split.");
+const SplitModeSchema = z.enum(["one_pass", "auto", "every"], "Choose how the scan should be split.");
 const PAGES_MESSAGE = "Enter the pages per student as a whole number from 1 to 100.";
 const PagesPerPaperSchema = z.coerce.number(PAGES_MESSAGE).int(PAGES_MESSAGE).min(1, PAGES_MESSAGE).max(100, PAGES_MESSAGE);
 
 /**
- * One scan of a whole class's papers (`?mode=auto`, or `?mode=every&pagesPerPaper=N`), uploaded by the
- * teacher. Answers 201 with where to check the split. A clean AI split is graded automatically; any other split waits
- * for the teacher's check.
+ * One scan of a whole class's papers (`?mode=one_pass`, `?mode=auto`, or `?mode=every&pagesPerPaper=N`), uploaded by the
+ * teacher. Answers 201 with where to follow it. One pass grades the papers as the AI finds them (split first while the hosted
+ * agent grades); a clean AI split is graded automatically; any other split waits for the teacher's check.
  */
 export async function POST(req: NextRequest, ctx: RouteContext<"/api/teacher/assignments/[id]/scans">): Promise<Response> {
   try {

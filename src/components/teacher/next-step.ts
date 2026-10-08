@@ -69,6 +69,9 @@ function pendingScanStep(a: DashboardAssignment): NextStep | null {
   if (failed > 0) {
     return { text: failed === 1 ? "A scan couldn't be split" : `${failed} scans couldn't be split`, href: uploadHref(a.id), tone: "danger" };
   }
-  if (splitting > 0 && a.counts.total === 0) return { text: "Splitting your scan…", href: uploadHref(a.id), tone: "info" };
+  if (splitting > 0 && a.counts.total === 0) {
+    const text = a.scans.onePass === splitting ? "Grading your scan in one pass…" : "Splitting your scan…";
+    return { text, href: uploadHref(a.id), tone: "info" };
+  }
   return null;
 }

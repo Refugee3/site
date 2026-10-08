@@ -365,6 +365,58 @@ ALTER TABLE assignments ADD COLUMN kind TEXT NOT NULL DEFAULT 'homework' CHECK (
 ALTER TABLE assignments ADD COLUMN write_notes INTEGER NOT NULL DEFAULT 0 CHECK (write_notes IN (0,1));
 `,
   },
+  {
+    version: 9,
+    name: "scan_one_pass",
+    sql: `
+-- Grading a whole-class scan in one pass: split mode 'one_pass' (the scan's split_scan job reads each page once, finding the
+-- papers and grading them together) + one_pass_json, how far it got (OnePassProgress). Rebuild, as in v3 (SQLite cannot alter
+-- a CHECK). Safe with foreign_keys=ON inside migrate()'s transaction because no table references scans, so DROP TABLE runs no
+-- foreign-key actions.
+CREATE TABLE scans_v9 (
+  id TEXT PRIMARY KEY,
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('splitting','review','creating','done','failed')),
+  split_mode TEXT NOT NULL CHECK (split_mode IN ('auto','every','one_pass')),
+  pages_per_paper INTEGER CHECK (pages_per_paper IS NULL OR pages_per_paper BETWEEN 1 AND 100),
+  split_generation INTEGER NOT NULL DEFAULT 1,
+  pdf_path TEXT NOT NULL,
+  original_filename TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  page_count INTEGER NOT NULL CHECK (page_count >= 1),
+  readings_json TEXT NOT NULL DEFAULT '[]',
+  pages_read INTEGER NOT NULL DEFAULT 0,                   -- one_pass: pages processed (one_pass_json.nextPage - 1)
+  layout_json TEXT,
+  proposed_layout_json TEXT,
+  status_note TEXT,
+  error_message TEXT,
+  ai_model TEXT,
+  usage_json TEXT,
+  created_count INTEGER,                                   -- one_pass: papers graded so far
+  duplicate_count INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  split_started_at INTEGER,
+  split_finished_at INTEGER,
+  auto_graded INTEGER NOT NULL DEFAULT 0 CHECK (auto_graded IN (0,1)),
+  one_pass_json TEXT                                       -- OnePassProgress; NULL before the first chunk and for other modes
+) STRICT;
+INSERT INTO scans_v9 (id, assignment_id, status, split_mode, pages_per_paper, split_generation, pdf_path, original_filename,
+                      content_sha256, byte_size, page_count, readings_json, pages_read, layout_json, proposed_layout_json,
+                      status_note, error_message, ai_model, usage_json, created_count, duplicate_count, created_at, updated_at,
+                      split_started_at, split_finished_at, auto_graded)
+  SELECT id, assignment_id, status, split_mode, pages_per_paper, split_generation, pdf_path, original_filename,
+         content_sha256, byte_size, page_count, readings_json, pages_read, layout_json, proposed_layout_json,
+         status_note, error_message, ai_model, usage_json, created_count, duplicate_count, created_at, updated_at,
+         split_started_at, split_finished_at, auto_graded
+  FROM scans WHERE assignment_id IN (SELECT id FROM assignments);
+DROP TABLE scans;
+ALTER TABLE scans_v9 RENAME TO scans;
+CREATE INDEX scans_assignment ON scans(assignment_id, created_at);
+CREATE INDEX scans_sha ON scans(assignment_id, content_sha256);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

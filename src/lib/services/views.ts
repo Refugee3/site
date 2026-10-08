@@ -9,6 +9,7 @@ import { listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
 import { countPendingScans, listScans } from "@/lib/db/repos/scans";
 import { getAppSettings, getGradingEngine } from "@/lib/db/repos/settings";
+import { onePassAvailable } from "@/lib/services/scans";
 import {
   countByStatus, countSubmissions, getSubmissionByReceipt, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
   listSubmissions,
@@ -253,12 +254,13 @@ export function getUploadPageView(a: Assignment): UploadPageView {
     maxScanMb: cfg.maxScanBytes / MIB,
     maxScanPages: cfg.maxScanPages,
     studentsCanUpload: studentUploadsEnabled(),
+    onePassAvailable: onePassAvailable(),
   };
 }
 
 function scanSummary(s: Scan): ScanSummary {
   return {
-    id: s.id, status: s.status, originalFilename: s.originalFilename, pageCount: s.pageCount, createdAt: s.createdAt,
+    id: s.id, status: s.status, splitMode: s.splitMode, originalFilename: s.originalFilename, pageCount: s.pageCount, createdAt: s.createdAt,
     createdCount: s.createdCount, autoGraded: s.autoGraded,
   };
 }
@@ -274,6 +276,20 @@ export function getScanReviewView(scan: Scan, a: Assignment): ScanReviewView {
     maxPagesPerPaper: getConfig().maxPages,
     remainingSubmissions: Math.max(0, a.maxSubmissions - countSubmissions(a.id)),
     splitProgress: getSplitProgress(scan),
+    onePass: scan.splitMode === "one_pass" ? onePassSummary(scan) : null,
+  };
+}
+
+/** What a scan graded in one pass has done so far: no AI answers, only counts and the pages left out. */
+function onePassSummary(s: Scan): NonNullable<ScanReviewView["onePass"]> {
+  const papers = s.onePass?.papers ?? [];
+  const graded = papers.filter((paper) => paper.submissionId !== null);
+  return {
+    papersGraded: graded.length,
+    duplicates: papers.length - graded.length,
+    flagged: graded.filter((paper) => paper.flagged).length,
+    pagesDone: s.onePass ? s.onePass.nextPage - 1 : 0,
+    skipped: s.onePass?.skipped ?? [],
   };
 }
 

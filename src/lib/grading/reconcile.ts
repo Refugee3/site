@@ -10,7 +10,8 @@ import { FLAG_CODES, type FlagCode, type ItemJudgment, type KeyItem, type Sectio
 export interface ReconcileInput {
   output: GradingOutput;
   refs: string[];
-  items: KeyItem[];
+  /** The key items the output's refs stand for, in ref order. */
+  items: Array<Pick<KeyItem, "id" | "label">>;
   sections: Section[];
   pageCount: number;
   current: Pick<Submission, "studentName" | "nameSource" | "nameKey" | "nameSortKey" | "sectionId" | "sectionSource">;

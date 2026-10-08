@@ -12,13 +12,17 @@ import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import type { AppConfig } from "@/lib/config";
 import type { AiModel, AiUsage, Effort } from "@/lib/types";
 import { AiError, classifySdkError } from "./errors";
-import { type AiCallMeta, type ExtractKeyInput, type GradeInput, type Grader, type ReadScanInput, writesNotes } from "./grader";
+import {
+  type AiCallMeta, type ExtractKeyInput, type GradeInput, type Grader, type PacketChunkInput, type ReadScanInput, writesNotes,
+} from "./grader";
 import {
   extractionTask,
   GRADING_SYSTEM_PROMPT,
   gradingTask,
   itemRefs,
   KEY_EXTRACTION_SYSTEM_PROMPT,
+  PACKET_GRADING_SYSTEM_PROMPT,
+  packetTask,
   renderGradingContext,
   renderGuidance,
   renderScanContext,
@@ -26,7 +30,8 @@ import {
   scanSplitTask,
 } from "./prompts";
 import {
-  GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema, withEmptyNotes,
+  GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, PacketOutputSchema,
+  PacketOutputWithoutNotesSchema, packetWithEmptyNotes, ScanPagesSchema, withEmptyNotes,
 } from "./schemas";
 
 export type MessageRunner = (params: BetaMessageStreamParams, o: { signal?: AbortSignal }) => Promise<BetaMessage>;
@@ -135,13 +140,6 @@ export function buildGradingParams(
   }
   const keyPdf = i.keyPdf !== null && i.keyPdf.byteLength + studentBytes <= PDF_BYTE_BUDGET ? i.keyPdf : null;
   const refs = itemRefs(i.items.length);
-  const guidance = renderGuidance(i.guidance, i.items);
-
-  const sharedPrefix: BetaContentBlockParam[] = [
-    ...(keyPdf ? [document("TEACHER ANSWER KEY", keyPdf, DOCUMENT_CONTEXT.teacherKey)] : []),
-    cachedText(renderGradingContext({ assignment: i.assignment, teacherNotes: i.teacherNotes, sections: i.sections, items: i.items }), cfg),
-    ...(guidance === "" ? [] : [cachedText(guidance, cfg)]),
-  ];
   const perStudent: BetaContentBlockParam[] = [
     document("STUDENT SUBMISSION", i.studentPdf, DOCUMENT_CONTEXT.student),
     { type: "text", text: gradingTask(i.studentPageCount, refs, writesNotes(i)) },
@@ -151,7 +149,60 @@ export function buildGradingParams(
   const params: BetaMessageStreamParams = {
     ...commonParams(cfg, cfg.model, maxTokens, outputFormat(schema), cfg.effort),
     system: GRADING_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: [...sharedPrefix, ...perStudent] }],
+    messages: [{ role: "user", content: [...gradingSharedPrefix(i, keyPdf, cfg), ...perStudent] }],
+  };
+  return { params, refs, keyPdfIncluded: keyPdf !== null };
+}
+
+/**
+ * The class-shared part of a grading request (the key PDF when sent, the grading context, the guidance), with its cache
+ * breakpoints. Grading one paper and grading a chunk of a scan in one pass build it the same way.
+ */
+function gradingSharedPrefix(
+  i: Pick<GradeInput, "assignment" | "teacherNotes" | "sections" | "items" | "guidance">,
+  keyPdf: Uint8Array | null,
+  cfg: DirectAiConfig,
+): BetaContentBlockParam[] {
+  const guidance = renderGuidance(i.guidance, i.items);
+  return [
+    ...(keyPdf ? [document("TEACHER ANSWER KEY", keyPdf, DOCUMENT_CONTEXT.teacherKey)] : []),
+    cachedText(renderGradingContext({ assignment: i.assignment, teacherNotes: i.teacherNotes, sections: i.sections, items: i.items }), cfg),
+    ...(guidance === "" ? [] : [cachedText(guidance, cfg)]),
+  ];
+}
+
+/**
+ * One chunk of a whole-class scan graded in one pass, on the model chosen in Settings at the grading effort. Its prefix is
+ * grading's (PACKET_GRADING_SYSTEM_PROMPT, then gradingSharedPrefix), the same for every chunk of the scan, so the first
+ * chunk writes it to the cache and the others read it; the chunk's pages and task follow. The key PDF is sent only when it
+ * fits beside the chunk: the caller sizes chunks so that it does for every chunk (or never), keeping the prefix stable.
+ */
+export function buildPacketParams(
+  i: PacketChunkInput,
+  cfg: DirectAiConfig,
+  maxTokens: number,
+): { params: BetaMessageStreamParams; refs: string[]; keyPdfIncluded: boolean } {
+  const chunkBytes = i.chunkPdf.byteLength;
+  if (chunkBytes > PDF_BYTE_BUDGET) {
+    throw new AiError("request_too_large", PDF_TOO_LARGE.scan, { retryable: false });
+  }
+  const keyPdf = i.keyPdf !== null && i.keyPdf.byteLength + chunkBytes <= PDF_BYTE_BUDGET ? i.keyPdf : null;
+  const refs = itemRefs(i.items.length);
+  const perChunk: BetaContentBlockParam[] = [
+    document("SCANNED PAGES", i.chunkPdf, DOCUMENT_CONTEXT.scan),
+    {
+      type: "text",
+      text: packetTask({
+        firstPage: i.firstPage, chunkPageCount: i.chunkPageCount, totalPages: i.totalPages, keyPageCount: i.keyPageCount, refs,
+        writeNotes: writesNotes(i),
+      }),
+    },
+  ];
+  const schema = writesNotes(i) ? PacketOutputSchema : PacketOutputWithoutNotesSchema;
+  const params: BetaMessageStreamParams = {
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(schema), cfg.effort),
+    system: PACKET_GRADING_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: [...gradingSharedPrefix(i, keyPdf, cfg), ...perChunk] }],
   };
   return { params, refs, keyPdfIncluded: keyPdf !== null };
 }
@@ -239,6 +290,15 @@ export function createClaudeGrader(runner: MessageRunner, cfg: DirectAiConfig): 
     async readScanPages(input, o = {}) {
       const params = buildScanSplitParams(input, cfg, o.maxTokens ?? cfg.maxTokens);
       return call(params, ScanPagesSchema, o.signal);
+    },
+    async gradePacketChunk(input, o = {}) {
+      const { params, refs, keyPdfIncluded } = buildPacketParams(input, cfg, o.maxTokens ?? cfg.maxTokens);
+      if (writesNotes(input)) {
+        const { output, meta } = await call(params, PacketOutputSchema, o.signal);
+        return { output, refs, keyPdfIncluded, meta };
+      }
+      const { output, meta } = await call(params, PacketOutputWithoutNotesSchema, o.signal);
+      return { output: packetWithEmptyNotes(output), refs, keyPdfIncluded, meta };
     },
   };
 }

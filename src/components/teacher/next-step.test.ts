@@ -9,7 +9,7 @@ function card(o: Partial<Card> = {}): Card {
   return {
     id: "a1", title: "Quiz", kind: "homework", status: "open", shareCode: "K7M4QX", keyStatus: "ready", keyApproved: true,
     counts: { queued: 0, grading: 0, graded: 4, needs_review: 0, failed: 0, total: 4 },
-    scans: { splitting: 0, review: 0, failed: 0, firstReviewId: null }, released: false, createdAt: 0, progress: null, ...o,
+    scans: { splitting: 0, onePass: 0, review: 0, failed: 0, firstReviewId: null }, released: false, createdAt: 0, progress: null, ...o,
   };
 }
 
@@ -114,6 +114,9 @@ describe("nextStep with a scan of the class's papers", () => {
     });
     expect(nextStep(card({ counts: empty, scans: scans({ splitting: 1 }) }), ON)?.text).toBe("Splitting your scan…");
     expect(nextStep(card({ scans: scans({ splitting: 1 }) }), OFF)).toBeNull();
+    // A scan graded in one pass has no split to wait for.
+    expect(nextStep(card({ counts: empty, scans: scans({ splitting: 1, onePass: 1 }) }), OFF)?.text).toBe("Grading your scan in one pass…");
+    expect(nextStep(card({ counts: empty, scans: scans({ splitting: 2, onePass: 1 }) }), OFF)?.text).toBe("Splitting your scan…");
   });
 
   it("keeps the key and paper steps first", () => {

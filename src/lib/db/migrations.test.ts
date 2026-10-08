@@ -512,6 +512,39 @@ describe("schema constraints", () => {
   });
 });
 
+describe("migration 9 on a version-8 database", () => {
+  it("rebuilds scans keeping every row and index, and allows grading in one pass", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    for (const migration of MIGRATIONS.slice(0, 8)) db.exec(migration.sql);
+    db.pragma("user_version = 8");
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO scans (id, assignment_id, status, split_mode, pages_per_paper, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, readings_json, pages_read, layout_json, usage_json, created_count, created_at, updated_at, split_started_at,
+        split_finished_at, auto_graded)
+        VALUES ('sc1', 'a1', 'done', 'auto', NULL, 'p', 's.pdf', 'sha', 10, 6, '[]', 6, '[]', '{"inputTokens":1}', 2, 1, 2, 1, 2, 1);
+    `);
+    const before = db.prepare("SELECT * FROM scans").get() as Record<string, unknown>;
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
+    expect(db.prepare("SELECT * FROM scans").get()).toEqual({ ...before, one_pass_json: null });
+    const indexes = (db.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'scans' AND sql IS NOT NULL ORDER BY name")
+      .all() as Array<{ name: string }>).map((row) => row.name);
+    expect(indexes).toEqual(["scans_assignment", "scans_sha"]);
+    db.prepare("UPDATE scans SET split_mode = 'one_pass', one_pass_json = '{}'").run();
+    expect(() => db.prepare("UPDATE scans SET split_mode = 'packet'").run()).toThrow(/constraint/i);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    // The cascade from assignments still applies.
+    db.prepare("DELETE FROM assignments").run();
+    expect(count(db, "scans")).toBe(0);
+    db.close();
+  });
+});
+
 describe("cascades", () => {
   it("deleting an assignment removes its sections, key, items, submissions, judgments and jobs", () => {
     const db = useTestDb();

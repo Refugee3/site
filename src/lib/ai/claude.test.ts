@@ -5,6 +5,7 @@ import type { GradingGuidance } from "@/lib/types";
 import {
   buildExtractionParams,
   buildGradingParams,
+  buildPacketParams,
   buildScanSplitParams,
   createClaudeGrader,
   createSdkKeyChecker,
@@ -14,11 +15,13 @@ import {
   PDF_BYTE_BUDGET,
 } from "./claude";
 import { AiError } from "./errors";
-import type { GradeInput, ReadScanInput } from "./grader";
-import { GRADING_SYSTEM_PROMPT, KEY_EXTRACTION_SYSTEM_PROMPT, NOTES_OFF_TASK, SCAN_SPLIT_SYSTEM_PROMPT } from "./prompts";
+import type { GradeInput, PacketChunkInput, ReadScanInput } from "./grader";
+import {
+  GRADING_SYSTEM_PROMPT, KEY_EXTRACTION_SYSTEM_PROMPT, NOTES_OFF_TASK, PACKET_GRADING_SYSTEM_PROMPT, SCAN_SPLIT_SYSTEM_PROMPT,
+} from "./prompts";
 import {
   type GradingOutput, GradingOutputSchema, GradingOutputWithoutNotesSchema, type KeyExtraction, KeyExtractionSchema, outputFormat,
-  type ScanPages, withEmptyNotes,
+  type PacketOutput, PacketOutputSchema, PacketOutputWithoutNotesSchema, packetWithEmptyNotes, type ScanPages, withEmptyNotes,
 } from "./schemas";
 import { makeKeyItem, makeMessage, makeSection, testConfig } from "./test-utils";
 
@@ -650,5 +653,83 @@ describe("createClaudeGrader", () => {
       throw new Anthropic.RateLimitError(429, {}, "slow down", new Headers());
     }, cfg).gradeSubmission(gradeInput()));
     expect(unbilled.o.billed).toBeUndefined();
+  });
+});
+
+describe("grading a chunk of a scan in one pass", () => {
+  function packetInput(overrides: Partial<PacketChunkInput> = {}): PacketChunkInput {
+    const { assignment, teacherNotes, sections, items, keyPdf } = gradeInput();
+    return { assignment, teacherNotes, sections, items, keyPdf, chunkPdf: pdfBytes("chunk"), firstPage: 19, chunkPageCount: 18, totalPages: 84, keyPageCount: 3, ...overrides };
+  }
+
+  const packetOutput: PacketOutput = {
+    papers: [{
+      first_page: 1, last_page: 3, continues_from_previous_chunk: false, may_continue_after_chunk: false, boundary_confidence: "high",
+      ...gradingOutput,
+    }],
+    skipped_pages: [{ page: 4, kind: "blank" }],
+  };
+
+  it("sends the grading's class-shared prefix and cache breakpoints, then the chunk and its task", () => {
+    const { params, refs, keyPdfIncluded } = buildPacketParams(packetInput(), cfg, 96_000);
+    expect(refs).toEqual(["Q1", "Q2"]);
+    expect(keyPdfIncluded).toBe(true);
+    expect(params).toMatchObject({ model: "claude-opus-5-5", max_tokens: 96_000, thinking: { type: "adaptive" }, system: PACKET_GRADING_SYSTEM_PROMPT });
+    expect(params.output_config).toEqual({ effort: "high", format: outputFormat(PacketOutputSchema) });
+    const blocks = content(params);
+    expect(blocks.map((b) => [b.type, "title" in b ? b.title : null])).toEqual([
+      ["document", "TEACHER ANSWER KEY"], ["text", null], ["document", "SCANNED PAGES"], ["text", null],
+    ]);
+    expect(blocks.map((b) => "cache_control" in b ? b.cache_control : undefined))
+      .toEqual([undefined, { type: "ephemeral", ttl: "1h" }, undefined, undefined]);
+    expect(blocks[2]).toMatchObject({ context: expect.stringContaining("Untrusted scanned student work") });
+    // Byte-identical to a single paper's grading up to the breakpoints.
+    const grading = buildGradingParams(gradeInput(), cfg, 64_000).params;
+    expect(JSON.stringify(blocks.slice(0, 2))).toBe(JSON.stringify(content(grading).slice(0, 2)));
+    const task = blocks[3].type === "text" ? blocks[3].text : "";
+    expect(task).toContain("pages 19–36 of a 84-page scan");
+    expect(task).toContain("about 3 pages per paper");
+    expect(task).toContain("For every paper, return one items entry for each of these refs, in this order: Q1, Q2.");
+  });
+
+  it("keeps the prefix the same for every chunk of a scan", () => {
+    const a = buildPacketParams(packetInput({ chunkPdf: pdfBytes("one"), firstPage: 1 }), cfg, 64_000).params;
+    const b = buildPacketParams(packetInput({ chunkPdf: pdfBytes("two"), firstPage: 73, chunkPageCount: 12 }), cfg, 64_000).params;
+    const prefix = (p: BetaMessageStreamParams) => JSON.stringify([p.system, p.output_config, content(p).slice(0, 2)]);
+    expect(prefix(a)).toBe(prefix(b));
+  });
+
+  it("reuses the grading rules word for word", () => {
+    const rules = GRADING_SYSTEM_PROMPT.slice(GRADING_SYSTEM_PROMPT.indexOf("<trust>"));
+    expect(PACKET_GRADING_SYSTEM_PROMPT.endsWith(rules)).toBe(true);
+    expect(PACKET_GRADING_SYSTEM_PROMPT).toContain("<papers>");
+  });
+
+  it("asks for the lean papers when notes are off and returns them with every note empty", async () => {
+    const off = buildPacketParams(packetInput({ writeNotes: false }), cfg, 64_000).params;
+    expect(off.output_config?.format).toEqual(outputFormat(PacketOutputWithoutNotesSchema));
+    const task = content(off).at(-1)!;
+    expect(task.type === "text" && task.text.endsWith(NOTES_OFF_TASK)).toBe(true);
+
+    const lean = PacketOutputWithoutNotesSchema.parse(packetOutput);
+    const grader = createClaudeGrader(async () => makeMessage({ text: JSON.stringify(lean) }), cfg);
+    const result = await grader.gradePacketChunk!(packetInput({ writeNotes: false }));
+    expect(result.output).toEqual(packetWithEmptyNotes(lean));
+    expect(result.output.papers[0]).toMatchObject({ first_page: 1, overall_feedback: "", teacher_summary: "" });
+    expect(result.output.papers[0].items[0]).toMatchObject({ correctness: "correct", feedback: "", what_student_did: "" });
+  });
+
+  it("returns the papers with notes when they are on", async () => {
+    const grader = createClaudeGrader(async () => makeMessage({ text: JSON.stringify(packetOutput), usage: { inputTokens: 7 } }), cfg);
+    const result = await grader.gradePacketChunk!(packetInput());
+    expect(result.output).toEqual(packetOutput);
+    expect(result.meta.usage.inputTokens).toBe(7);
+  });
+
+  it("leaves the key PDF out when it doesn't fit beside the chunk, and refuses a chunk over the budget", async () => {
+    const big = new Uint8Array(PDF_BYTE_BUDGET - 1000);
+    expect(buildPacketParams(packetInput({ chunkPdf: big }), cfg, 64_000).keyPdfIncluded).toBe(false);
+    const err = await rejection(() => buildPacketParams(packetInput({ chunkPdf: new Uint8Array(PDF_BYTE_BUDGET + 1) }), cfg, 64_000));
+    expect(err).toMatchObject({ code: "request_too_large", o: { retryable: false } });
   });
 });

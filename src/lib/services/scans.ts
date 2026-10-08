@@ -2,10 +2,12 @@ import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { getAssignment } from "@/lib/db/repos/assignments";
+import { getGradingEngine } from "@/lib/db/repos/settings";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { deleteScanRow, findScanBySha, getScan, insertScan, updateScan } from "@/lib/db/repos/scans";
 import { countSubmissions, findBySha } from "@/lib/db/repos/submissions";
 import { AppError, isAppError } from "@/lib/errors";
+import { hasOnePassProgress } from "@/lib/grading/packet";
 import { keyPageCountHint } from "@/lib/grading/split";
 import { newId, sha256Hex } from "@/lib/ids";
 import { enqueueSplitScan } from "@/lib/jobs/queue";
@@ -32,7 +34,18 @@ const STATUS_REFUSAL: Record<ScanStatus, string> = {
   failed: "This scan couldn't be split.",
 };
 
-/** Stores the scan and, in automatic mode, queues the AI split; "every N pages" goes straight to review. */
+/**
+ * Whether a scan can be graded in one pass now: with the direct API and the practice grader, not with the hosted agent (a
+ * scan uploaded for one pass is then split first, as with "auto").
+ */
+export function onePassAvailable(): boolean {
+  return getConfig().aiMode === "fake" || getGradingEngine() === "direct";
+}
+
+/**
+ * Stores the scan and, in automatic mode, queues the AI split; "one pass" queues its grading in one pass (the AI split when
+ * the hosted agent grades); "every N pages" goes straight to review.
+ */
 export async function ingestScan(
   a: Assignment,
   upload: UploadedFile | UploadedFile[],
@@ -40,6 +53,7 @@ export async function ingestScan(
 ): Promise<Scan> {
   assertKeyApproved(a);
   const pagesPerPaper = o.mode === "every" ? readPagesPerPaper(o.pagesPerPaper) : null;
+  const splitMode: ScanSplitMode = o.mode === "one_pass" && !onePassAvailable() ? "auto" : o.mode;
   const files = [upload].flat();
   const { bytes, pageCount, contentSha256: sha } = await buildSubmissionPdf(files, { maxPages: getConfig().maxScanPages });
   if (requireKey(a.id).sourceSha256 === sha) {
@@ -58,7 +72,7 @@ export async function ingestScan(
         id,
         assignmentId: a.id,
         status: pagesPerPaper === null ? "splitting" : "review",
-        splitMode: o.mode,
+        splitMode,
         pagesPerPaper,
         pdfPath,
         originalFilename: uploadName(files),
@@ -92,6 +106,7 @@ export function splitScanEvery(scan: Scan, pagesPerPaper: number): Scan {
   const n = readPagesPerPaper(pagesPerPaper);
   return tx(() => {
     const current = requireScan(scan.id, ["splitting", "review", "failed"]);
+    assertNotPartlyGraded(current);
     cancelQueuedJobs("split_scan", current.id);
     const layout = everyNLayout(current.pageCount, n);
     // The readings stay: they still name the students on the review page. A scan the AI never read has no proposal
@@ -105,14 +120,29 @@ export function splitScanEvery(scan: Scan, pagesPerPaper: number): Scan {
       status: "review",
       errorMessage: null,
       statusNote: null,
+      onePass: null,
     });
   });
 }
 
-/** Has the AI read the whole scan again from the start. */
-export function retryScanWithAi(scan: Scan): Scan {
+const PARTLY_GRADED = "Some papers of this scan were already graded in one pass, so it can't be split another way. Try again to grade "
+  + "the rest.";
+
+/** A scan graded in one pass that graded anything can only go on in one pass: another split would grade pages twice. */
+function assertNotPartlyGraded(scan: Scan): void {
+  if (scan.splitMode === "one_pass" && hasOnePassProgress(scan.onePass)) throw new AppError("invalid_state", PARTLY_GRADED);
+}
+
+/**
+ * Has the AI read the scan again: to split it from the start (`auto`), or to grade it in one pass (`one_pass`), which goes on
+ * after the last chunk it finished. By default a scan graded in one pass goes on in one pass and any other scan is split.
+ */
+export function retryScanWithAi(scan: Scan, o: { mode?: "auto" | "one_pass" } = {}): Scan {
   return tx(() => {
     const current = requireScan(scan.id, ["review", "failed"]);
+    const mode = o.mode ?? (current.splitMode === "one_pass" ? "one_pass" : "auto");
+    if (mode === "one_pass") return resumeOnePass(current);
+    assertNotPartlyGraded(current);
     const updated = updateScan(current.id, {
       splitGeneration: current.splitGeneration + 1,
       splitMode: "auto",
@@ -126,10 +156,31 @@ export function retryScanWithAi(scan: Scan): Scan {
       statusNote: null,
       splitStartedAt: now(),
       splitFinishedAt: null,
+      onePass: null,
     });
     enqueueSplitScan(current.id, current.assignmentId);
     return updated;
   });
+}
+
+/** Runs inside retryScanWithAi's transaction. Keeps the progress (and an AI answer not stored yet), so nothing is paid twice. */
+function resumeOnePass(current: Scan): Scan {
+  if (!onePassAvailable()) {
+    throw new AppError("invalid_state", "The hosted agent can't grade in one pass. Choose Direct API under Settings → Grader first, "
+      + "or have the AI split the scan.");
+  }
+  const updated = updateScan(current.id, {
+    splitGeneration: current.splitGeneration + 1,
+    splitMode: "one_pass",
+    pagesPerPaper: null,
+    status: "splitting",
+    errorMessage: null,
+    statusNote: null,
+    splitStartedAt: now(),
+    splitFinishedAt: null,
+  });
+  enqueueSplitScan(current.id, current.assignmentId);
+  return updated;
 }
 
 /**

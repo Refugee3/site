@@ -6,6 +6,8 @@ export const ESTIMATE_SAMPLE_SIZE = 20;
 export const FALLBACK_PAPER_MS = 60_000;
 export const FALLBACK_EXTRACTION_MS = 45_000;
 export const FALLBACK_SCAN_PAGE_MS = 2_000;
+/** Reading a page and grading it in the same call (a scan graded in one pass). */
+export const FALLBACK_ONE_PASS_PAGE_MS = 10_000;
 
 /** The median of `values` (the mean of the middle two for an even count); null for none. */
 export function median(values: readonly number[]): number | null {
@@ -60,4 +62,25 @@ export function estimateBatchEtaMs(o: {
  */
 export function estimateSplitEtaMs(o: { pageCount: number; elapsedMs: number; perPageMs: number }): number {
   return Math.max(0, Math.round(o.pageCount * o.perPageMs - Math.max(0, o.elapsedMs)));
+}
+
+/**
+ * How long until a scan graded in one pass is done, in ms. Once pages are done, the rest takes as long per page as they did
+ * (elapsed / pagesDone); before that, like a split: pageCount × perPageMs minus the time so far. Never below 0.
+ */
+export function estimateOnePassEtaMs(o: { pageCount: number; pagesDone: number; elapsedMs: number; perPageMs: number }): number {
+  const remaining = Math.max(0, o.pageCount - o.pagesDone);
+  if (o.pagesDone <= 0) return estimateSplitEtaMs(o);
+  return Math.max(0, Math.round(remaining * (Math.max(0, o.elapsedMs) / o.pagesDone)));
+}
+
+/**
+ * About how many more papers a scan graded in one pass will grade: its pages left at the pages per paper so far (else the
+ * key's page count, else 2). At least 1 while pages are left.
+ */
+export function estimateRemainingPapers(o: { pageCount: number; pagesDone: number; papersSoFar: number; keyPageCount: number | null }): number {
+  const remaining = Math.max(0, o.pageCount - o.pagesDone);
+  if (remaining === 0) return 0;
+  const perPaper = o.papersSoFar > 0 && o.pagesDone > 0 ? o.pagesDone / o.papersSoFar : (o.keyPageCount ?? 2);
+  return Math.max(1, Math.round(remaining / Math.max(1, perPaper)));
 }

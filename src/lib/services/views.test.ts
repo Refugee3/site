@@ -558,7 +558,7 @@ describe("upload and scan views", () => {
     const view = getUploadPageView(assignment);
     expect(view).toEqual({
       keyApproved: true, keyPageCount: null, scans: [], maxUploadMb: 20, maxPages: 40, maxScanMb: 100, maxScanPages: 200,
-      studentsCanUpload: true,
+      studentsCanUpload: true, onePassAvailable: true,
     });
 
     const older = await seedScan(assignment.id, { pages: 4 });
@@ -576,7 +576,7 @@ describe("upload and scan views", () => {
   });
 
   it("counts the scans waiting on the AI or the teacher on the dashboard and the board", async () => {
-    const empty = { splitting: 0, review: 0, failed: 0, firstReviewId: null };
+    const empty = { splitting: 0, onePass: 0, review: 0, failed: 0, firstReviewId: null };
     expect(getDashboardView(teacher).assignments[0].scans).toEqual(empty);
     expect(getBoardView(assignment, "all")).toMatchObject({ scans: empty, active: false });
 
@@ -587,7 +587,7 @@ describe("upload and scan views", () => {
     await seedScan(assignment.id, { pages: 4, status: "failed", writeFile: false });
     await seedScan(assignment.id, { pages: 5, status: "done", writeFile: false });
     await seedScan(seedAssignment(teacher.id).id, { pages: 6, status: "review", writeFile: false });
-    const counts = { splitting: 0, review: 2, failed: 1, firstReviewId: older.id };
+    const counts = { splitting: 0, onePass: 0, review: 2, failed: 1, firstReviewId: older.id };
     expect(getDashboardView(teacher).assignments.find((a) => a.id === assignment.id)!.scans).toEqual(counts);
     expect(getBoardView(assignment, "all")).toMatchObject({ scans: counts, active: false });
 
@@ -769,14 +769,14 @@ describe("progress and timing", () => {
 
     // Nothing measured on this server yet: 60 s per paper; ten at once, so one round.
     expect(getBoardView(assignment, "all").progress).toEqual({
-      done: 0, total: 3, queued: 3, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 60_000, etaMs: 60_000,
+      done: 0, total: 3, queued: 3, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 60_000, etaMs: 60_000, onePass: null,
     });
     expect(getDashboardView(teacher).assignments[0].progress).toEqual({ done: 0, total: 3 });
 
     // One paper graded in 30 s: the typical time is now this assignment's.
     await createWorker({ grader: slowGrader(30_000), concurrency: 1, pollMs: 1000 }).runOnce();
     expect(getBoardView(assignment, "all").progress).toEqual({
-      done: 1, total: 3, queued: 2, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 30_000, etaMs: 30_000,
+      done: 1, total: 3, queued: 2, grading: 0, startedAt: T0 + 1_000, typicalPaperMs: 30_000, etaMs: 30_000, onePass: null,
     });
 
     // A paper being graded for 10 s: 20 s left for it, and the queued one runs beside it.
@@ -862,7 +862,9 @@ describe("progress and timing", () => {
 
     // That split (1 s per page) is now the typical speed.
     const next = await seedScan(assignment.id, { pages: 10 });
-    expect(getScanReviewView(next, assignment).splitProgress).toEqual({ splitStartedAt: clock, pagesRead: 0, pageCount: 10, etaMs: 10_000 });
+    expect(getScanReviewView(next, assignment).splitProgress).toEqual({
+      splitStartedAt: clock, pagesRead: 0, pageCount: 10, etaMs: 10_000, papersGraded: null,
+    });
   });
 });
 

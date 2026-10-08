@@ -75,9 +75,11 @@ export function GradingProgressCard({ progress: p, serverNow, throttledUntil, ha
           </span>
         </h2>
         <p className="text-sm text-muted">
-          {p.grading > 0 && `${p.grading} being graded`}
-          {p.grading > 0 && p.queued > 0 && " · "}
-          {p.queued > 0 && `${p.queued} waiting`}
+          {[
+            p.grading > 0 ? `${p.grading} being graded` : null,
+            p.queued > 0 ? `${p.queued} waiting` : null,
+            p.onePass ? `about ${p.onePass.remainingPapers} more in ${p.onePass.scans === 1 ? "the scan" : "the scans"} being graded in one pass` : null,
+          ].filter((part) => part !== null).join(" · ")}
         </p>
       </div>
       <ProgressBar value={fraction} label="Grading papers" valueText={`${p.done} of ${plural(p.total, "paper")} done`} />
@@ -137,21 +139,31 @@ export function EstimatedProgress({ label, barLabel, startedAt, typicalMs, serve
   );
 }
 
-/** A scan being split: pages read (a real count), the time so far and the estimated time left. */
+/**
+ * A scan being split, or graded in one pass: pages read (a real count), the time so far and the estimated time left; graded
+ * in one pass, also the papers graded so far.
+ */
 export function ScanSplitProgressBar({ split, serverNow }: { split: ScanSplitProgress; serverNow: number }) {
   const now = useServerClock(serverNow);
   const fraction = split.pageCount > 0 ? split.pagesRead / split.pageCount : 0;
+  const onePass = split.papersGraded !== null;
+  const verb = onePass ? "Graded" : "Read";
   return (
     <div className="flex flex-col gap-2">
       <ProgressBar
         value={fraction}
-        label="Reading the scan"
-        valueText={`Read ${split.pagesRead} of ${plural(split.pageCount, "page")}`}
+        label={onePass ? "Grading the scan" : "Reading the scan"}
+        valueText={`${verb} ${split.pagesRead} of ${plural(split.pageCount, "page")}`}
       />
       <p className="text-sm text-muted">
-        Read <span className="tabular-nums">{split.pagesRead}</span> of {plural(split.pageCount, "page")} ·{" "}
+        {verb} <span className="tabular-nums">{split.pagesRead}</span> of {plural(split.pageCount, "page")} ·{" "}
         <Clock ms={now - split.splitStartedAt} /> · {formatTimeLeft(remainingMs(split.etaMs, now - serverNow))}
       </p>
+      {split.papersGraded !== null && (
+        <p className="font-medium">
+          <span className="tabular-nums">{split.papersGraded}</span> {split.papersGraded === 1 ? "paper" : "papers"} graded so far
+        </p>
+      )}
     </div>
   );
 }

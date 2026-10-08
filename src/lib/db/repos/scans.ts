@@ -2,14 +2,16 @@ import { now } from "@/lib/clock";
 import { getAssignment } from "@/lib/db/repos/assignments";
 import { all, encodePatch, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
-import type { AiUsage, Assignment, PendingScans, Scan, ScanLayout, ScanPageReading, ScanSplitMode, ScanStatus } from "@/lib/types";
+import type {
+  AiUsage, Assignment, OnePassProgress, PendingScans, Scan, ScanLayout, ScanPageReading, ScanSplitMode, ScanStatus,
+} from "@/lib/types";
 
 export type NewScan = Pick<Scan, "id" | "assignmentId" | "splitMode" | "pagesPerPaper" | "pdfPath" | "originalFilename" | "contentSha256"
   | "byteSize" | "pageCount"> & { status: "splitting" | "review"; layout: ScanLayout | null };
 
 type ScanFields = Pick<Scan, "status" | "splitMode" | "pagesPerPaper" | "splitGeneration" | "readings" | "pagesRead" | "layout"
   | "proposedLayout" | "statusNote" | "errorMessage" | "aiModel" | "usage" | "createdCount" | "duplicateCount" | "splitStartedAt"
-  | "splitFinishedAt" | "autoGraded">;
+  | "splitFinishedAt" | "autoGraded" | "onePass">;
 export type ScanPatch = Partial<ScanFields>;
 
 interface ScanRow {
@@ -37,6 +39,7 @@ interface ScanRow {
   split_started_at: number | null;
   split_finished_at: number | null;
   auto_graded: 0 | 1;
+  one_pass_json: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -75,6 +78,7 @@ function scanFromRow(row: ScanRow): Scan {
     splitStartedAt: row.split_started_at,
     splitFinishedAt: row.split_finished_at,
     autoGraded: row.auto_graded === 1,
+    onePass: parseOrNull<OnePassProgress>(row.one_pass_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -118,8 +122,9 @@ export function listScans(assignmentId: string): Scan[] {
 
 /** The assignment's scans still waiting on the AI or the teacher; `firstReviewId` is the oldest one in review. */
 export function countPendingScans(assignmentId: string): PendingScans {
-  const counts = all<{ status: ScanStatus; n: number }>(
-    `SELECT status, COUNT(*) AS n FROM scans WHERE assignment_id = ? AND status IN ('splitting', 'review', 'failed')
+  const counts = all<{ status: ScanStatus; n: number; one_pass: number }>(
+    `SELECT status, COUNT(*) AS n, SUM(split_mode = 'one_pass') AS one_pass FROM scans
+     WHERE assignment_id = ? AND status IN ('splitting', 'review', 'failed')
      GROUP BY status`,
     assignmentId,
   );
@@ -128,7 +133,13 @@ export function countPendingScans(assignmentId: string): PendingScans {
     "SELECT id FROM scans WHERE assignment_id = ? AND status = 'review' ORDER BY created_at, rowid LIMIT 1",
     assignmentId,
   );
-  return { splitting: count("splitting"), review: count("review"), failed: count("failed"), firstReviewId: first?.id ?? null };
+  return {
+    splitting: count("splitting"),
+    onePass: counts.find((row) => row.status === "splitting")?.one_pass ?? 0,
+    review: count("review"),
+    failed: count("failed"),
+    firstReviewId: first?.id ?? null,
+  };
 }
 
 /** The newest scan of this assignment with this content, if any. */
@@ -158,6 +169,7 @@ const SCAN_COLUMNS: ColumnMap<ScanFields> = {
   splitStartedAt: "split_started_at",
   splitFinishedAt: "split_finished_at",
   autoGraded: ["auto_graded", toBit],
+  onePass: ["one_pass_json", jsonOrNull],
 };
 
 /** Throws AppError("not_found") when the scan does not exist. */
@@ -196,12 +208,23 @@ export function resetCreatingScans(): number {
   return run("UPDATE scans SET status = 'review', updated_at = ? WHERE status = 'creating'", now());
 }
 
+/** The assignment's scans being graded in one pass, oldest first. */
+export function listOnePassScansInProgress(assignmentId: string): Scan[] {
+  return all<ScanRow>(
+    `SELECT * FROM scans WHERE assignment_id = ? AND status = 'splitting' AND split_mode = 'one_pass'
+     ORDER BY created_at, rowid`,
+    assignmentId,
+  ).map(scanFromRow);
+}
+
 /**
  * Milliseconds per page of the last `limit` AI splits that read every page ((split_finished_at - split_started_at) / pages),
- * newest first: of one assignment, or of every assignment when `assignmentId` is null.
+ * newest first: of one assignment, or of every assignment when `assignmentId` is null. `onePass`: of scans graded in one
+ * pass instead (reading a page and grading it takes longer than reading it to split).
  */
-export function recentSplitPageDurations(assignmentId: string | null, limit: number): number[] {
-  const where = `split_started_at IS NOT NULL AND split_finished_at IS NOT NULL AND split_finished_at >= split_started_at`;
+export function recentSplitPageDurations(assignmentId: string | null, limit: number, o: { onePass?: boolean } = {}): number[] {
+  const mode = o.onePass ? "split_mode = 'one_pass'" : "split_mode <> 'one_pass'";
+  const where = `${mode} AND split_started_at IS NOT NULL AND split_finished_at IS NOT NULL AND split_finished_at >= split_started_at`;
   const rows = assignmentId === null
     ? all<{ ms: number }>(
       `SELECT (split_finished_at - split_started_at) * 1.0 / page_count AS ms FROM scans WHERE ${where}

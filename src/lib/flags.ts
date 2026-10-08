@@ -52,6 +52,11 @@ export const FLAG_DEFS: Record<FlagCode, FlagDef> = {
     label: "Pages may be missing",
     description: "The work stops in a way that suggests some pages were not included in the upload.",
   },
+  paper_boundary: {
+    severity: "review",
+    label: "Check the paper's pages",
+    description: "This paper was cut from a whole-class scan graded in one pass, and the AI wasn't sure where it starts or ends; check its pages.",
+  },
   low_confidence: {
     severity: "review",
     label: "Low-confidence item",

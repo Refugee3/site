@@ -405,13 +405,21 @@ export function SplitEveryForm({ scanId, defaultPages, label, confirmMessage }: 
   );
 }
 
-/** Sends the scan to the AI again, from its first page; `confirmMessage` is asked first. */
-export function RetryAiButton({ scanId, label = "Try the AI again", confirmMessage }: { scanId: string; label?: string; confirmMessage?: string }) {
+/**
+ * Sends the scan to the AI again: to split it from its first page, or (`mode` "one_pass", the default for a scan graded in one
+ * pass) to go on grading it in one pass after the last part it finished. `confirmMessage` is asked first.
+ */
+export function RetryAiButton({ scanId, label = "Try the AI again", confirmMessage, mode }: {
+  scanId: string;
+  label?: string;
+  confirmMessage?: string;
+  mode?: "auto" | "one_pass";
+}) {
   const runner = useActionRunner();
 
   function retry() {
     if (confirmMessage && !window.confirm(confirmMessage)) return;
-    runner.run(() => retryScanWithAiAction(scanId));
+    runner.run(() => retryScanWithAiAction(scanId, mode));
   }
 
   return (

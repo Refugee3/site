@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  estimateBatchEtaMs, estimateSplitEtaMs, FALLBACK_EXTRACTION_MS, FALLBACK_PAPER_MS, FALLBACK_SCAN_PAGE_MS, median, typicalMs,
+  estimateBatchEtaMs, estimateOnePassEtaMs, estimateRemainingPapers, estimateSplitEtaMs, FALLBACK_EXTRACTION_MS, FALLBACK_PAPER_MS,
+  FALLBACK_SCAN_PAGE_MS, median, typicalMs,
 } from "@/lib/grading/estimates";
 
 describe("median", () => {
@@ -70,5 +71,30 @@ describe("estimateSplitEtaMs", () => {
     expect(estimateSplitEtaMs({ pageCount: 60, elapsedMs: 30_000, perPageMs: 2_000 })).toBe(90_000);
     expect(estimateSplitEtaMs({ pageCount: 60, elapsedMs: 500_000, perPageMs: 2_000 })).toBe(0);
     expect(estimateSplitEtaMs({ pageCount: 3, elapsedMs: -10, perPageMs: 1_000.4 })).toBe(3_001);
+  });
+});
+
+describe("estimateOnePassEtaMs", () => {
+  it("is the typical time per page for the whole scan, minus the time so far, until pages are done", () => {
+    expect(estimateOnePassEtaMs({ pageCount: 84, pagesDone: 0, elapsedMs: 0, perPageMs: 10_000 })).toBe(840_000);
+    expect(estimateOnePassEtaMs({ pageCount: 84, pagesDone: 0, elapsedMs: 900_000, perPageMs: 10_000 })).toBe(0);
+  });
+
+  it("then goes on at the pace so far", () => {
+    expect(estimateOnePassEtaMs({ pageCount: 84, pagesDone: 18, elapsedMs: 180_000, perPageMs: 1 })).toBe(660_000);
+    expect(estimateOnePassEtaMs({ pageCount: 84, pagesDone: 84, elapsedMs: 500_000, perPageMs: 1 })).toBe(0);
+  });
+});
+
+describe("estimateRemainingPapers", () => {
+  it("counts the pages left at the pages per paper so far, else the key's, else two", () => {
+    expect(estimateRemainingPapers({ pageCount: 84, pagesDone: 18, papersSoFar: 6, keyPageCount: 4 })).toBe(22);
+    expect(estimateRemainingPapers({ pageCount: 84, pagesDone: 0, papersSoFar: 0, keyPageCount: 4 })).toBe(21);
+    expect(estimateRemainingPapers({ pageCount: 10, pagesDone: 0, papersSoFar: 0, keyPageCount: null })).toBe(5);
+  });
+
+  it("is at least one while pages are left, and none once the scan is done", () => {
+    expect(estimateRemainingPapers({ pageCount: 10, pagesDone: 9, papersSoFar: 3, keyPageCount: 3 })).toBe(1);
+    expect(estimateRemainingPapers({ pageCount: 10, pagesDone: 10, papersSoFar: 3, keyPageCount: 3 })).toBe(0);
   });
 });

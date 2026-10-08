@@ -25,7 +25,7 @@ export type ItemReviewReason = (typeof ITEM_REVIEW_REASONS)[number];
 export const DOCUMENT_MATCHES = ["matches", "uncertain", "different_assignment", "not_student_work", "blank"] as const;
 export type DocumentMatch = (typeof DOCUMENT_MATCHES)[number];
 export const FLAG_CODES = ["name_missing", "name_unclear", "name_uncertain", "section_unmatched", "section_inferred", "multiple_students",
-  "wrong_assignment", "blank_submission", "pages_missing", "low_confidence", "illegible", "item_review", "grader_directed_text",
+  "wrong_assignment", "blank_submission", "pages_missing", "paper_boundary", "low_confidence", "illegible", "item_review", "grader_directed_text",
   "output_repaired", "ai_refused", "manual_grading", "fallback_model"] as const;
 export type FlagCode = (typeof FLAG_CODES)[number];
 export type JobKind = "extract_key" | "grade_submission" | "split_scan";
@@ -99,8 +99,11 @@ export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason:
   /** While set (ms), the worker starts no new job: Anthropic asked it to slow down. Grading continues afterwards. */
   throttledUntil: number | null }
 export type StatusCounts = Record<SubmissionStatus, number> & { total: number };
-/** Scans still waiting: being split by the AI, split and waiting for the teacher's check, or failed to split. */
-export interface PendingScans { splitting: number; review: number; failed: number; firstReviewId: string | null }
+/**
+ * Scans still waiting: being split by the AI, split and waiting for the teacher's check, or failed to split. `onePass`: how
+ * many of the `splitting` ones are being graded in one pass (no split to check).
+ */
+export interface PendingScans { splitting: number; onePass: number; review: number; failed: number; firstReviewId: string | null }
 /**
  * The assignment's current grading batch: papers queued since its queue last went from empty to non-empty (an upload, a
  * scan's papers, a regrade). Timestamps are epoch ms, durations ms. Null in the views while nothing is queued or grading.
@@ -120,8 +123,14 @@ export interface GradingProgress {
    * Estimated ms until the batch is done: the worker's current concurrency as slots, each paper being graded holding its slot
    * for max(0, typicalPaperMs - its elapsed time), each queued paper then taking the first free slot for typicalPaperMs
    * (≈ ceil(queued / concurrency) × typicalPaperMs when nothing is in flight). Shrinks as time passes; 0 = finishing up.
+   * With scans graded in one pass, the longest of that and their own estimates.
    */
   etaMs: number;
+  /**
+   * Scans being graded in one pass: their papers count in `done` as they are graded; `remainingPapers` (in `total`, not in
+   * `queued`) is about how many more they will grade. Null when there is none.
+   */
+  onePass: { scans: number; remainingPapers: number } | null;
 }
 /** A whole-class scan being read by the AI. */
 export interface ScanSplitProgress {
@@ -129,8 +138,14 @@ export interface ScanSplitProgress {
   splitStartedAt: number;
   pagesRead: number;
   pageCount: number;
-  /** max(0, pageCount × typical ms per page - ms since splitStartedAt); typical: median of recent splits, else 2 000 per page. */
+  /**
+   * max(0, pageCount × typical ms per page - ms since splitStartedAt); typical: median of recent splits, else 2 000 per page.
+   * Grading in one pass: the pages still to read × the time per page so far (before the first chunk: recent one-pass scans,
+   * else 10 000 per page).
+   */
   etaMs: number;
+  /** Grading in one pass: papers graded so far (null for a split). */
+  papersGraded: number | null;
 }
 export interface DashboardView { assignments: Array<{ id: string; title: string; kind: AssignmentKind;
   status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans;
@@ -179,7 +194,8 @@ export interface ReceiptView { assignmentTitle: string; submittedAt: number; pag
 // ---- v2: scans ----
 export const SCAN_STATUSES = ["splitting", "review", "creating", "done", "failed"] as const;
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
-export type ScanSplitMode = "auto" | "every";
+/** `auto`: the AI splits, then each paper is graded; `every`: every N pages; `one_pass`: each page is read once, split and graded together. */
+export type ScanSplitMode = "auto" | "every" | "one_pass";
 export const SCAN_PAGE_KINDS = ["student_work", "blank", "cover_or_separator", "answer_key", "other"] as const;
 export type ScanPageKind = (typeof SCAN_PAGE_KINDS)[number];
 /** What the AI read on one scanned page; `reported:false` = a placeholder for a page the AI skipped. */
@@ -197,7 +213,50 @@ export interface Scan { id: string; assignmentId: string; status: ScanStatus; sp
   splitStartedAt: number | null; splitFinishedAt: number | null;
   /** The AI's split had nothing to check, so its papers were created and queued for grading without the teacher. */
   autoGraded: boolean;
+  /** Grading in one pass (splitMode one_pass): how far it got; null before the first chunk and for other modes. */
+  onePass: OnePassProgress | null;
   createdAt: number; updatedAt: number }
+
+/** Why a page of a scan graded in one pass is part of no paper; `unassigned`: the AI put it in no paper and gave no reason. */
+export type SkippedPageReason = "blank" | "cover_or_separator" | "answer_key" | "other" | "unassigned";
+export interface SkippedPage { page: number; reason: SkippedPageReason }
+/** A paper of a scan graded in one pass (1-based scan pages); `submissionId` null: the same pages were already uploaded. */
+export interface OnePassPaper { firstPage: number; lastPage: number; submissionId: string | null; flagged: boolean }
+/**
+ * A scan graded in one pass, chunk by chunk in page order. A chunk's AI answer is saved (`pending`) before its papers are
+ * stored, so a run that stops partway resumes there without paying for the call again.
+ */
+export interface OnePassProgress {
+  /** The first page of the next chunk (1-based); pageCount + 1 once every page was read. */
+  nextPage: number;
+  /** The last chunk ended where a paper ends (true before the first chunk). */
+  endedCleanly: boolean;
+  /** Chunks finished. */
+  chunks: number;
+  /** At most this many pages per chunk after the AI ran out of room for its answer; null = the configured size. */
+  maxChunkPages: number | null;
+  papers: OnePassPaper[];
+  skipped: SkippedPage[];
+  pending: OnePassPendingChunk | null;
+}
+/** An AI answer for one chunk whose papers are not all stored yet. */
+export interface OnePassPendingChunk {
+  /** Scan pages of the chunk, 1-based. */
+  firstPage: number;
+  lastPage: number;
+  /** The PacketOutput (notes filled in as "" when they were off). */
+  output: unknown;
+  /** The key items as they were sent (refs Q1… in this order). */
+  items: Array<{ id: string; label: string }>;
+  keyRevision: number;
+  guidanceFingerprint: string;
+  servedModel: string;
+  fallbackUsed: boolean;
+  engine: GraderEngine;
+  usage: AiUsage;
+  /** Papers of the chunk stored so far (in chunk order). */
+  stored: number;
+}
 
 // ---- v2: lessons and guidance ----
 export interface Lesson { id: string; assignmentId: string; itemId: string; submissionId: string | null; studentAnswer: string;
@@ -232,13 +291,18 @@ export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: n
   notSent: LessonNotSentReason | null; paperHref: string | null; paperDeleted: boolean }
 export interface LessonsView { lessons: LessonView[] /* key order, then newest first */; activeCount: number; sentCount: number;
   guidanceStaleCount: number; hasPreferences: boolean }
-export interface ScanSummary { id: string; status: ScanStatus; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null;
+export interface ScanSummary { id: string; status: ScanStatus; splitMode: ScanSplitMode; originalFilename: string; pageCount: number; createdAt: number; createdCount: number | null;
   /** The AI's split looked clean, so its papers were created and queued for grading without the teacher. */
   autoGraded: boolean }
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
-  maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean }
+  maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean;
+  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
+  onePassAvailable: boolean }
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
-export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage">; pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
+export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage" | "onePass">;
+  /** Grading in one pass: papers graded and pages left out so far (no AI answers). Null for other modes. */
+  onePass: { papersGraded: number; duplicates: number; flagged: number; pagesDone: number; skipped: SkippedPage[] } | null;
+  pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
   keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number;
   /** Only while the AI is splitting the scan. */
   splitProgress: ScanSplitProgress | null }

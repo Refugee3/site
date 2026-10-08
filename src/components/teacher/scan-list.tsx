@@ -11,6 +11,11 @@ export interface ScanListProps {
 }
 
 function statusText(scan: ScanSummary): string {
+  if (scan.splitMode === "one_pass") {
+    if (scan.status === "splitting") return "Being graded in one pass…";
+    if (scan.status === "failed") return "Couldn't be graded in one pass";
+    if (scan.status === "done") return `${plural(scan.createdCount ?? 0, "paper")} graded in one pass`;
+  }
   if (scan.status !== "done" || scan.createdCount === null) return SCAN_STATUS_LABEL[scan.status];
   return `${plural(scan.createdCount, "paper")} created${scan.autoGraded ? ", grading started automatically" : ""}`;
 }

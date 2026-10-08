@@ -1,10 +1,10 @@
-import { type AgentCallCost, AiError, classifySdkError, type AiErrorCode } from "@/lib/ai/errors";
+import { AiError, classifySdkError } from "@/lib/ai/errors";
 import type { AiCallMeta, Grader, ScanPreviousPage } from "@/lib/ai/grader";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
-import { addAssignmentUsage, getAssignment, listSections } from "@/lib/db/repos/assignments";
+import { getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
@@ -17,27 +17,22 @@ import {
   keyPageCountHint, normalizeScanReadings, proposeLayout, SCAN_CHUNK_MAX_BYTES, SCAN_CHUNK_MAX_PAGES,
 } from "@/lib/grading/split";
 import { decideFailure } from "@/lib/jobs/backoff";
+import {
+  addUsage, describe, DONE, failureLimits, type HandlerResult, isFinalRefusal, KEY_WAIT_MS, NOT_A_KEY, readStoredPdf, recordUsage,
+  WAITING_FOR_KEY,
+} from "@/lib/jobs/handler-shared";
+import { handleOnePassScan } from "@/lib/jobs/one-pass";
 import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
 import { autoGradeCleanSplit } from "@/lib/services/scans";
 import { rescoreSubmission } from "@/lib/services/submissions";
-import { readDataFile, removeDataFile } from "@/lib/storage/files";
+import { removeDataFile } from "@/lib/storage/files";
 import { extractPageSets } from "@/lib/storage/pdf";
 import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReading, Section } from "@/lib/types";
 
 // Handlers own every write to the job's target (submission or key); the worker owns every jobs-table write.
 
-/** `throttled`: a rate limit or overload; the worker then slows down (see createWorker). */
-export type HandlerResult =
-  | { kind: "done" }
-  | { kind: "requeue"; runAfter: number; error: string; maxTokens?: number; refundAttempt: boolean; throttled?: boolean }
-  | { kind: "fail"; error: string }
-  | { kind: "pause"; resumeAt: number; reason: string; code: AiErrorCode };
+export type { HandlerResult } from "@/lib/jobs/handler-shared";
 
-const DONE: HandlerResult = { kind: "done" };
-const KEY_WAIT_MS = 60_000;
-const WAITING_FOR_KEY = "Waiting for the answer key";
-/** Extraction verdicts that mean the uploaded "key" is not one: its PDF must not be used as the teacher's reference. */
-const NOT_A_KEY: ReadonlySet<string> = new Set(["student_work", "unrelated"]);
 
 // ---------------------------------------------------------------------------------------------
 // Grading one submission (handleGradeSubmission)
@@ -315,6 +310,7 @@ interface SplitState {
 export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSignal): Promise<HandlerResult> {
   const scan = getScan(job.targetId);
   if (!scan || scan.status !== "splitting") return DONE;
+  if (scan.splitMode === "one_pass") return handleOnePassScan(job, grader, signal, scan, handleSplitScan);
   const assignment = getAssignment(scan.assignmentId);
   const key = getKey(scan.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
@@ -501,26 +497,9 @@ function failScan(run: SplitRun, message: string, lastError: string = message): 
   return failed ? { kind: "fail", error: lastError } : DONE;
 }
 
-function addUsage(total: AiUsage | null, u: AiUsage): AiUsage {
-  return {
-    inputTokens: (total?.inputTokens ?? 0) + u.inputTokens,
-    outputTokens: (total?.outputTokens ?? 0) + u.outputTokens,
-    cacheReadTokens: (total?.cacheReadTokens ?? 0) + u.cacheReadTokens,
-    cacheWriteTokens: (total?.cacheWriteTokens ?? 0) + u.cacheWriteTokens,
-  };
-}
 
 // ---------------------------------------------------------------------------------------------
 // Shared
-
-/**
- * A refusal that stands: the handlers turn it into a result of their own (ai_refused paper, failed
- * key). A retryable refusal (the fallback model was unavailable) goes through decideFailure like any
- * temporary error until the job's attempts run out.
- */
-function isFinalRefusal(job: Job, err: AiError): boolean {
-  return err.code === "refusal" && !(err.o.retryable && job.attempts < job.maxAttempts);
-}
 
 /**
  * Marks the target failed after a handler threw on its last attempt. The worker calls it after
@@ -548,34 +527,4 @@ export function failTarget(job: Job, message: string): void {
   });
 }
 
-/**
- * Adds a billed AI call to the assignment's usage totals (Settings); `agent` is a hosted-agent session's cost beside its
- * tokens. Accounting never fails the job: a failed write is logged, since retrying would only bill the call again.
- */
-function recordUsage(assignmentId: string, model: string, usage: AiUsage, agent?: AgentCallCost | null): void {
-  try {
-    addAssignmentUsage(assignmentId, model, usage, agent ?? undefined);
-  } catch (e) {
-    console.error(`[jobs] could not record AI usage for assignment ${assignmentId}`, e);
-  }
-}
 
-/** The stored PDF, or null when the file is gone; other I/O errors propagate to the worker. */
-async function readStoredPdf(rel: string): Promise<Uint8Array | null> {
-  try {
-    return await readDataFile(rel);
-  } catch (e) {
-    if (isAppError(e) && e.code === "file_missing") return null;
-    throw e;
-  }
-}
-
-function failureLimits(): { now: number; maxTokens: number; maxTokensCeiling: number } {
-  const cfg = getConfig();
-  return { now: now(), maxTokens: cfg.maxTokens, maxTokensCeiling: cfg.maxTokensCeiling };
-}
-
-/** For jobs.last_error (never shown to students). */
-function describe(err: AiError): string {
-  return `${err.code}: ${err.message}`;
-}

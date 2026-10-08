@@ -15,7 +15,8 @@ import { requireOwnedScan } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { getScanReviewView } from "@/lib/services/views";
 import { uploadLabel } from "@/lib/format";
-import type { ScanReviewView } from "@/lib/types";
+import { formatPageRanges } from "@/lib/scan-layout";
+import type { ScanReviewView, SkippedPageReason } from "@/lib/types";
 
 const POLL_MS = 3000;
 
@@ -34,14 +35,16 @@ export default async function ScanPage(props: PageProps<"/teacher/assignments/[i
         <Link href={`/teacher/assignments/${assignment.id}/upload`} className="self-start text-sm">
           ← {uploadLabel(assignment.kind)}
         </Link>
-        <h2 className="text-xl font-semibold">Check the split</h2>
+        <h2 className="text-xl font-semibold">{shown.splitMode === "one_pass" ? "Grade in one pass" : "Check the split"}</h2>
         <p className="break-words text-sm text-muted">
           {shown.originalFilename} · {plural(shown.pageCount, "page")} · uploaded <LocalTime ms={shown.createdAt} />
         </p>
       </div>
 
-      {shown.status === "splitting" && <Splitting view={view} />}
-      {shown.status === "failed" && <Failed view={view} />}
+      {shown.status === "splitting" && (shown.splitMode === "one_pass"
+        ? <GradingInOnePass assignmentId={assignment.id} view={view} />
+        : <Splitting view={view} />)}
+      {shown.status === "failed" && (shown.splitMode === "one_pass" ? <OnePassFailed view={view} /> : <Failed view={view} />)}
       {/* A new split (every N pages, the AI again) starts the review afresh. */}
       {shown.status === "review" && <ScanReview key={shown.splitGeneration} assignmentId={assignment.id} view={view} />}
       {shown.status === "creating" && (
@@ -52,7 +55,9 @@ export default async function ScanPage(props: PageProps<"/teacher/assignments/[i
           </p>
         </Card>
       )}
-      {shown.status === "done" && <Done assignmentId={assignment.id} view={view} />}
+      {shown.status === "done" && (shown.splitMode === "one_pass"
+        ? <OnePassDone assignmentId={assignment.id} view={view} />
+        : <Done assignmentId={assignment.id} view={view} />)}
 
       <AutoRefresh intervalMs={shown.status === "splitting" || shown.status === "creating" ? POLL_MS : null} />
     </div>
@@ -128,6 +133,122 @@ function Done({ assignmentId, view }: { assignmentId: string; view: ScanReviewVi
         Created {plural(scan.createdCount ?? 0, "paper")}
         {skipped}. They&apos;re being graded now.
       </Alert>
+      <div className="flex flex-wrap items-start gap-3">
+        <LinkButton href={boardHref(assignmentId, "all")}>See the papers</LinkButton>
+        <DeleteScanButton scanId={scan.id} status={scan.status} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Graded in one pass
+
+const SKIPPED_REASON: Record<SkippedPageReason, string> = {
+  blank: "blank",
+  cover_or_separator: "cover or separator pages",
+  answer_key: "answer key pages",
+  other: "not part of a paper",
+  unassigned: "in no paper (the papers next to them are flagged)",
+};
+
+/** Pages in no paper, by reason: "Pages 4, 9 (blank); page 12 (in no paper …)". Empty when there are none. */
+function skippedText(skipped: NonNullable<ScanReviewView["onePass"]>["skipped"]): string {
+  const byReason = new Map<SkippedPageReason, number[]>();
+  for (const { page, reason } of skipped) byReason.set(reason, [...(byReason.get(reason) ?? []), page]);
+  return [...byReason]
+    .map(([reason, pages]) => `${pages.length === 1 ? "page" : "pages"} ${formatPageRanges(pages)} (${SKIPPED_REASON[reason]})`)
+    .join("; ");
+}
+
+function GradingInOnePass({ assignmentId, view }: { assignmentId: string; view: ScanReviewView }) {
+  const { scan, splitProgress, onePass } = view;
+  const started = (onePass?.pagesDone ?? 0) > 0 || (onePass?.papersGraded ?? 0) > 0;
+  return (
+    <Card>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-start gap-3">
+          <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            <p className="text-lg font-semibold">Grading the papers in one pass…</p>
+            {splitProgress ? (
+              <ScanSplitProgressBar split={splitProgress} serverNow={now()} />
+            ) : (
+              <p className="text-muted">Graded {scan.pagesRead} of {plural(scan.pageCount, "page")}.</p>
+            )}
+            <p className="text-sm text-muted">
+              This page updates by itself. The AI reads each page once, finds whose paper it is and grades it; papers it
+              isn&apos;t sure about are flagged for your review. Graded papers appear on the{" "}
+              <Link href={boardHref(assignmentId, "all")}>Submissions board</Link> as they&apos;re done.
+            </p>
+            {scan.statusNote && <p className="whitespace-pre-wrap text-sm text-muted">{scan.statusNote}</p>}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 border-t border-line pt-4">
+          {!started && <SplitEveryForm scanId={scan.id} defaultPages={defaultPages(view)} label="Split every N pages instead" />}
+          <DeleteScanButton scanId={scan.id} status={scan.status} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function OnePassFailed({ view }: { view: ScanReviewView }) {
+  const { scan, onePass } = view;
+  const graded = onePass?.papersGraded ?? 0;
+  const started = (onePass?.pagesDone ?? 0) > 0 || graded > 0;
+  return (
+    <div className="flex flex-col gap-4">
+      <Alert tone="danger" title="The scan couldn't be graded in one pass">
+        {scan.errorMessage && <p className="whitespace-pre-wrap">{scan.errorMessage}</p>}
+        {started && (
+          <p>
+            {plural(graded, "paper")} from pages 1–{onePass?.pagesDone ?? 0} {graded === 1 ? "was" : "were"} graded and{" "}
+            {graded === 1 ? "stays" : "stay"} on the Submissions board.
+          </p>
+        )}
+      </Alert>
+      <div className="flex flex-wrap items-end gap-3">
+        <RetryAiButton scanId={scan.id} label={started ? "Grade the rest" : "Try again"} mode="one_pass" />
+        {!started && (
+          <>
+            <RetryAiButton scanId={scan.id} label="Split first, then grade" mode="auto" />
+            <SplitEveryForm scanId={scan.id} defaultPages={defaultPages(view)} label="Split every N pages" />
+          </>
+        )}
+        <DeleteScanButton scanId={scan.id} status={scan.status} />
+      </div>
+    </div>
+  );
+}
+
+function OnePassDone({ assignmentId, view }: { assignmentId: string; view: ScanReviewView }) {
+  const { scan, onePass } = view;
+  const graded = onePass?.papersGraded ?? scan.createdCount ?? 0;
+  const duplicates = onePass?.duplicates ?? 0;
+  const flagged = onePass?.flagged ?? 0;
+  const skipped = skippedText(onePass?.skipped ?? []);
+  return (
+    <div className="flex flex-col gap-4">
+      <Alert tone="success">
+        <p>
+          Graded {plural(graded, "paper")} in one pass.{" "}
+          <Link href={boardHref(assignmentId, "all")}>See them on the Submissions board</Link>
+        </p>
+        {duplicates > 0 && (
+          <p>
+            {duplicates} {duplicates === 1 ? "paper was already uploaded and was skipped" : "papers were already uploaded and were skipped"}.
+          </p>
+        )}
+      </Alert>
+      {flagged > 0 && (
+        <Alert tone="warning">
+          The AI wasn&apos;t sure where {flagged === 1 ? "1 paper starts or ends" : `${flagged} papers start or end`}: check{" "}
+          {flagged === 1 ? "its" : "their"} pages when you review {flagged === 1 ? "it" : "them"} (flag &ldquo;Check the paper&apos;s
+          pages&rdquo;).
+        </Alert>
+      )}
+      {skipped !== "" && <p className="text-sm text-muted">Left out of every paper: {skipped}.</p>}
       <div className="flex flex-wrap items-start gap-3">
         <LinkButton href={boardHref(assignmentId, "all")}>See the papers</LinkButton>
         <DeleteScanButton scanId={scan.id} status={scan.status} />

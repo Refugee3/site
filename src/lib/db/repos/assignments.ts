@@ -265,26 +265,45 @@ export function addAssignmentUsage(
 // ---------------------------------------------------------------------------------------------
 // The grading batch: papers queued since the assignment's queue last became non-empty (progress bars)
 
+/** A scan of the assignment is being graded in one pass: its papers belong to the current batch as they are graded. */
+const ONE_PASS_RUNNING = `EXISTS (SELECT 1 FROM scans sc WHERE sc.assignment_id = @aid AND sc.status = 'splitting'
+  AND sc.split_mode = 'one_pass')`;
+
 /**
  * Called when `submissionId` (already queued) gets its grading job. Starts a new batch when no other paper of the assignment
- * is queued or being graded (or none was recorded): the batch then starts when the oldest paper waiting now was queued.
+ * is queued or being graded and no scan of it is being graded in one pass (or none was recorded): the batch then starts when
+ * the oldest paper waiting now was queued.
  */
 export function startGradingBatchIfIdle(assignmentId: string, submissionId: string): void {
   run(
     `UPDATE assignments SET batch_started_at = (
        SELECT min(s.queued_at) FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading'))
-     WHERE id = @aid AND (batch_started_at IS NULL OR NOT EXISTS (
-       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading') AND s.id <> @sid))`,
+     WHERE id = @aid AND (batch_started_at IS NULL OR (NOT EXISTS (
+       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading') AND s.id <> @sid)
+       AND NOT ${ONE_PASS_RUNNING}))`,
     { aid: assignmentId, sid: submissionId },
   );
 }
 
-/** Ends the batch once none of the assignment's papers is queued or being graded. */
+/**
+ * A scan's grading in one pass starts (or resumes) at `at`: it starts a batch then unless one is running, so the papers it
+ * grades (stored already graded) count in the batch.
+ */
+export function startGradingBatchForOnePass(assignmentId: string, at: number): void {
+  run(
+    `UPDATE assignments SET batch_started_at = @at
+     WHERE id = @aid AND batch_started_at IS NULL`,
+    { aid: assignmentId, at },
+  );
+}
+
+/** Ends the batch once none of the assignment's papers is queued or being graded and no scan of it is graded in one pass. */
 export function clearGradingBatchIfDrained(assignmentId: string): void {
   run(
     `UPDATE assignments SET batch_started_at = NULL
      WHERE id = @aid AND batch_started_at IS NOT NULL AND NOT EXISTS (
-       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading'))`,
+       SELECT 1 FROM submissions s WHERE s.assignment_id = @aid AND s.status IN ('queued', 'grading'))
+       AND NOT ${ONE_PASS_RUNNING}`,
     { aid: assignmentId },
   );
 }

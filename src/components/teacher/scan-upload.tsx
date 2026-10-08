@@ -19,26 +19,35 @@ export interface ScanUploadProps {
   disabled: boolean;
   /** The worksheet's length, the likeliest number of pages per student. */
   keyPageCount: number | null;
+  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
+  onePassAvailable: boolean;
 }
 
 const PAGES_ERROR = "Enter the pages per student as a whole number from 1 to 100.";
 
+export const ONE_PASS_TITLE = "Grade in one pass (cheapest)";
+export const ONE_PASS_DESCRIPTION = "The AI reads each page once: it finds whose paper it is and grades it in the same step. "
+  + "Papers it isn't sure about are flagged for you.";
+export const ONE_PASS_AGENT_HINT = "The hosted agent grades your papers (Settings → Grader) and can't grade in one pass, so this scan "
+  + "will be split first and each paper then graded on its own.";
+
 /** `?mode=…` for the upload, or null when "every N pages" has no valid N. */
 function splitQuery(mode: ScanSplitMode, pagesText: string): string | null {
-  if (mode === "auto") return "mode=auto";
+  if (mode !== "every") return `mode=${mode}`;
   const pages = Number(pagesText.trim());
   if (!Number.isInteger(pages) || pages < 1 || pages > 100) return null;
   return `mode=every&pagesPerPaper=${pages}`;
 }
 
 /**
- * Uploads one scan of the whole class's papers as soon as it is chosen, then opens its split check. A clean AI
- * split is graded automatically; one with anything flagged (and every "every N pages" split) waits for the teacher there.
+ * Uploads one scan of the whole class's papers as soon as it is chosen, then opens it. Graded in one pass (the default), the
+ * papers appear as they are graded. Split first, a clean AI split is graded automatically; one with anything flagged (and
+ * every "every N pages" split) waits for the teacher there.
  */
-export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProps) {
+export function ScanUpload({ uploadUrl, disabled, keyPageCount, onePassAvailable }: ScanUploadProps) {
   const router = useRouter();
   const hydrated = useHydrated();
-  const [mode, setMode] = useState<ScanSplitMode>("auto");
+  const [mode, setMode] = useState<ScanSplitMode>("one_pass");
   const [pagesText, setPagesText] = useState(String(keyPageCount ?? 1));
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,10 +105,24 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount }: ScanUploadProp
   return (
     <div className="flex flex-col gap-4">
       <fieldset disabled={locked} className="flex min-w-0 flex-col gap-2">
-        <legend className="mb-1.5 text-sm font-medium text-ink">How should the scan be split?</legend>
-        <label className="flex min-h-11 cursor-pointer items-center gap-3">
-          <Input type="radio" name="scan-split" checked={mode === "auto"} onChange={() => setMode("auto")} />
-          <span>Automatic (AI finds where each student&apos;s paper starts)</span>
+        <legend className="mb-1.5 text-sm font-medium text-ink">How should the scan be graded?</legend>
+        <label className="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+          <Input type="radio" name="scan-split" className="mt-0.5" checked={mode === "one_pass"} onChange={() => setMode("one_pass")} />
+          <span className="flex flex-col gap-0.5">
+            <span>{ONE_PASS_TITLE}</span>
+            <span className="text-sm text-muted">{ONE_PASS_DESCRIPTION}</span>
+            {!onePassAvailable && <span className="text-sm text-warning-800">{ONE_PASS_AGENT_HINT}</span>}
+          </span>
+        </label>
+        <label className="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+          <Input type="radio" name="scan-split" className="mt-0.5" checked={mode === "auto"} onChange={() => setMode("auto")} />
+          <span className="flex flex-col gap-0.5">
+            <span>Split first, then grade</span>
+            <span className="text-sm text-muted">
+              The AI finds where each student&apos;s paper starts. A clean split is graded automatically; a split with anything to
+              check waits for you.
+            </span>
+          </span>
         </label>
         <label className="flex min-h-11 cursor-pointer items-center gap-3">
           <Input type="radio" name="scan-split" checked={mode === "every"} onChange={() => setMode("every")} />

@@ -225,9 +225,12 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     }
   }
 
-  /** The progress bar's batch ends with the assignment's last paper; never fails the job, whose outcome is recorded. */
+  /**
+   * The progress bar's batch ends with the assignment's last paper (or a scan graded in one pass); never fails the job, whose
+   * outcome is recorded.
+   */
   function endBatchIfDrained(job: Job): void {
-    if (job.kind !== "grade_submission") return;
+    if (job.kind === "extract_key") return;
     try {
       clearGradingBatchIfDrained(job.assignmentId);
     } catch (e) {

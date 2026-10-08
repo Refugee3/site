@@ -59,8 +59,8 @@ describe("insertScan and lookups", () => {
       id: input.id, assignmentId: assignment.id, status: "splitting", splitMode: "auto", pagesPerPaper: null, splitGeneration: 1,
       pdfPath: input.pdfPath, originalFilename: "period 3.pdf", contentSha256: input.contentSha256, byteSize: 1234, pageCount: 3,
       readings: [], pagesRead: 0, layout: null, proposedLayout: null, statusNote: null, errorMessage: null, aiModel: null,
-      usage: null, createdCount: null, duplicateCount: null, splitStartedAt: T0, splitFinishedAt: null, autoGraded: false, createdAt: T0,
-      updatedAt: T0,
+      usage: null, createdCount: null, duplicateCount: null, splitStartedAt: T0, splitFinishedAt: null, autoGraded: false, onePass: null,
+      createdAt: T0, updatedAt: T0,
     });
     expect(getScan(scan.id)).toEqual(scan);
   });

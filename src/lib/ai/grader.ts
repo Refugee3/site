@@ -1,6 +1,6 @@
 import type { AiUsage, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
 import type { AgentCallCost } from "./errors";
-import type { GradingOutput, KeyExtraction, ScanPages } from "./schemas";
+import type { GradingOutput, KeyExtraction, PacketOutput, ScanPages } from "./schemas";
 
 export interface AiCallMeta {
   requestedModel: string;
@@ -43,6 +43,21 @@ export function writesNotes(i: Pick<GradeInput, "writeNotes">): boolean {
   return i.writeNotes ?? true;
 }
 
+/**
+ * One chunk of a whole-class scan, graded in one pass: the same class-shared prefix as GradeInput (key PDF, context,
+ * guidance), then the chunk's pages, which may hold several students' papers.
+ */
+export interface PacketChunkInput extends Omit<GradeInput, "studentPdf" | "studentPageCount"> {
+  /** Consecutive pages cut from the scan. */
+  chunkPdf: Uint8Array;
+  /** The chunk's first page in the scan, 1-based. */
+  firstPage: number;
+  chunkPageCount: number;
+  totalPages: number;
+  /** How many pages a paper usually has (a hint), when the key tells. */
+  keyPageCount: number | null;
+}
+
 export interface ReadScanInput {
   assignmentTitle: string;
   sections: Section[];
@@ -81,4 +96,9 @@ export interface Grader {
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
   gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
   readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;
+  /**
+   * Finds the papers in one chunk of a scan and grades each (`output` always has the note fields; "" when notes are off).
+   * Absent on an engine that can't (the hosted agent): a scan is then split first and each paper graded on its own.
+   */
+  gradePacketChunk?(i: PacketChunkInput, o?: CallOptions): Promise<{ output: PacketOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
 }
