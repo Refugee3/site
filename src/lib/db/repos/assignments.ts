@@ -1,6 +1,6 @@
 import { now } from "@/lib/clock";
 import { tx } from "@/lib/db/connection";
-import { all, encodePatch, one, run, updateRow, type ColumnMap } from "@/lib/db/sql";
+import { all, encodePatch, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import { newId } from "@/lib/ids";
 import type { AiUsage, Assignment, AssignmentKind, AssignmentStatus, GradingMode, Section } from "@/lib/types";
@@ -11,6 +11,7 @@ interface AssignmentRow {
   title: string;
   kind: AssignmentKind;
   instructions: string;
+  write_notes: 0 | 1;
   status: AssignmentStatus;
   grading_mode: GradingMode;
   accuracy_weight: number;
@@ -37,6 +38,7 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     title: row.title,
     kind: row.kind,
     instructions: row.instructions,
+    writeNotes: row.write_notes === 1,
     status: row.status,
     gradingMode: row.grading_mode,
     accuracyWeight: row.accuracy_weight,
@@ -61,13 +63,14 @@ function sectionFromRow(row: SectionRow): Section {
 
 export function insertAssignment(
   a: Pick<Assignment, "id" | "teacherId" | "title" | "instructions" | "gradingMode" | "accuracyWeight" | "shareCode" | "maxSubmissions">
-    & Partial<Pick<Assignment, "kind">>,
+    & Partial<Pick<Assignment, "kind" | "writeNotes">>,
 ): Assignment {
   const at = now();
   const row = one<AssignmentRow>(
-    `INSERT INTO assignments (id, teacher_id, title, kind, instructions, grading_mode, accuracy_weight, share_code, max_submissions, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-    a.id, a.teacherId, a.title, a.kind ?? "homework", a.instructions, a.gradingMode, a.accuracyWeight, a.shareCode, a.maxSubmissions, at, at,
+    `INSERT INTO assignments (id, teacher_id, title, kind, instructions, write_notes, grading_mode, accuracy_weight, share_code, max_submissions,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    a.id, a.teacherId, a.title, a.kind ?? "homework", a.instructions, toBit(a.writeNotes ?? false), a.gradingMode, a.accuracyWeight, a.shareCode, a.maxSubmissions, at, at,
   );
   return assignmentFromRow(row!);
 }
@@ -105,13 +108,14 @@ export function countOpenAssignments(): number {
   return one<{ n: number }>("SELECT COUNT(*) AS n FROM assignments WHERE status = 'open'")!.n;
 }
 
-type AssignmentPatch = Pick<Assignment, "title" | "kind" | "instructions" | "status" | "gradingMode" | "accuracyWeight" | "shareCode"
+type AssignmentPatch = Pick<Assignment, "title" | "kind" | "instructions" | "writeNotes" | "status" | "gradingMode" | "accuracyWeight" | "shareCode"
   | "maxSubmissions" | "feedbackReleasedAt">;
 
 const ASSIGNMENT_COLUMNS: ColumnMap<AssignmentPatch> = {
   title: "title",
   kind: "kind",
   instructions: "instructions",
+  writeNotes: ["write_notes", toBit],
   status: "status",
   gradingMode: "grading_mode",
   accuracyWeight: "accuracy_weight",

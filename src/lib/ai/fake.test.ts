@@ -4,7 +4,7 @@ import type { GuidanceLesson } from "@/lib/types";
 import { AiError } from "./errors";
 import { createFakeGrader } from "./fake";
 import type { GradeInput, ReadScanInput } from "./grader";
-import { GradingOutputSchema, KeyExtractionSchema, ScanPagesSchema } from "./schemas";
+import { GradingOutputSchema, KeyExtractionSchema, ScanPagesSchema, withEmptyNotes } from "./schemas";
 import { makeKeyItem, makeSection } from "./test-utils";
 
 const grader = createFakeGrader({ delayMs: 0 });
@@ -29,6 +29,13 @@ describe("fake grader", () => {
     const first = await grader.gradeSubmission(gradeInput(pdf("alice")));
     const again = await createFakeGrader({ delayMs: 0 }).gradeSubmission(gradeInput(pdf("alice")));
     expect(again.output).toEqual(first.output);
+  });
+
+  it("writes no notes when they are off, with the same judgments", async () => {
+    const on = await grader.gradeSubmission(gradeInput(pdf("dave")));
+    const off = await grader.gradeSubmission({ ...gradeInput(pdf("dave")), writeNotes: false });
+    expect(off.output).toEqual(withEmptyNotes(on.output));
+    expect(off.output.overall_feedback).toBe("");
   });
 
   it("grades different papers differently", async () => {

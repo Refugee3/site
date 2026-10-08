@@ -25,6 +25,7 @@ export default async function NewAssignmentPage(props: PageProps<"/teacher/assig
     // Most teachers reuse the same class periods, so start from the latest assignment's list.
     sectionsText: defaultSectionsText(teacher.id),
     maxSubmissions: 500,
+    writeNotes: false,
   };
 
   return (

@@ -45,6 +45,8 @@ export interface AgentTaskSpec<T> {
   /** The single initial user.message; `fileIds[i]` is the upload id of files[i]. */
   content(fileIds: string[]): UserContentBlock[];
   schema: z.ZodType<T>;
+  /** The submit tool the task message names; default SUBMIT_TOOL[role]. */
+  tool?: string;
   /** Semantic problems with a schema-valid submission (empty = fine), e.g. wrong refs or page count. */
   check?(output: T): string[];
   budgetCents: number;
@@ -181,7 +183,7 @@ class TaskRun<T> {
   ) {
     this.now = d.now ?? Date.now;
     this.sleep = d.sleep ?? sleep;
-    this.tool = SUBMIT_TOOL[spec.role];
+    this.tool = spec.tool ?? SUBMIT_TOOL[spec.role];
     this.startedAt = this.now();
     this.taskSignal = AbortSignal.any([...(jobSignal ? [jobSignal] : []), this.sessionTimer.signal]);
   }

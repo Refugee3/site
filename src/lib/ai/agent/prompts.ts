@@ -119,15 +119,23 @@ export const SUBMIT_TOOL_DESCRIPTION: Record<AgentRole, string> = {
     + `scanned-pages PDF, in order (chunk_page 1, 2, …); ${ONLY_WAY} ${SUBMIT_RULES}`,
 };
 
+/** The grade agent's second submit tool, used when the assignment's notes are off. */
+export const SUBMIT_GRADING_WITHOUT_NOTES = "submit_grading_without_notes";
+
+export const SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION = "Submit your judgments for the STUDENT SUBMISSION when the task message says "
+  + "notes are turned off (otherwise use submit_grading). Call it exactly once, after reading every page, with one items entry "
+  + `for each ref in the task message, in that order; ${ONLY_WAY} ${SUBMIT_RULES}`;
+
 export function agentExtractionTask(title: string, teacherNotes: string, pageCount: number): string {
   return `${extractionTask(title, teacherNotes, pageCount)} In your workspace the same PDF is ${U}/answer-key.pdf. `
     + "When you are done, call submit_answer_key.";
 }
 
-export function agentGradingTask(pageCount: number, refs: string[], keyMounted: boolean): string {
+/** writeNotes false: the agent hands in its judgments with submit_grading_without_notes, whose schema has no note fields. */
+export function agentGradingTask(pageCount: number, refs: string[], keyMounted: boolean, writeNotes = true): string {
   const key = keyMounted ? ` and the teacher's answer key is ${U}/answer-key.pdf` : "";
-  return `${gradingTask(pageCount, refs)} In your workspace the same PDF is ${U}/student-submission.pdf${key}. `
-    + "When you are done, call submit_grading.";
+  return `${gradingTask(pageCount, refs, writeNotes)} In your workspace the same PDF is ${U}/student-submission.pdf${key}. `
+    + (writeNotes ? "When you are done, call submit_grading." : `When you are done, call ${SUBMIT_GRADING_WITHOUT_NOTES} instead of submit_grading.`);
 }
 
 export function agentScanTask(

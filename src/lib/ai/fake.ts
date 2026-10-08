@@ -1,9 +1,9 @@
 import { sha256Hex } from "@/lib/ids";
 import type { Attempt, Correctness, GradingGuidance, Legibility } from "@/lib/types";
 import { AiError } from "./errors";
-import type { AiCallMeta, CallOptions, Grader, ReadScanInput } from "./grader";
+import { type AiCallMeta, type CallOptions, type Grader, type ReadScanInput, writesNotes } from "./grader";
 import { itemRefs } from "./prompts";
-import type { GradingOutput, KeyExtraction, ScanPages } from "./schemas";
+import { type GradingOutput, type KeyExtraction, type ScanPages, withEmptyNotes } from "./schemas";
 
 // AI_MODE=fake: a deterministic stand-in so the whole flow runs without an API key. Every "random"
 // choice is derived from the PDF's bytes and a named purpose, so the same paper always grades the same.
@@ -56,7 +56,7 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
           + "and check each answer once more before you hand it in.",
         teacher_summary: "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.",
       };
-      return { output, refs, keyPdfIncluded: false, meta };
+      return { output: writesNotes(input) ? output : withEmptyNotes(output), refs, keyPdfIncluded: false, meta };
     },
     async readScanPages(input, options = {}) {
       const seed = seedFor(input.chunkPdf);

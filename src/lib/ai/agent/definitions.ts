@@ -7,9 +7,12 @@ import type { EnvironmentCreateParams } from "@anthropic-ai/sdk/resources/beta/e
 import type * as z from "zod";
 import { sha256Hex } from "@/lib/ids";
 import type { AiModel, Effort } from "@/lib/types";
-import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
+import { GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
 import type { Body } from "./port";
-import { AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_TOOL_DESCRIPTION } from "./prompts";
+import {
+  AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_GRADING_WITHOUT_NOTES,
+  SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION, SUBMIT_TOOL_DESCRIPTION,
+} from "./prompts";
 
 // What the app creates in the key's Anthropic workspace: one environment and one agent per task type. Each
 // definition carries a hash of the fields that matter, so a changed prompt, model or effort updates the agent.
@@ -90,6 +93,15 @@ export function agentDefinition(
   const tools: NonNullable<AgentCreateParams["tools"]> = [
     TOOLSET,
     { type: "custom", name: SUBMIT_TOOL[role], description: SUBMIT_TOOL_DESCRIPTION[role], input_schema: submitToolSchema(role) },
+    // The grader hands in a grading without notes with its own tool: a tool's schema is fixed when the agent is created.
+    ...(role === "grade"
+      ? [{
+        type: "custom" as const,
+        name: SUBMIT_GRADING_WITHOUT_NOTES,
+        description: SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION,
+        input_schema: objectSchema(GradingOutputWithoutNotesSchema, SUBMIT_GRADING_WITHOUT_NOTES),
+      }]
+      : []),
   ];
   const hash = definitionHash({ name, description, model, system, tools });
   return {
@@ -128,8 +140,12 @@ function canonical(value: unknown): unknown {
  * check that its `type` is "object" (throws otherwise). A plain Record<string, unknown> does not type-check there.
  */
 export function submitToolSchema(role: AgentRole): BetaManagedAgentsCustomToolInputSchema {
-  const schema = outputFormat(OUTPUT_SCHEMA[role]).schema;
-  if (!isObjectSchema(schema)) throw new Error(`The ${SUBMIT_TOOL[role]} input schema must describe a JSON object.`);
+  return objectSchema(OUTPUT_SCHEMA[role], SUBMIT_TOOL[role]);
+}
+
+function objectSchema(zodSchema: z.ZodType, tool: string): BetaManagedAgentsCustomToolInputSchema {
+  const schema = outputFormat(zodSchema).schema;
+  if (!isObjectSchema(schema)) throw new Error(`The ${tool} input schema must describe a JSON object.`);
   return schema;
 }
 

@@ -356,6 +356,15 @@ UPDATE scans SET split_started_at = created_at WHERE status = 'splitting';
 ALTER TABLE assignments ADD COLUMN kind TEXT NOT NULL DEFAULT 'homework' CHECK (kind IN ('homework','quiz'));
 `,
   },
+  {
+    version: 8,
+    name: "assignment_write_notes",
+    sql: `
+-- Whether the AI writes notes for students ("What you did", feedback, overall feedback) and for the teacher. Off for new
+-- and existing assignments: notes are most of the AI's writing, so papers cost less without them.
+ALTER TABLE assignments ADD COLUMN write_notes INTEGER NOT NULL DEFAULT 0 CHECK (write_notes IN (0,1));
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

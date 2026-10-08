@@ -1,6 +1,6 @@
 import type { BetaManagedAgentsCustomToolParams } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import { describe, expect, it } from "vitest";
-import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
+import { GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
 import {
   AGENT_ROLES,
   agentDefinition,
@@ -11,7 +11,10 @@ import {
   SUBMIT_TOOL,
   submitToolSchema,
 } from "./definitions";
-import { AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_TOOL_DESCRIPTION } from "./prompts";
+import {
+  AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_GRADING_WITHOUT_NOTES,
+  SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION, SUBMIT_TOOL_DESCRIPTION,
+} from "./prompts";
 import { testAgentConfig } from "./test-fake";
 
 const cfg = testAgentConfig();
@@ -64,7 +67,7 @@ describe("agentDefinition", () => {
   it("disables every toolset tool by default under the auto policy and enables only bash and read", () => {
     for (const role of AGENT_ROLES) {
       const tools = agentDefinition(role, cfg, INSTALL).params.tools ?? [];
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(role === "grade" ? 3 : 2);
       expect(tools[0]).toEqual({
         type: "agent_toolset_20260401",
         default_config: { enabled: false, permission_policy: { type: "auto" } },
@@ -78,16 +81,24 @@ describe("agentDefinition", () => {
     }
   });
 
-  it("gives each agent exactly one custom submit tool whose input schema is the structured-output schema", () => {
+  it("gives each agent a custom submit tool whose input schema is the structured-output schema", () => {
     const schemas = { extract: KeyExtractionSchema, grade: GradingOutputSchema, scan: ScanPagesSchema };
     for (const role of AGENT_ROLES) {
       const tools = customTools(role);
-      expect(tools).toHaveLength(1);
+      expect(tools).toHaveLength(role === "grade" ? 2 : 1);
       expect(tools[0].name).toBe(SUBMIT_TOOL[role]);
       expect(tools[0].description).toBe(SUBMIT_TOOL_DESCRIPTION[role]);
       expect(tools[0].input_schema).toEqual(outputFormat(schemas[role]).schema);
     }
     expect(Object.values(SUBMIT_TOOL)).toEqual(["submit_answer_key", "submit_grading", "submit_scan_pages"]);
+  });
+
+  it("gives the grader a second submit tool for gradings without notes", () => {
+    const lean = customTools("grade")[1];
+    expect(lean.name).toBe(SUBMIT_GRADING_WITHOUT_NOTES);
+    expect(lean.description).toBe(SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION);
+    expect(lean.input_schema).toEqual(outputFormat(GradingOutputWithoutNotesSchema).schema);
+    expect(JSON.stringify(lean.input_schema)).not.toMatch(/what_student_did|feedback|teacher_note|teacher_summary/);
   });
 
   it("uses no skills, MCP servers, multiagent roster or inference geo", () => {

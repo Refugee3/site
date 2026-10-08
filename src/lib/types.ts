@@ -34,6 +34,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface Teacher { id: string; email: string; displayName: string; createdAt: number }
 export interface Assignment { id: string; teacherId: string; title: string; kind: AssignmentKind; instructions: string; status: AssignmentStatus;
+  /** The AI writes notes for the student and the teacher; off, it only judges (cheaper). */
+  writeNotes: boolean;
   gradingMode: GradingMode; accuracyWeight: number; shareCode: string; maxSubmissions: number; feedbackReleasedAt: number | null;
   createdAt: number; updatedAt: number }
 export interface Section { id: string; assignmentId: string; label: string; aliases: string[]; canonicalKey: string; sortOrder: number }
@@ -77,7 +79,8 @@ export interface ScoreResult { items: ItemScore[]; earnedCenti: number; maxCenti
   completionCenti: number; accuracyCenti: number; totalOverridden: boolean; judgedCount: number }
 
 export type ActionResult<T = undefined> = { ok: true; data?: T; message?: string } | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
-export interface AssignmentFormInput { title: string; kind: AssignmentKind; instructions: string; gradingMode: GradingMode; accuracyWeight: number; sectionsText: string; maxSubmissions: number }
+export interface AssignmentFormInput { title: string; kind: AssignmentKind; instructions: string; gradingMode: GradingMode; accuracyWeight: number; sectionsText: string; maxSubmissions: number;
+  writeNotes: boolean }
 export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boolean; items: Array<{ id: string | null; label: string;
   groupLabel: string; prompt: string; answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string;
   pointsCenti: number; partialCredit: boolean; page: number | null }> }

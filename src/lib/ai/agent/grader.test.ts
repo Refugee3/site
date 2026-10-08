@@ -4,11 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DOCUMENT_CONTEXT, PDF_BYTE_BUDGET } from "../claude";
 import type { GradeInput, ReadScanInput } from "../grader";
 import { renderGradingContext, renderGuidance, renderScanContext } from "../prompts";
-import type { GradingOutput, KeyExtraction, ScanPages } from "../schemas";
+import { type GradingOutput, GradingOutputWithoutNotesSchema, type KeyExtraction, type ScanPages, withEmptyNotes } from "../schemas";
 import { makeKeyItem, makeSection } from "../test-utils";
 import { type AgentRole, SUBMIT_TOOL } from "./definitions";
 import { createAgentGrader } from "./grader";
-import { agentExtractionTask, agentGradingTask, agentScanTask, SUBMIT_ACCEPTED } from "./prompts";
+import { agentExtractionTask, agentGradingTask, agentScanTask, SUBMIT_ACCEPTED, SUBMIT_GRADING_WITHOUT_NOTES } from "./prompts";
 import { agentProcessSlot } from "./provision";
 import { SWEEP_INTERVAL_MS } from "./session";
 import { apiError, createFakeManagedAgents, events, type FakeSession, memoryStore, testAgentConfig } from "./test-fake";
@@ -69,14 +69,14 @@ function scanInput(overrides: Partial<ReadScanInput> = {}): ReadScanInput {
 }
 
 /** The agent submits the next of `outputs` for its role each time it is asked (initially, and after a rejection). */
-function agentAnswering(outputs: Partial<Record<AgentRole, unknown[]>>) {
+function agentAnswering(outputs: Partial<Record<AgentRole, unknown[]>>, tools: Partial<Record<AgentRole, string>> = {}) {
   const given = new Map<string, number>();
   const submit = (s: FakeSession) => {
     const role = s.params.metadata?.role as AgentRole;
     const list = outputs[role] ?? [];
     const n = given.get(s.id) ?? 0;
     given.set(s.id, n + 1);
-    s.emit(events.customToolUse(SUBMIT_TOOL[role], list[Math.min(n, list.length - 1)] as Record<string, unknown>));
+    s.emit(events.customToolUse(tools[role] ?? SUBMIT_TOOL[role], list[Math.min(n, list.length - 1)] as Record<string, unknown>));
   };
   return {
     onCreate: (s: FakeSession) => {
@@ -92,9 +92,12 @@ function agentAnswering(outputs: Partial<Record<AgentRole, unknown[]>>) {
   };
 }
 
-function setup(outputs: Partial<Record<AgentRole, unknown[]>> = {}, o: { keepSessions?: boolean } = {}) {
+function setup(
+  outputs: Partial<Record<AgentRole, unknown[]>> = {},
+  o: { keepSessions?: boolean; tools?: Partial<Record<AgentRole, string>> } = {},
+) {
   const clock = { now: START };
-  const fake = createFakeManagedAgents({ script: agentAnswering(outputs) });
+  const fake = createFakeManagedAgents({ script: agentAnswering(outputs, o.tools) });
   const store = memoryStore();
   const onFirstSuccess = vi.fn();
   const deps = {
@@ -156,6 +159,19 @@ describe("createAgentGrader", () => {
         { type: "text", text: agentGradingTask(2, ["Q1", "Q2"], true) },
       ],
     }]);
+  });
+
+  it("with notes off, asks for submit_grading_without_notes and returns the judgments with empty notes", async () => {
+    const lean = GradingOutputWithoutNotesSchema.parse(gradingOutput(["Q1", "Q2"]));
+    const { fake, grader } = setup({ grade: [lean] }, { tools: { grade: SUBMIT_GRADING_WITHOUT_NOTES } });
+    const result = await grader.gradeSubmission(gradeInput({ writeNotes: false }));
+
+    expect(result.output).toEqual(withEmptyNotes(lean));
+    const task = messageContent(createBodies(fake)[0]).at(-1);
+    expect(task).toEqual({ type: "text", text: agentGradingTask(2, ["Q1", "Q2"], true, false) });
+    expect(agentGradingTask(2, ["Q1", "Q2"], true, false))
+      .toContain("Notes are turned off for this assignment: write no notes.");
+    expect(agentGradingTask(2, ["Q1", "Q2"], true, false)).toContain("call submit_grading_without_notes instead of submit_grading.");
   });
 
   it("grades without the key PDF when there is none, or when both PDFs together are too large", async () => {

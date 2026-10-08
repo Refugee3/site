@@ -68,7 +68,7 @@ describe("end-to-end flow with the fake grader", () => {
     const teacher = await registerTeacher({ email: "Rivera@Example.org", displayName: "Ms. Rivera", password: "correct horse battery", code: null });
     let a = createAssignment(teacher.id, {
       title: "Unit 4 Quiz", kind: "quiz", instructions: "Show your work.", gradingMode: "completion", accuracyWeight: 50,
-      sectionsText: "Period 1 | P1\nPeriod 3", maxSubmissions: 500,
+      sectionsText: "Period 1 | P1\nPeriod 3", maxSubmissions: 500, writeNotes: true,
     });
     expect(a.status).toBe("draft");
     expect(getStudentUploadView(a.shareCode)).toMatchObject({ accepting: false, status: "draft", teacherName: "Ms. Rivera" });
@@ -190,6 +190,7 @@ describe("end-to-end flow with the fake grader", () => {
     const teacher = await registerTeacher({ email: "kim@example.org", displayName: "Mr. Kim", password: "correct horse battery", code: null });
     let a = createAssignment(teacher.id, {
       title: "Photosynthesis", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500,
+      writeNotes: true,
     });
 
     // A three-page key; "Save & open" approves it but can't open the assignment while student uploads are off.

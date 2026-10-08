@@ -59,6 +59,9 @@ describe("migrate", () => {
     const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
     expect(columns("submission_items")).toContain("override_what_student_did");
     expect(columns("submissions")).toContain("client_upload_id");
+    // Migration 8: notes are off for existing assignments too.
+    expect(db.prepare("SELECT write_notes FROM assignments WHERE id = 'a1'").get()).toEqual({ write_notes: 0 });
+    expect(() => db.prepare("UPDATE assignments SET write_notes = 2").run()).toThrow(/CHECK/);
     db.close();
   });
 });

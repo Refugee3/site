@@ -12,7 +12,7 @@ import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import type { AppConfig } from "@/lib/config";
 import type { AiModel, AiUsage, Effort } from "@/lib/types";
 import { AiError, classifySdkError } from "./errors";
-import type { AiCallMeta, ExtractKeyInput, GradeInput, Grader, ReadScanInput } from "./grader";
+import { type AiCallMeta, type ExtractKeyInput, type GradeInput, type Grader, type ReadScanInput, writesNotes } from "./grader";
 import {
   extractionTask,
   GRADING_SYSTEM_PROMPT,
@@ -25,7 +25,9 @@ import {
   SCAN_SPLIT_SYSTEM_PROMPT,
   scanSplitTask,
 } from "./prompts";
-import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "./schemas";
+import {
+  GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema, withEmptyNotes,
+} from "./schemas";
 
 export type MessageRunner = (params: BetaMessageStreamParams, o: { signal?: AbortSignal }) => Promise<BetaMessage>;
 
@@ -142,11 +144,12 @@ export function buildGradingParams(
   ];
   const perStudent: BetaContentBlockParam[] = [
     document("STUDENT SUBMISSION", i.studentPdf, DOCUMENT_CONTEXT.student),
-    { type: "text", text: gradingTask(i.studentPageCount, refs) },
+    { type: "text", text: gradingTask(i.studentPageCount, refs, writesNotes(i)) },
   ];
 
+  const schema = writesNotes(i) ? GradingOutputSchema : GradingOutputWithoutNotesSchema;
   const params: BetaMessageStreamParams = {
-    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(GradingOutputSchema), cfg.effort),
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(schema), cfg.effort),
     system: GRADING_SYSTEM_PROMPT,
     messages: [{ role: "user", content: [...sharedPrefix, ...perStudent] }],
   };
@@ -226,8 +229,12 @@ export function createClaudeGrader(runner: MessageRunner, cfg: DirectAiConfig): 
     },
     async gradeSubmission(input, o = {}) {
       const { params, refs, keyPdfIncluded } = buildGradingParams(input, cfg, o.maxTokens ?? cfg.maxTokens);
-      const { output, meta } = await call(params, GradingOutputSchema, o.signal);
-      return { output, refs, keyPdfIncluded, meta };
+      if (writesNotes(input)) {
+        const { output, meta } = await call(params, GradingOutputSchema, o.signal);
+        return { output, refs, keyPdfIncluded, meta };
+      }
+      const { output, meta } = await call(params, GradingOutputWithoutNotesSchema, o.signal);
+      return { output: withEmptyNotes(output), refs, keyPdfIncluded, meta };
     },
     async readScanPages(input, o = {}) {
       const params = buildScanSplitParams(input, cfg, o.maxTokens ?? cfg.maxTokens);

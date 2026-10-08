@@ -233,7 +233,7 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
           <label htmlFor={ids.note} className="text-sm font-medium">
             What you did (the student sees this)
           </label>
-          {hasNoteOverride && (
+          {hasNoteOverride && aiNote !== "" && (
             <Button
               variant="ghost"
               size="sm"
@@ -258,7 +258,9 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
           onChange={(e) => setNote(e.target.value)}
         />
         <p id={`${ids.note}-hint`} className="text-xs text-muted">
-          Correct it if the AI misread the work; leave it empty to hide it.
+          {aiNote === "" && aiFeedback === ""
+            ? "The AI wrote no notes for this paper. Write your own if you like; empty notes are hidden."
+            : "Correct it if the AI misread the work; leave it empty to hide it."}
         </p>
       </div>
 
@@ -267,7 +269,7 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
           <label htmlFor={ids.feedback} className="text-sm font-medium">
             Feedback (the student sees this)
           </label>
-          {hasFeedbackOverride && (
+          {hasFeedbackOverride && aiFeedback !== "" && (
             <Button
               variant="ghost"
               size="sm"

@@ -31,6 +31,16 @@ export interface GradeInput {
   studentPageCount: number;
   /** The teacher's preferences and lessons for this assignment; absent means none. */
   guidance?: GradingGuidance;
+  /**
+   * The assignment's "Write notes for students" (absent = true). Off, the AI is asked for no notes at all and the
+   * grader returns them as "" (withEmptyNotes).
+   */
+  writeNotes?: boolean;
+}
+
+/** The assignment's notes setting; a GradeInput without one writes notes. */
+export function writesNotes(i: Pick<GradeInput, "writeNotes">): boolean {
+  return i.writeNotes ?? true;
 }
 
 export interface ReadScanInput {

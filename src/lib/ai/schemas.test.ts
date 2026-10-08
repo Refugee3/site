@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ANSWER_TYPES, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES, SCAN_PAGE_KINDS } from "@/lib/types";
-import { GradingOutputSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "./schemas";
+import { makeGradingOutput } from "@/lib/grading/test-utils";
+import {
+  GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema, withEmptyNotes,
+} from "./schemas";
 
 type Json = Record<string, unknown>;
 
@@ -24,6 +27,7 @@ const UNSUPPORTED = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum
 describe.each([
   ["KeyExtractionSchema", KeyExtractionSchema],
   ["GradingOutputSchema", GradingOutputSchema],
+  ["GradingOutputWithoutNotesSchema", GradingOutputWithoutNotesSchema],
   ["ScanPagesSchema", ScanPagesSchema],
 ])("outputFormat(%s)", (_name, schema) => {
   const format = outputFormat(schema);
@@ -91,5 +95,32 @@ describe("enums survive the conversion", () => {
     for (const field of ["student_name", "section_raw", "page_marker"]) expect(at(page, [field, "type"])).toEqual(["string", "null"]);
     expect(at(page, ["worksheet_page", "type"])).toEqual(["number", "null"]);
     expect(at(page, ["chunk_page", "type"])).toBe("number");
+  });
+});
+
+describe("the grading schema without notes", () => {
+  const lean = outputFormat(GradingOutputWithoutNotesSchema).schema;
+  const full = outputFormat(GradingOutputSchema).schema;
+
+  it("asks for every judgment and no note", () => {
+    expect(Object.keys(at(lean, ["properties"]))).toEqual(["student", "document_check", "items", "integrity", "unmatched_work"]);
+    expect(Object.keys(at(lean, ["properties", "items", "items", "properties"]))).toEqual(["ref", "pages", "student_answer", "legibility",
+      "attempt", "correctness", "confidence", "review_reason"]);
+    for (const part of ["student", "document_check", "integrity"]) {
+      expect(at(lean, ["properties", part])).toEqual(at(full, ["properties", part]));
+    }
+    expect(Object.keys(at(full, ["properties", "items", "items", "properties"])).slice(-3))
+      .toEqual(["what_student_did", "feedback", "teacher_note"]);
+  });
+
+  it("fills in empty notes, keeping every judgment", () => {
+    const output = makeGradingOutput(["Q1", "Q2"]);
+    const filled = withEmptyNotes(GradingOutputWithoutNotesSchema.parse(output));
+    expect(GradingOutputSchema.parse(filled)).toEqual({
+      ...output,
+      items: output.items.map((item) => ({ ...item, what_student_did: "", feedback: "", teacher_note: "" })),
+      overall_feedback: "",
+      teacher_summary: "",
+    });
   });
 });

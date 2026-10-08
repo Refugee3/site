@@ -15,8 +15,11 @@ import {
 } from "./claude";
 import { AiError } from "./errors";
 import type { GradeInput, ReadScanInput } from "./grader";
-import { GRADING_SYSTEM_PROMPT, KEY_EXTRACTION_SYSTEM_PROMPT, SCAN_SPLIT_SYSTEM_PROMPT } from "./prompts";
-import { type GradingOutput, GradingOutputSchema, type KeyExtraction, KeyExtractionSchema, type ScanPages } from "./schemas";
+import { GRADING_SYSTEM_PROMPT, KEY_EXTRACTION_SYSTEM_PROMPT, NOTES_OFF_TASK, SCAN_SPLIT_SYSTEM_PROMPT } from "./prompts";
+import {
+  type GradingOutput, GradingOutputSchema, GradingOutputWithoutNotesSchema, type KeyExtraction, KeyExtractionSchema, outputFormat,
+  type ScanPages, withEmptyNotes,
+} from "./schemas";
 import { makeKeyItem, makeMessage, makeSection, testConfig } from "./test-utils";
 
 const cfg = testConfig();
@@ -193,6 +196,28 @@ describe("prompt cache prefix", () => {
     expect(keyPdfIncluded).toBe(false);
     expect(content(params).map((b) => b.type)).toEqual(["text", "document", "text"]);
     expect(content(params)[0]).toHaveProperty("cache_control");
+  });
+});
+
+describe("notes off", () => {
+  it("asks for the grading without notes, says so in the task message, and keeps the cached prefix", () => {
+    const on = buildGradingParams(gradeInput(), cfg, 64000).params;
+    const off = buildGradingParams(gradeInput({ writeNotes: false }), cfg, 64000).params;
+    expect(on.output_config?.format).toEqual(outputFormat(GradingOutputSchema));
+    expect(off.output_config?.format).toEqual(outputFormat(GradingOutputWithoutNotesSchema));
+    expect(off.system).toBe(on.system);
+    expect(JSON.stringify(content(off).slice(0, 2))).toBe(JSON.stringify(content(on).slice(0, 2)));
+    const task = (p: BetaMessageStreamParams) => { const b = content(p).at(-1)!; return b.type === "text" ? b.text : ""; };
+    expect(task(off)).toBe(`${task(on)} ${NOTES_OFF_TASK}`);
+    expect(NOTES_OFF_TASK).toContain("Notes are turned off for this assignment: write no notes.");
+  });
+
+  it("returns the judgments with every note empty", async () => {
+    const lean = GradingOutputWithoutNotesSchema.parse(gradingOutput);
+    const grader = createClaudeGrader(async () => makeMessage({ text: JSON.stringify(lean) }), cfg);
+    const result = await grader.gradeSubmission(gradeInput({ writeNotes: false }));
+    expect(result.output).toEqual(withEmptyNotes(lean));
+    expect(result.output.items[0]).toMatchObject({ correctness: "correct", what_student_did: "", feedback: "", teacher_note: "" });
   });
 });
 

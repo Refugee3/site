@@ -54,6 +54,14 @@ export default async function AssignmentLayout({ params, children }: Props) {
           )}
           <span aria-hidden="true">·</span>
           <span>{plural(header.counts.total, "paper")}</span>
+          {!assignment.writeNotes && (
+            <>
+              <span aria-hidden="true">·</span>
+              <Link href={`/teacher/assignments/${assignment.id}/settings`} title="The AI writes no notes for students. Change it in Settings.">
+                Notes off
+              </Link>
+            </>
+          )}
         </p>
       </div>
 

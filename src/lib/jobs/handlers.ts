@@ -106,6 +106,8 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       {
         assignment, teacherNotes: key.teacherNotes, sections: ctx.sections, items: ctx.items,
         keyPdf, studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
+        // Off, the grader returns every note as "" (the scoring, lessons and views are unaffected).
+        writeNotes: assignment.writeNotes,
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );

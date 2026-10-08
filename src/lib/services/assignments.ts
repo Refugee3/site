@@ -36,6 +36,8 @@ export const AssignmentFormSchema: z.ZodType<AssignmentFormInput> = z.object({
     for (const message of readSections(text).errors) ctx.addIssue({ code: "custom", message });
   }),
   maxSubmissions: z.coerce.number().int().min(1).max(5000).default(500),
+  // A checkbox: present ("on") when ticked, missing when not. Off by default.
+  writeNotes: z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean()),
 });
 
 /** Callers pass input already validated with AssignmentFormSchema; this only guards against a bypass. */
@@ -57,6 +59,7 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
       title: i.title,
       kind: i.kind,
       instructions: i.instructions,
+      writeNotes: i.writeNotes,
       gradingMode: i.gradingMode,
       accuracyWeight: i.accuracyWeight,
       shareCode: unusedShareCode(),
@@ -68,7 +71,10 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
   });
 }
 
-/** Saves the settings; a new grading mode or weight rescores and a new section list re-matches, without AI calls. */
+/**
+ * Saves the settings; a new grading mode or weight rescores and a new section list re-matches, without AI calls. Turning
+ * notes on or off applies to papers graded from then on: graded papers are not marked stale.
+ */
 export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignment {
   const sections = sectionsFromInput(i.sectionsText);
   return tx(() => {
@@ -77,6 +83,7 @@ export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignm
       title: i.title,
       kind: i.kind,
       instructions: i.instructions,
+      writeNotes: i.writeNotes,
       gradingMode: i.gradingMode,
       accuracyWeight: i.accuracyWeight,
       maxSubmissions: i.maxSubmissions,

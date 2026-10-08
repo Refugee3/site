@@ -1,12 +1,15 @@
 import "server-only";
 import { DOCUMENT_CONTEXT, PDF_BYTE_BUDGET, PDF_TOO_LARGE } from "../claude";
 import { AiError } from "../errors";
-import type { AiCallMeta, CallOptions, Grader } from "../grader";
+import { type AiCallMeta, type CallOptions, type Grader, writesNotes } from "../grader";
 import { itemRefs, renderGradingContext, renderGuidance, renderScanContext } from "../prompts";
-import { type GradingOutput, GradingOutputSchema, KeyExtractionSchema, type ScanPages, ScanPagesSchema } from "../schemas";
+import {
+  type GradingOutput, GradingOutputSchema, type GradingOutputWithoutNotes, GradingOutputWithoutNotesSchema, KeyExtractionSchema,
+  type ScanPages, ScanPagesSchema, withEmptyNotes,
+} from "../schemas";
 import { AGENT_ROLES, type AgentEngineConfig, MOUNT, roleModel } from "./definitions";
 import { teacherMessageFor } from "./errors";
-import { agentExtractionTask, agentGradingTask, agentScanTask } from "./prompts";
+import { agentExtractionTask, agentGradingTask, agentScanTask, SUBMIT_GRADING_WITHOUT_NOTES } from "./prompts";
 import { agentProcessSlot, ensureProvisioned, type ProvisionDeps, type ProvisionedAgents } from "./provision";
 import {
   type AgentTaskResult,
@@ -132,7 +135,8 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
       const context = renderGradingContext({
         assignment: input.assignment, teacherNotes: input.teacherNotes, sections: input.sections, items: input.items,
       });
-      const { output, meta } = await run({
+      const writeNotes = writesNotes(input);
+      const task: Omit<AgentTaskSpec<GradingOutputWithoutNotes>, "budgetCents" | "schema"> = {
         role: "grade",
         title: "PDF Auto-Grader: grade one paper",
         files: [
@@ -144,12 +148,16 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
           { type: "text", text: context },
           ...(guidance === "" ? [] : [{ type: "text" as const, text: guidance }]),
           document("STUDENT SUBMISSION", fileIds[fileIds.length - 1], DOCUMENT_CONTEXT.student),
-          { type: "text", text: agentGradingTask(input.studentPageCount, refs, keyPdf !== null) },
+          { type: "text", text: agentGradingTask(input.studentPageCount, refs, keyPdf !== null, writeNotes) },
         ],
-        schema: GradingOutputSchema,
         check: (out) => refProblems(out, refs),
-      }, o);
-      return { output, refs, keyPdfIncluded: keyPdf !== null, meta };
+      };
+      if (writeNotes) {
+        const { output, meta } = await run<GradingOutput>({ ...task, schema: GradingOutputSchema }, o);
+        return { output, refs, keyPdfIncluded: keyPdf !== null, meta };
+      }
+      const { output, meta } = await run({ ...task, schema: GradingOutputWithoutNotesSchema, tool: SUBMIT_GRADING_WITHOUT_NOTES }, o);
+      return { output: withEmptyNotes(output), refs, keyPdfIncluded: keyPdf !== null, meta };
     },
     async readScanPages(input, o = {}) {
       if (input.chunkPdf.byteLength > PDF_BYTE_BUDGET) throw new AiError("request_too_large", PDF_TOO_LARGE.scan, { retryable: false });
@@ -175,7 +183,7 @@ function document(title: string, fileId: string, context?: string): UserContentB
 }
 
 /** The grading must have exactly one entry per ref, in key order. */
-function refProblems(output: GradingOutput, refs: string[]): string[] {
+function refProblems(output: GradingOutputWithoutNotes, refs: string[]): string[] {
   const got = output.items.map((item) => item.ref);
   if (got.length === refs.length && got.every((ref, i) => ref === refs[i])) return [];
   const n = refs.length;

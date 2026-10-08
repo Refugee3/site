@@ -38,6 +38,10 @@ const GRADING_MODE_OPTIONS: Array<{ value: GradingMode; label: string; descripti
   },
 ];
 
+/** Notes are most of what the AI writes, and written tokens are the expensive ones (see README → Cost). */
+const WRITE_NOTES_HINT = "The AI explains what each student did and gives feedback on every question. Turning this on makes each paper "
+  + "cost roughly 1.5 times as much, more for assignments with many questions. Off, you can still write your own notes.";
+
 const SECTIONS_PLACEHOLDER = "Period 1 | P1, 1st\nPeriod 3 | P3, 3rd";
 
 /** The form as typed: the number field stays text so clearing it does not produce NaN. */
@@ -137,6 +141,22 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
         onWeightChange={(accuracyWeight) => update("accuracyWeight", accuracyWeight)}
       />
 
+      <div className="flex flex-col gap-1">
+        <label className="flex min-h-11 cursor-pointer items-center gap-3">
+          <Input
+            type="checkbox"
+            name="writeNotes"
+            aria-describedby="assignment-write-notes-hint"
+            checked={values.writeNotes}
+            onChange={(e) => update("writeNotes", e.target.checked)}
+          />
+          <span className="font-medium">Write notes for students</span>
+        </label>
+        <p id="assignment-write-notes-hint" className="text-sm text-muted">
+          {WRITE_NOTES_HINT}
+        </p>
+      </div>
+
       <Field
         label="Sections (optional)"
         htmlFor="assignment-sections"
@@ -182,7 +202,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       {mode === "edit" && (
         <p className="text-sm text-muted">
           Changing the grading mode or weight rescores every paper right away, and changing sections re-sorts papers
-          into them. Neither uses the AI.
+          into them. Neither uses the AI. Turning notes on or off applies to papers graded from then on.
         </p>
       )}
 

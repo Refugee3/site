@@ -504,6 +504,7 @@ describe("races and crashes", () => {
   describe("section edits during the AI call", () => {
     const FORM: Omit<AssignmentFormInput, "sectionsText"> = {
       title: "Unit 4 Quiz", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, maxSubmissions: 500,
+      writeNotes: false,
     };
 
     async function sectionedPaper(sectionsText: string, wrote: string) {

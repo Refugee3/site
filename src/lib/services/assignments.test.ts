@@ -29,7 +29,8 @@ beforeEach(() => {
 
 function form(o: Partial<AssignmentFormInput> = {}): AssignmentFormInput {
   return {
-    title: "Unit 4 Quiz", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500, ...o,
+    title: "Unit 4 Quiz", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 50, sectionsText: "", maxSubmissions: 500,
+    writeNotes: false, ...o,
   };
 }
 
@@ -51,7 +52,13 @@ describe("AssignmentFormSchema", () => {
     const parsed = AssignmentFormSchema.parse({ title: "  Quiz 1 ", accuracyWeight: "40", maxSubmissions: "30" });
     expect(parsed).toEqual({
       title: "Quiz 1", kind: "homework", instructions: "", gradingMode: "completion", accuracyWeight: 40, sectionsText: "", maxSubmissions: 30,
+      writeNotes: false,
     });
+  });
+
+  it("reads the notes checkbox: ticked sends \"on\", unticked sends nothing", () => {
+    expect(AssignmentFormSchema.parse({ title: "Quiz 1", writeNotes: "on" }).writeNotes).toBe(true);
+    expect(AssignmentFormSchema.parse({ title: "Quiz 1", writeNotes: undefined }).writeNotes).toBe(false);
   });
 
   it("rejects bad values field by field", () => {
@@ -86,6 +93,23 @@ describe("createAssignment", () => {
 });
 
 describe("updateAssignment", () => {
+  it("turns notes on and off for the papers graded from then on, without marking graded papers stale", async () => {
+    const seen: Array<boolean | undefined> = [];
+    const { assignment, paper } = await withGradedPaper();
+    expect(getAssignment(assignment.id)!.writeNotes).toBe(false);
+
+    const updated = updateAssignment(assignment, form({ writeNotes: true }));
+    expect(updated.writeNotes).toBe(true);
+    expect(getSubmission(paper.id)).toEqual(paper);
+
+    await ingestStudentUpload(updated.shareCode, [{ filename: "p.pdf", bytes: await makePdf(2) }]);
+    await drainQueue(answeringGrader((refs, input) => {
+      seen.push(input.writeNotes);
+      return makeGradingOutput(refs);
+    }));
+    expect(seen).toEqual([true]);
+  });
+
   it("rescores every paper when the grading mode changes, without an AI call", async () => {
     const { assignment, paper } = await withGradedPaper();
     expect(paper.scoreEarnedCenti).toBe(300);
