@@ -1,0 +1,177 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition, type ChangeEvent } from "react";
+import { Alert } from "@/components/ui/alert";
+import { buttonClasses } from "@/components/ui/button-styles";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { useHydrated } from "@/components/ui/use-hydrated";
+import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
+import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
+import type { ScanSplitMode } from "@/lib/types";
+import { parseScanUploadResult } from "./scan-upload-result";
+import { useLeaveGuard } from "./use-leave-guard";
+
+export interface ScanUploadProps {
+  /** `/api/teacher/assignments/<id>/scans` */
+  uploadUrl: string;
+  disabled: boolean;
+  /** The worksheet's length, the likeliest number of pages per student. */
+  keyPageCount: number | null;
+  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
+  onePassAvailable: boolean;
+}
+
+const PAGES_ERROR = "Enter the pages per student as a whole number from 1 to 100.";
+
+export const ONE_PASS_TITLE = "Grade in one pass (cheapest)";
+export const ONE_PASS_DESCRIPTION = "The AI reads each page once: it finds whose paper it is and grades it in the same step. "
+  + "Papers it isn't sure about are flagged for you.";
+export const ONE_PASS_AGENT_HINT = "The hosted agent grades your papers (Settings → Grader) and can't grade in one pass, so this scan "
+  + "will be split first and each paper then graded on its own.";
+
+/** `?mode=…` for the upload, or null when "every N pages" has no valid N. */
+function splitQuery(mode: ScanSplitMode, pagesText: string): string | null {
+  if (mode !== "every") return `mode=${mode}`;
+  const pages = Number(pagesText.trim());
+  if (!Number.isInteger(pages) || pages < 1 || pages > 100) return null;
+  return `mode=every&pagesPerPaper=${pages}`;
+}
+
+/**
+ * Uploads one scan of the whole class's papers as soon as it is chosen, then opens it. Graded in one pass (the default), the
+ * papers appear as they are graded. Split first, a clean AI split is graded automatically; one with anything flagged (and
+ * every "every N pages" split) waits for the teacher there.
+ */
+export function ScanUpload({ uploadUrl, disabled, keyPageCount, onePassAvailable }: ScanUploadProps) {
+  const router = useRouter();
+  const hydrated = useHydrated();
+  const [mode, setMode] = useState<ScanSplitMode>("one_pass");
+  const [pagesText, setPagesText] = useState(String(keyPageCount ?? 1));
+  const [progress, setProgress] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [opening, startOpening] = useTransition();
+  const controller = useRef<AbortController | null>(null);
+  const busy = progress !== null || opening;
+  const uploading = progress !== null;
+
+  // Leaving the page cancels an upload in flight.
+  useEffect(() => () => controller.current?.abort(), []);
+
+  useLeaveGuard(uploading, "1 upload hasn't finished. Leaving this page cancels it. Leave anyway?");
+
+  async function upload(event: ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (picked.length === 0) return;
+    const query = splitQuery(mode, pagesText);
+    if (query === null) {
+      setError(PAGES_ERROR);
+      return;
+    }
+
+    const body = new FormData();
+    const abort = new AbortController();
+    controller.current = abort;
+    setError(null);
+    setProgress(0);
+    try {
+      // Several files (photos of each page, for instance) are joined into one scan in the order picked.
+      for (const file of picked) {
+        let prepared: File;
+        try {
+          prepared = await prepareUploadFile(file);
+        } catch {
+          setError(`${file.name || "A photo"}: ${UNSUPPORTED_IMAGE}`);
+          return;
+        }
+        body.append("file", prepared, prepared.name);
+      }
+      const result = await uploadWithProgress(`${uploadUrl}?${query}`, body, setProgress, abort.signal);
+      const uploaded = result.status === 201 ? parseScanUploadResult(result.json) : null;
+      if (uploaded) startOpening(() => router.push(uploaded.reviewUrl));
+      else if (result.status === 201) setError("The server sent an unexpected answer.");
+      else setError(readUploadError(result).message);
+    } catch (e) {
+      if (!isAbortError(e)) setError("The upload didn't go through. Check your connection and try again.");
+    } finally {
+      controller.current = null;
+      setProgress(null);
+    }
+  }
+
+  const locked = disabled || busy;
+  return (
+    <div className="flex flex-col gap-4">
+      <fieldset disabled={locked} className="flex min-w-0 flex-col gap-2">
+        <legend className="mb-1.5 text-sm font-medium text-ink">How should the scan be graded?</legend>
+        <label className="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+          <Input type="radio" name="scan-split" className="mt-0.5" checked={mode === "one_pass"} onChange={() => setMode("one_pass")} />
+          <span className="flex flex-col gap-0.5">
+            <span>{ONE_PASS_TITLE}</span>
+            <span className="text-sm text-muted">{ONE_PASS_DESCRIPTION}</span>
+            {!onePassAvailable && <span className="text-sm text-warning-800">{ONE_PASS_AGENT_HINT}</span>}
+          </span>
+        </label>
+        <label className="flex min-h-11 cursor-pointer items-start gap-3 py-1">
+          <Input type="radio" name="scan-split" className="mt-0.5" checked={mode === "auto"} onChange={() => setMode("auto")} />
+          <span className="flex flex-col gap-0.5">
+            <span>Split first, then grade</span>
+            <span className="text-sm text-muted">
+              The AI finds where each student&apos;s paper starts. A clean split is graded automatically; a split with anything to
+              check waits for you.
+            </span>
+          </span>
+        </label>
+        <label className="flex min-h-11 cursor-pointer items-center gap-3">
+          <Input type="radio" name="scan-split" checked={mode === "every"} onChange={() => setMode("every")} />
+          <span>Every N pages</span>
+        </label>
+        {mode === "every" && (
+          <div className="flex flex-col gap-1.5 pl-8">
+            <label htmlFor="scan-pages-per-paper" className="text-sm font-medium">
+              Pages per student
+            </label>
+            <div className="w-24">
+              <Input
+                id="scan-pages-per-paper"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100}
+                aria-describedby="scan-pages-per-paper-hint"
+                value={pagesText}
+                onChange={(e) => setPagesText(e.target.value)}
+              />
+            </div>
+            <p id="scan-pages-per-paper-hint" className="text-sm text-muted">
+              Use this when every paper has the same number of pages and there are no blank pages in between.
+            </p>
+          </div>
+        )}
+      </fieldset>
+
+      <label
+        aria-disabled={locked || !hydrated || undefined}
+        className={buttonClasses({
+          className: "cursor-pointer self-start focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
+        })}
+      >
+        <input type="file" multiple accept={UPLOAD_ACCEPT} disabled={locked || !hydrated} onChange={upload} className="sr-only" />
+        {busy && <Spinner className="size-4" />}
+        Choose the scan
+      </label>
+      <p className="text-sm text-muted">{UPLOAD_FORMATS}; several files are joined in the order you pick them.</p>
+
+      <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
+        {progress !== null && (
+          <p className="text-sm text-muted">
+            {progress < 1 ? `Uploading… ${Math.round(progress * 100)}%` : "Uploaded. Checking the file…"}
+          </p>
+        )}
+        {error && <Alert tone="danger">{error}</Alert>}
+      </div>
+    </div>
+  );
+}

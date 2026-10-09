@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens shared by every page. Components use these names (bg-surface, text-muted, border-line,
+ * bg-brand-600, text-danger-700, ...) instead of raw palette colors so the student and teacher UIs stay
+ * consistent. Tailwind's default palette stays available for one-off accents.
+ *
+ * The app is deliberately light-only: it is used on classroom projectors and phones, and a half-themed dark
+ * mode would be worse than none.
+ */
+@theme {
+  /* System font stacks: builds and pages never fetch fonts. */
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Neutral surfaces and text. */
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-subtle: #eef0f3;
+  --color-line: #dde1e7;
+  --color-line-strong: #b9c0ca;
+  /* Borders of text fields, selects and checkboxes: often their only visible edge, so they must stay at or
+     above 3:1 (WCAG 1.4.11) against surface, canvas, subtle and the -50 tones (globals.test.ts checks). */
+  --color-line-control: #7d8796;
+  --color-ink: #17202b;
+  --color-muted: #525d6c;
+
+  /* Primary accent: buttons, links, focus rings. White text on brand-600 is above 4.5:1. */
+  --color-brand-50: #eef3ff;
+  --color-brand-100: #dbe6ff;
+  --color-brand-600: #2c56c9;
+  --color-brand-700: #2246a8;
+  --color-brand-800: #1b3886;
+
+  /* Status tones: -50 backgrounds, -200 borders, -700/-800 text (all text pairs are above 4.5:1). */
+  --color-info-50: #eef6fc;
+  --color-info-200: #bfdcf2;
+  --color-info-800: #134a72;
+
+  --color-success-50: #edf8f1;
+  --color-success-200: #b7e2c6;
+  --color-success-600: #1f7a45;
+  --color-success-800: #145232;
+
+  --color-warning-50: #fff7e8;
+  --color-warning-200: #f5d48f;
+  /* Amber fills (bars), above 3:1 against surface and subtle; never text on its own. */
+  --color-warning-500: #b87700;
+  --color-warning-800: #6e4504;
+
+  --color-danger-50: #fdf0ef;
+  --color-danger-200: #f3c1bd;
+  --color-danger-600: #c0332b;
+  --color-danger-700: #a32a23;
+  --color-danger-800: #7f211c;
+
+  /* Estimated progress bars: their stripes drift to show the position is a guess (see .progress-stripes). */
+  --animate-progress-stripes: progress-stripes 1s linear infinite;
+
+  @keyframes progress-stripes {
+    from {
+      background-position: 1rem 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+}
+
+/* Light diagonal stripes over a progress bar's fill; animated with motion-safe:animate-progress-stripes. */
+@utility progress-stripes {
+  background-image: linear-gradient(
+    45deg,
+    rgb(255 255 255 / 0.22) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgb(255 255 255 / 0.22) 50%,
+    rgb(255 255 255 / 0.22) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 1rem 1rem;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* One visible focus style for every interactive element that does not set its own. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+
+  /* Preflight strips link styling; inline links get it back so they are not marked by color alone. */
+  a {
+    color: var(--color-brand-700);
+    text-decoration-line: underline;
+    text-underline-offset: 2px;
+  }
+
+  a:hover {
+    color: var(--color-brand-800);
+  }
+}
