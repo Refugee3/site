@@ -97,7 +97,7 @@ const EnvSchema = z.object({
   APP_SECRET: z.string().min(32, "must be at least 32 characters; generate one with: openssl rand -base64 32").optional(),
   // Retired: read only to warn that it is ignored (any value).
   ANTHROPIC_MODEL: z.string().optional(),
-  ANTHROPIC_EFFORT: z.enum(EFFORTS).default("high"),
+  ANTHROPIC_EFFORT: z.enum(EFFORTS).default("low"),
   AI_FALLBACKS: z.enum(["on", "off"]).default("on"),
   AI_CACHE_TTL: z.enum(["5m", "1h"]).default("1h"),
   AI_TIMEOUT_MS: intVar(10_000, Number.MAX_SAFE_INTEGER, 600_000),

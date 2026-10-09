@@ -33,7 +33,7 @@ export interface AgentEngineConfig {
   scanModel: AiModel;
   /** ANTHROPIC_EFFORT, for extract and grade. */
   effort: Effort;
-  /** SCAN_SPLIT_EFFORT ("medium"). */
+  /** SCAN_SPLIT_EFFORT ("low"). */
   scanEffort: Effort;
   budgetCents: Record<AgentRole, number>;
   sessionTimeoutMs: number;

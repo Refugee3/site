@@ -294,13 +294,13 @@ describe("scan split request", () => {
     };
   }
 
-  it("asks for page readings from Sonnet 5.5 at medium effort, whatever the chosen model and configured effort", () => {
+  it("asks for page readings from Sonnet 5.5 at low effort, whatever the chosen model and configured effort", () => {
     const params = buildScanSplitParams(scanInput(), testConfig({ effort: "max" }), 32000);
     expect(params.model).toBe("claude-sonnet-5-5");
     expect(buildScanSplitParams(scanInput(), testConfig({ model: "claude-sonnet-5-5" }), 32000).model).toBe("claude-sonnet-5-5");
     expect(params.max_tokens).toBe(32000);
     expect(params.thinking).toEqual({ type: "adaptive" });
-    expect(params.output_config?.effort).toBe("medium");
+    expect(params.output_config?.effort).toBe("low");
     expect(params.output_config?.format?.type).toBe("json_schema");
     expect(params.betas).toEqual(["server-side-fallback-2026-07-01"]);
     expect(params.system).toBe(SCAN_SPLIT_SYSTEM_PROMPT);

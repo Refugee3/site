@@ -27,7 +27,7 @@ describe("getConfig", () => {
       aiMode: "claude",
       hasApiKey: false,
       appSecret: null,
-      effort: "high",
+      effort: "low",
       fallbacks: true,
       cacheTtl: "1h",
       aiTimeoutMs: 600_000,

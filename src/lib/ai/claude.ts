@@ -65,7 +65,7 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
  * Splitting a scan only needs page-level reading, so it runs at medium effort whatever ANTHROPIC_EFFORT says, on
  * SCAN_SPLIT_MODEL (Sonnet 5.5) whatever model is chosen in Settings.
  */
-export const SCAN_SPLIT_EFFORT = "medium" satisfies Effort;
+export const SCAN_SPLIT_EFFORT = "low" satisfies Effort;
 
 /**
  * The production runner. The SDK `timeout` only bounds the wait for response headers on a stream

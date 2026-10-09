@@ -228,7 +228,7 @@ describe("the AI model", () => {
     try {
       expect(await setUpHostedAgentNow()).toEqual({ ok: true });
       expect(api.requests.filter((r) => r.path === "/v1/agents").map((r) => r.body?.model)).toEqual([
-        { id: "claude-sonnet-5-5", effort: "high" }, { id: "claude-sonnet-5-5", effort: "high" }, { id: "claude-sonnet-5-5", effort: "medium" },
+        { id: "claude-sonnet-5-5", effort: "low" }, { id: "claude-sonnet-5-5", effort: "low" }, { id: "claude-sonnet-5-5", effort: "low" },
       ]);
       const ids = getHostedAgentState().agents;
 
@@ -240,8 +240,8 @@ describe("the AI model", () => {
 
       // The same two agents, updated to a new version; nothing created, the scan splitter untouched.
       expect(api.requests.map((r) => [r.method, r.path, r.body?.model])).toEqual([
-        ["POST", `/v1/agents/${ids.extract!.id}`, { id: "claude-opus-5-5", effort: "high" }],
-        ["POST", `/v1/agents/${ids.grade!.id}`, { id: "claude-opus-5-5", effort: "high" }],
+        ["POST", `/v1/agents/${ids.extract!.id}`, { id: "claude-opus-5-5", effort: "low" }],
+        ["POST", `/v1/agents/${ids.grade!.id}`, { id: "claude-opus-5-5", effort: "low" }],
       ]);
       expect(getHostedAgentState().agents).toMatchObject({
         extract: { id: ids.extract!.id, version: 2 }, grade: { id: ids.grade!.id, version: 2 }, scan: ids.scan,
