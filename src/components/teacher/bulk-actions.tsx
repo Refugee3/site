@@ -70,6 +70,11 @@ export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, fail
             Export CSV
           </LinkButton>
         )}
+        {hasPapers && (
+          <LinkButton href={`/api/teacher/assignments/${assignmentId}/export/questions`} variant="secondary" size="sm" download>
+            Download question stats (CSV)
+          </LinkButton>
+        )}
         {runner.pending && <Spinner label="Working…" className="size-4" />}
         <p role="status" className="text-sm text-muted">
           {message}

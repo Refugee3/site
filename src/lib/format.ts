@@ -1,4 +1,4 @@
-import type { AnswerType, AssignmentKind, Attempt, Correctness, ItemReviewReason, SubmissionStatus } from "@/lib/types";
+import type { AnswerType, AssignmentKind, Attempt, Correctness, ItemOutcome, ItemReviewReason, SubmissionStatus } from "@/lib/types";
 
 const NONE = "—";
 
@@ -75,6 +75,15 @@ export const CORRECTNESS_LABEL: Record<Correctness, string> = {
   incorrect: "Incorrect",
   no_answer: "No answer",
   cannot_judge: "Can't judge",
+};
+
+/** How a paper did on one question, on the board's "missed" filter and the Questions tab. */
+export const OUTCOME_LABEL: Record<ItemOutcome, string> = {
+  correct: "Correct",
+  partly: "Partly right",
+  wrong: "Wrong",
+  blank: "Blank",
+  unreadable: "Unreadable",
 };
 
 export const REVIEW_REASON_LABEL: Record<ItemReviewReason, string> = {

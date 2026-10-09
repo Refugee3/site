@@ -158,9 +158,21 @@ export interface AssignmentHeader { assignment: Assignment; shareUrl: string; ke
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
 export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
   source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
-  flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number }
+  flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number;
+  /** Only while the board is filtered to the papers that missed an item: how this paper did on it and what it wrote. */
+  missed?: { outcome: ItemOutcome; answer: string } }
+/**
+ * How one paper did on one key item (see src/lib/grading/item-stats.ts). `partly`: a minor error, partially correct or a
+ * major error; `blank`: not attempted or no answer; `unreadable`: the AI couldn't judge it.
+ */
+export type ItemOutcome = "correct" | "partly" | "wrong" | "blank" | "unreadable";
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
   scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean;
+  /**
+   * `?missed=<itemId>`: the board shows only the current graded papers that missed that item (anything short of full
+   * accuracy credit), with the answers written most often among them. Null without the filter or for an unknown item.
+   */
+  missed: { itemId: string; label: string; prompt: string; count: number; commonAnswers: Array<{ answer: string; count: number }> } | null;
   /** Null while none of the assignment's papers is queued or being graded. */
   progress: GradingProgress | null }
 export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean;

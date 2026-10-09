@@ -45,6 +45,7 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
       active: pathname === base || pathname.startsWith(`${base}/submissions/`),
       note: needsReviewCount > 0 ? `${needsReviewCount} to review` : null,
     },
+    { href: `${base}/questions`, label: "Questions", active: pathname === `${base}/questions`, note: null },
     { href: `${base}/key`, label: "Answer key", active: pathname === `${base}/key`, note: keyNeedsAttention ? "needs you" : null },
     {
       href: `${base}/upload`,

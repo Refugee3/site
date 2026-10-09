@@ -19,6 +19,7 @@ import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
 import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
 import { toCsv } from "@/lib/grading/csv";
+import { commonAnswers, computeItemStats, isCountedStatus, paperOutcomes, type ItemStatsSummary } from "@/lib/grading/item-stats";
 import { computeScore, percentTenths } from "@/lib/grading/scoring";
 import { sectionsToText } from "@/lib/grading/sections";
 import { keyPageCountHint } from "@/lib/grading/split";
@@ -89,22 +90,36 @@ function currentCounts(assignmentId: string): StatusCounts {
   return countCurrent(organizeBoard(listSubmissions(assignmentId), listSections(assignmentId)));
 }
 
-export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
+/** `missedItemId` (`?missed=`): show only the current graded papers that missed that key item (ignored if unknown). */
+export function getBoardView(a: Assignment, filter: BoardFilter, missedItemId: string | null = null): BoardView {
   const { revision } = requireKey(a.id);
   const studentsCanUpload = studentUploadsEnabled();
   const submissions = listSubmissions(a.id);
   const board = organizeBoard(submissions, listSections(a.id));
   const current = new Set(boardOrderIds(board));
   const scans = countPendingScans(a.id);
+  const missedOn = missedItemId === null ? null : missedLookup(a, missedItemId);
   const groups = board
     .map((group) => ({
       key: group.key,
       label: group.label,
-      rows: group.rows.filter((row) => inBoardFilter(filter, row.current.status)).map((row) => boardRow(row, revision)),
+      rows: group.rows
+        .filter((row) => inBoardFilter(filter, row.current.status))
+        .flatMap((row): BoardRow[] => {
+          if (!missedOn) return [boardRow(row, revision)];
+          const missed = missedOn.outcome(row.current);
+          return missed ? [{ ...boardRow(row, revision), missed }] : [];
+        }),
     }))
     .filter((group) => group.rows.length > 0);
+  const missedRows = missedOn ? groups.flatMap((group) => group.rows) : [];
   return {
     groups,
+    missed: missedOn && {
+      ...missedOn.item,
+      count: missedRows.length,
+      commonAnswers: commonAnswers(missedRows.map((row) => row.missed?.answer ?? "")),
+    },
     counts: countCurrent(board),
     scans,
     staleCount: listStaleIds(a.id, revision).filter((id) => current.has(id)).length,
@@ -114,6 +129,41 @@ export function getBoardView(a: Assignment, filter: BoardFilter): BoardView {
     open: studentsCanUpload && a.status === "open",
     studentsCanUpload,
     progress: getGradingProgress(a.id),
+  };
+}
+
+/**
+ * For the board's "missed" filter: the key item, and how a current paper did on it when it counts (graded or needs
+ * review) and missed it (judged, short of full accuracy credit).
+ */
+function missedLookup(a: Assignment, itemId: string) {
+  const items = listKeyItems(a.id);
+  const index = items.findIndex((item) => item.id === itemId);
+  if (index < 0) return null;
+  const resultsBySubmission = listItemsForAssignment(a.id);
+  const { id, label, prompt } = items[index];
+  return {
+    item: { itemId: id, label, prompt },
+    outcome(s: Submission): NonNullable<BoardRow["missed"]> | null {
+      if (!isCountedStatus(s.status)) return null;
+      const result = paperOutcomes(items, resultsBySubmission.get(s.id) ?? [], a, s.totalOverrideCenti)[index];
+      return result && result.outcome !== "correct" ? { outcome: result.outcome, answer: result.studentAnswer } : null;
+    },
+  };
+}
+
+/** How the class did on each key item: current papers that are graded or need review (see item-stats.ts). */
+export function getItemStats(a: Assignment): ItemStatsSummary {
+  return computeItemStats(listKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
+}
+
+/** The Questions tab: the stats, and whether papers are still being graded (the page refreshes while they are). */
+export function getQuestionsView(a: Assignment): { stats: ItemStatsSummary; active: boolean; open: boolean } {
+  const submissions = listSubmissions(a.id);
+  return {
+    stats: computeItemStats(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a),
+    active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
+    open: studentUploadsEnabled() && a.status === "open",
   };
 }
 
@@ -572,6 +622,44 @@ function csvRow(
     ...trailing,
     ...score.items.map((item) => (item.computedCenti === null && !item.overridden ? "" : formatPoints(item.earnedCenti))),
   ];
+}
+
+const QUESTION_CSV_COLUMNS = [
+  "Question", "Part of", "Prompt", "Points", "Papers judged", "Correct", "Partly right", "Wrong", "Blank", "Unreadable",
+  "% correct", "% missed", "Average points earned", "Average % earned", "Many missed",
+];
+
+/**
+ * One row per key item, in key order: the counts and rates of getItemStats ("% missed" under accuracy scoring,
+ * "Average points earned" under the assignment's own scoring). With two or more sections, a "% missed" column each.
+ */
+export function buildQuestionStatsCsv(a: Assignment): { filename: string; csv: string } {
+  const stats = getItemStats(a);
+  const sectionLabels = stats.bySection ? (stats.items[0]?.sections ?? []).map((section) => section.label) : [];
+  const header = [...QUESTION_CSV_COLUMNS, ...sectionLabels.map((label) => `% missed: ${label}`)];
+  const rows = stats.items.map((s) => [
+    s.item.label,
+    s.item.groupLabel,
+    s.item.prompt,
+    formatPoints(s.item.pointsCenti),
+    String(s.judged),
+    String(s.correct),
+    String(s.partly),
+    String(s.wrong),
+    String(s.blank),
+    String(s.unreadable),
+    s.judged > 0 ? formatPercent(s.correctTenths) : "",
+    s.judged > 0 ? formatPercent(s.missedTenths) : "",
+    s.judged > 0 ? formatPoints(roundedAverage(s.earnedCenti, s.judged)) : "",
+    s.judged > 0 ? formatPercent(s.earnedTenths) : "",
+    s.highlighted ? "yes" : "",
+    ...s.sections.map((section) => (section.judged > 0 ? formatPercent(section.missedTenths) : "")),
+  ]);
+  return { filename: `${slugify(a.title)}-questions.csv`, csv: toCsv([header, ...rows]) };
+}
+
+function roundedAverage(totalCenti: number, count: number): number {
+  return Math.round(totalCenti / count);
 }
 
 /** Lowercase, runs of anything but [a-z0-9] become "-", at most 50 characters; "assignment" when nothing is left. */

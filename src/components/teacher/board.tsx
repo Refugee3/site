@@ -4,9 +4,10 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { cx } from "@/components/ui/cx";
 import { LocalTime } from "@/components/ui/local-time";
-import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
+import { formatPercent, formatPoints, OUTCOME_LABEL, STATUS_LABEL } from "@/lib/format";
 import type { BoardRow, BoardView } from "@/lib/types";
 import { reviewHref } from "./board-helpers";
+import { OUTCOME_TONE } from "./question-stats";
 import { plural } from "./text";
 
 export interface BoardProps {
@@ -126,6 +127,7 @@ function StudentCell({ assignmentId, row, stretched = false }: { assignmentId: s
       >
         {row.displayName}
       </Link>
+      {row.missed && <MissedAnswer missed={row.missed} />}
       {row.source === "teacher" && (
         <span>
           <Badge tone="neutral" title="You uploaded this paper">
@@ -153,6 +155,22 @@ function StudentCell({ assignmentId, row, stretched = false }: { assignmentId: s
         </details>
       )}
     </div>
+  );
+}
+
+/** On the "missed" filter: how the paper did on the question and what the student wrote (as the AI read it). */
+function MissedAnswer({ missed }: { missed: NonNullable<BoardRow["missed"]> }) {
+  return (
+    <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+      <Badge tone={OUTCOME_TONE[missed.outcome]}>{OUTCOME_LABEL[missed.outcome]}</Badge>
+      {missed.answer.trim() !== "" ? (
+        <span className="line-clamp-3 min-w-0 break-words text-ink">
+          <span className="sr-only">Answer: </span>“{missed.answer}”
+        </span>
+      ) : (
+        <span className="text-muted">Nothing written</span>
+      )}
+    </p>
   );
 }
 

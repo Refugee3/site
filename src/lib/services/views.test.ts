@@ -26,9 +26,9 @@ import {
   deleteSubmission, gradeManually, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride,
 } from "@/lib/services/submissions";
 import {
-  AGENT_RUNTIME_USD_PER_HOUR, buildGradesCsv, estimateCostUsd, estimateLedgerCostUsd, getAssignmentHeader, getBoardView,
+  AGENT_RUNTIME_USD_PER_HOUR, buildGradesCsv, buildQuestionStatsCsv, estimateCostUsd, estimateLedgerCostUsd, getAssignmentHeader, getBoardView,
   getDashboardView, getKeyEditorView, getLessonsView, getReceiptView, getReviewView, getScanReviewView, getSettingsView,
-  getStudentUploadView, getTeacherSettingsView, getUploadPageView,
+  getItemStats, getStudentUploadView, getTeacherSettingsView, getUploadPageView,
 } from "@/lib/services/views";
 import type { AiUsage, Assignment, KeyItem, Submission, SubmissionStatus, Teacher } from "@/lib/types";
 import {
@@ -865,6 +865,74 @@ describe("progress and timing", () => {
     expect(getScanReviewView(next, assignment).splitProgress).toEqual({
       splitStartedAt: clock, pagesRead: 0, pageCount: 10, etaMs: 10_000, papersGraded: null,
     });
+  });
+});
+
+describe("question stats", () => {
+  /** A graded paper whose answer to item 1 (Q1) is `correctness`, written as `answer`. */
+  function answering(name: string, correctness: "correct" | "incorrect" | "no_answer", answer: string): Promise<Submission> {
+    return gradedPaper(name, name, {
+      items: ["Q1", "Q2", "Q3"].map((ref) => ref === "Q1"
+        ? makeOutputItem(ref, { correctness, attempt: correctness === "no_answer" ? "none" : "complete", student_answer: answer })
+        : makeOutputItem(ref)),
+    });
+  }
+
+  async function classWithMisses() {
+    const wrong = [await answering("Ana Diaz", "incorrect", "x = 5"), await answering("Ben Cho", "incorrect", "X = 5")];
+    const blank = await answering("Cal Eze", "no_answer", "");
+    await answering("Dee Fox", "correct", "x = 4");
+    await answering("Eve Gold", "correct", "x = 4");
+    return { wrong, blank };
+  }
+
+  it("highlights the question most of the class missed", async () => {
+    await classWithMisses();
+    const stats = getItemStats(assignment);
+    expect(stats.countedPapers).toBe(5);
+    expect(stats.highlighted.map((s) => s.item.label)).toEqual(["1"]);
+    expect(stats.items[0]).toMatchObject({ judged: 5, correct: 2, wrong: 2, blank: 1, missedTenths: 600 });
+  });
+
+  it("filters the board to the papers that missed a question, with their answers", async () => {
+    const { wrong, blank } = await classWithMisses();
+    const board = getBoardView(assignment, "all", items[0].id);
+    const rows = board.groups.flatMap((group) => group.rows);
+    // Board order: by surname.
+    expect(rows.map((row) => [row.submissionId, row.missed])).toEqual([
+      [wrong[1].id, { outcome: "wrong", answer: "X = 5" }],
+      [wrong[0].id, { outcome: "wrong", answer: "x = 5" }],
+      [blank.id, { outcome: "blank", answer: "" }],
+    ]);
+    expect(board.missed).toEqual({
+      itemId: items[0].id, label: "1", prompt: items[0].prompt, count: 3, commonAnswers: [{ answer: "X = 5", count: 2 }],
+    });
+    // The status counts still describe every current paper.
+    expect(board.counts.total).toBe(5);
+
+    // A teacher's full-credit override takes the paper off the list.
+    setItemOverride(wrong[0].id, items[0].id, { overrideCenti: items[0].pointsCenti });
+    expect(getBoardView(assignment, "all", items[0].id).missed?.count).toBe(2);
+
+    // An unknown item shows the whole board.
+    const unfiltered = getBoardView(assignment, "all", "not-an-item");
+    expect(unfiltered.missed).toBeNull();
+    expect(unfiltered.groups.flatMap((group) => group.rows)).toHaveLength(5);
+  });
+
+  it("exports one CSV row per question", async () => {
+    await classWithMisses();
+    const { filename, csv } = buildQuestionStatsCsv(assignment);
+    expect(filename).toBe("unit-4-ratios-rates-questions.csv");
+    const lines = csv.slice(1).trimEnd().split("\r\n");
+    expect(lines[0]).toBe([
+      "Question", "Part of", "Prompt", "Points", "Papers judged", "Correct", "Partly right", "Wrong", "Blank", "Unreadable",
+      "% correct", "% missed", "Average points earned", "Average % earned", "Many missed",
+    ].map((cell) => `"${cell}"`).join(","));
+    expect(lines).toHaveLength(4);
+    // The assignment is graded on completion: the wrong answers still earn their points, but count as missed.
+    expect(lines[1]).toMatch(/^"1","",".*","1","5","2","0","2","1","0","40%","60%","0.8","80%","yes"$/);
+    expect(lines[2]).toMatch(/^"2a","2",".*","2","5","5","0","0","0","0","100%","0%","2","100%",""$/);
   });
 });
 

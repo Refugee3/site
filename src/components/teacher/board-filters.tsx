@@ -5,7 +5,8 @@ import { BOARD_FILTERS, boardHref } from "./board-helpers";
 
 export interface BoardFiltersProps {
   assignmentId: string;
-  filter: BoardFilter;
+  /** The current filter; null when none of these is (the board shows one question's misses). */
+  filter: BoardFilter | null;
   counts: StatusCounts;
 }
 

@@ -46,6 +46,8 @@
 
   --color-warning-50: #fff7e8;
   --color-warning-200: #f5d48f;
+  /* Amber fills (bars), above 3:1 against surface and subtle; never text on its own. */
+  --color-warning-500: #b87700;
   --color-warning-800: #6e4504;
 
   --color-danger-50: #fdf0ef;

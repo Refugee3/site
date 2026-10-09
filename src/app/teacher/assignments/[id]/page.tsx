@@ -6,6 +6,8 @@ import { BoardFilters } from "@/components/teacher/board-filters";
 import { boardHref, boardRefreshMs, firstNeedsReviewId, parseBoardFilter, reviewHref } from "@/components/teacher/board-helpers";
 import { BulkActions } from "@/components/teacher/bulk-actions";
 import { GradingProgressCard } from "@/components/teacher/progress-widgets";
+import { MissedQuestionsCard } from "@/components/teacher/question-stats";
+import { parseMissedParam, questionName, shortPrompt } from "@/components/teacher/question-text";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -13,7 +15,7 @@ import { LinkButton } from "@/components/ui/link-button";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { getWorkerStatus } from "@/lib/jobs/queue";
-import { getBoardView } from "@/lib/services/views";
+import { getBoardView, getItemStats } from "@/lib/services/views";
 import { kindNoun, uploadLabel } from "@/lib/format";
 import type { AssignmentKind, AssignmentStatus, BoardView } from "@/lib/types";
 
@@ -27,8 +29,10 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
   await connection();
   const { id } = await props.params;
   const { assignment } = await requireOwnedAssignment(id);
-  const filter = parseBoardFilter((await props.searchParams).filter);
-  const view = getBoardView(assignment, filter);
+  const searchParams = await props.searchParams;
+  const filter = parseBoardFilter(searchParams.filter);
+  const view = getBoardView(assignment, filter, parseMissedParam(searchParams.missed));
+  const itemStats = getItemStats(assignment);
   const worker = view.progress ? getWorkerStatus() : null;
 
   return (
@@ -44,9 +48,11 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
       )}
       <ScanCallout assignmentId={assignment.id} kind={assignment.kind} scans={view.scans} />
       <ReviewCallout assignmentId={assignment.id} groups={view.groups} />
+      <MissedQuestionsCard assignmentId={assignment.id} stats={itemStats} activeItemId={view.missed?.itemId ?? null} />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <BoardFilters assignmentId={assignment.id} filter={filter} counts={view.counts} />
+        {/* While the board shows one question's misses, no status chip is current; any chip clears that filter. */}
+        <BoardFilters assignmentId={assignment.id} filter={view.missed ? null : filter} counts={view.counts} />
         <BulkActions
           assignmentId={assignment.id}
           staleCount={view.staleCount}
@@ -56,11 +62,13 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
         />
       </div>
 
+      {view.missed && <MissedFilterBanner assignmentId={assignment.id} missed={view.missed} />}
+
       {view.counts.total === 0 ? (
         <NoPapers assignmentId={assignment.id} kind={assignment.kind} status={assignment.status} studentsCanUpload={view.studentsCanUpload} />
       ) : view.groups.length === 0 ? (
         <EmptyState
-          title="No papers match this filter"
+          title={view.missed ? `No graded paper missed ${questionName(view.missed.label)}` : "No papers match this filter"}
           action={<LinkButton href={boardHref(assignment.id, "all")} variant="secondary">Show all papers</LinkButton>}
         />
       ) : (
@@ -68,6 +76,35 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
       )}
 
       <AutoRefresh intervalMs={boardRefreshMs(view)} />
+    </div>
+  );
+}
+
+/** Above the board while it shows one question's misses: which question, its most common answers, and the way back. */
+function MissedFilterBanner({ assignmentId, missed }: { assignmentId: string; missed: NonNullable<BoardView["missed"]> }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-info-200 bg-info-50 px-4 py-3 text-info-800">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="font-medium">
+          Showing the {missed.count === 1 ? "paper" : `${missed.count} papers`} that missed {questionName(missed.label)}, with what
+          each student wrote.
+        </p>
+        <LinkButton href={boardHref(assignmentId, "all")} variant="secondary" size="sm">
+          Show all papers
+        </LinkButton>
+      </div>
+      {missed.prompt.trim() !== "" && <p className="line-clamp-2 text-sm">{shortPrompt(missed.prompt)}</p>}
+      {missed.commonAnswers.length > 0 && (
+        <p className="text-sm">
+          <span className="font-medium">Common answers:</span>{" "}
+          {missed.commonAnswers.map((entry, i) => (
+            <span key={entry.answer}>
+              {i > 0 && " · "}
+              <span className="break-words">“{entry.answer}”</span> ({plural(entry.count, "paper")})
+            </span>
+          ))}
+        </p>
+      )}
     </div>
   );
 }
