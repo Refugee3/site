@@ -996,6 +996,9 @@ describe("rate limits", () => {
     expect([limitedId, other].map((id) => getSubmission(id)!.status)).not.toContain("queued");
   });
 
+  /** Real-time waits; generous because the full suite runs files in parallel on few CPUs. */
+  const LOADED_WAIT = { timeout: 5_000 };
+
   it("halves once when many calls are rejected together, and never below one", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ids: string[] = [];
@@ -1004,20 +1007,20 @@ describe("rate limits", () => {
     const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
 
     worker.start();
-    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    await vi.waitFor(() => expect(calls).toHaveLength(4), LOADED_WAIT);
     for (let i = 0; i < 4; i++) settle(i, rateLimited(5_000));
-    await vi.waitFor(() => expect(ids.map((id) => jobRows(id)[0].status)).toEqual(["queued", "queued", "queued", "queued"]));
+    await vi.waitFor(() => expect(ids.map((id) => jobRows(id)[0].status)).toEqual(["queued", "queued", "queued", "queued"]), LOADED_WAIT);
     expect(worker.status()).toMatchObject({ effectiveConcurrency: 2, throttledUntil: T0 + 5_000 });
     expect(ids.map((id) => jobRows(id)[0].attempts)).toEqual([0, 0, 0, 0]);
 
     // After the hold, two run; both are rate-limited again: 2 → 1, and it stays at 1.
     clock = T0 + 5_000;
     worker.kick();
-    await vi.waitFor(() => expect(calls).toHaveLength(6));
+    await vi.waitFor(() => expect(calls).toHaveLength(6), LOADED_WAIT);
     settle(4, rateLimited(5_000));
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(1));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(1), LOADED_WAIT);
     settle(5, rateLimited(5_000));
-    await vi.waitFor(() => expect(ids.filter((id) => jobRows(id)[0].status === "queued")).toHaveLength(4));
+    await vi.waitFor(() => expect(ids.filter((id) => jobRows(id)[0].status === "queued")).toHaveLength(4), LOADED_WAIT);
     expect(worker.status().effectiveConcurrency).toBe(1);
     await worker.stop();
   });
@@ -1030,21 +1033,21 @@ describe("rate limits", () => {
     const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
 
     worker.start();
-    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    await vi.waitFor(() => expect(calls).toHaveLength(4), LOADED_WAIT);
     settle(0, rateLimited(1_000));
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(2));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(2), LOADED_WAIT);
     // Started before the cut: finishing cleanly does not raise it.
     for (const i of [1, 2, 3]) settle(i);
-    await vi.waitFor(() => expect(ids.slice(1, 4).every((id) => jobRows(id)[0].status === "done")).toBe(true));
+    await vi.waitFor(() => expect(ids.slice(1, 4).every((id) => jobRows(id)[0].status === "done")).toBe(true), LOADED_WAIT);
     expect(worker.status().effectiveConcurrency).toBe(2);
 
     clock = T0 + 1_000;
     worker.kick();
-    await vi.waitFor(() => expect(calls).toHaveLength(6));
+    await vi.waitFor(() => expect(calls).toHaveLength(6), LOADED_WAIT);
     settle(4);
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(3));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(3), LOADED_WAIT);
     settle(5);
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(4));
+    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(4), LOADED_WAIT);
     expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true);
     await worker.stop();
   });
