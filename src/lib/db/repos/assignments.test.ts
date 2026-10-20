@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import {
-  addAssignmentUsage, clearGradingBatchIfDrained, deleteAssignmentRow, getGradingBatchStartedAt, startGradingBatchIfIdle, getAssignment, getAssignmentByShareCode, getAssignmentForTeacher, getAssignmentUsage,
+  addAssignmentUsage, clearGradingBatchIfDrained, deleteAssignmentRow, getGradingBatchStartedAt, startGradingBatchIfIdle, getAssignment, getAssignmentForTeacher, getAssignmentUsage,
   insertAssignment, latestSectionsForTeacher, listAssignmentsForTeacher, listSections, replaceSections, shareCodeExists,
   updateAssignment,
 } from "@/lib/db/repos/assignments";
@@ -38,12 +38,6 @@ describe("assignments", () => {
     const a = seedAssignment(teacher.id);
     expect(getAssignmentForTeacher(a.id, teacher.id)).toEqual(a);
     expect(getAssignmentForTeacher(a.id, seedTeacher().id)).toBeNull();
-  });
-
-  it("finds an assignment by share code with the teacher's display name", () => {
-    const a = seedAssignment(teacher.id);
-    expect(getAssignmentByShareCode(a.shareCode)).toEqual({ ...a, teacherName: "Ms. Rivera" });
-    expect(getAssignmentByShareCode("ZZZZZZ")).toBeNull();
   });
 
   it("lists a teacher's assignments newest first", () => {

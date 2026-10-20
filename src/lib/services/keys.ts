@@ -8,9 +8,7 @@ import { AppError } from "@/lib/errors";
 import { keyFingerprint, validateSaveKey } from "@/lib/grading/key";
 import { newId } from "@/lib/ids";
 import { enqueueExtractKey } from "@/lib/jobs/queue";
-import { setAssignmentStatus } from "@/lib/services/assignments";
 import { isKeyLocked, requireKey } from "@/lib/services/key-state";
-import { studentUploadsEnabled } from "@/lib/services/settings";
 import { rescoreAssignment } from "@/lib/services/submissions";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { keyPdfRel } from "@/lib/storage/paths";
@@ -86,9 +84,8 @@ function queueExtraction(assignmentId: string): void {
 /**
  * Saves the teacher's edits, which also approves the key. Only a change to judgment-relevant content
  * (the fingerprint) starts a new revision and makes earlier grades stale; points and partial credit just rescore.
- * `open` opens the assignment for students only while student uploads are turned on.
  */
-export function saveKey(a: Assignment, input: SaveKeyInput, o: { open: boolean }): { revision: number; staleCount: number } {
+export function saveKey(a: Assignment, input: SaveKeyInput): { revision: number; staleCount: number } {
   const { maxKeyItems } = getConfig();
   return tx(() => {
     const key = requireKey(a.id);
@@ -111,7 +108,6 @@ export function saveKey(a: Assignment, input: SaveKeyInput, o: { open: boolean }
     });
     rescoreAssignment(a.id);
     const staleCount = listStaleIds(a.id, revision).length;
-    if (o.open && studentUploadsEnabled()) setAssignmentStatus(a, "open");
     return { revision, staleCount };
   });
 }

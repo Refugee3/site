@@ -17,7 +17,7 @@ export interface OverallFeedbackFormProps {
   edited: boolean;
 }
 
-/** The note to the student about the whole paper, shown on the receipt once feedback is released. */
+/** The note about the whole paper, for the student; it is in the grades CSV ("Overall feedback"). */
 export function OverallFeedbackForm({ submissionId, overallFeedback, edited }: OverallFeedbackFormProps) {
   const [text, setText, expectSaved] = useSyncedState(overallFeedback);
   const [saved, setSaved] = useState(false);
@@ -40,7 +40,7 @@ export function OverallFeedbackForm({ submissionId, overallFeedback, edited }: O
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
       <label htmlFor={inputId} className="text-sm font-medium">
-        Overall feedback (the student sees this)
+        Overall feedback (included in the grades CSV)
       </label>
       <Textarea
         id={inputId}

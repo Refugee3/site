@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
 import { AppError } from "@/lib/errors";
 import {
-  assertSameOrigin, clientIp, formFiles, getPublicOrigin, isSameOrigin, jsonError, readLimitedFormData, readUploadedFiles,
+  assertSameOrigin, clientIp, formFiles, isSameOrigin, jsonError, readLimitedFormData, readUploadedFiles,
   toErrorResponse,
 } from "@/lib/http/request";
 
@@ -118,19 +118,6 @@ describe("clientIp", () => {
   ])("X-Forwarded-For $header → $ip", ({ header, ip }) => {
     const h = new Headers(header === undefined ? {} : { "x-forwarded-for": header });
     expect(clientIp(h)).toBe(ip);
-  });
-});
-
-describe("getPublicOrigin", () => {
-  it("prefers APP_URL", () => {
-    setEnv({ APP_URL: "https://grader.school.org" });
-    expect(getPublicOrigin(new Headers({ host: "127.0.0.1:3000" }))).toBe("https://grader.school.org");
-  });
-
-  it("falls back to the forwarded protocol and host, then to Host over http", () => {
-    expect(getPublicOrigin(new Headers({ host: "127.0.0.1:3000", "x-forwarded-proto": "https, http", "x-forwarded-host": "grader.test" })))
-      .toBe("https://grader.test");
-    expect(getPublicOrigin(new Headers({ host: "localhost:3000" }))).toBe("http://localhost:3000");
   });
 });
 

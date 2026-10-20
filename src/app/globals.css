@@ -2,7 +2,7 @@
 
 /*
  * Design tokens shared by every page. Components use these names (bg-surface, text-muted, border-line,
- * bg-brand-600, text-danger-700, ...) instead of raw palette colors so the student and teacher UIs stay
+ * bg-brand-600, text-danger-700, ...) instead of raw palette colors so every page stays
  * consistent. Tailwind's default palette stays available for one-off accents.
  *
  * The app is deliberately light-only: it is used on classroom projectors and phones, and a half-themed dark

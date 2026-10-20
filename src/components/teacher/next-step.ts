@@ -1,5 +1,5 @@
 import type { Tone } from "@/components/ui/tone";
-import { uploadLabel } from "@/lib/format";
+import { kindNoun } from "@/lib/format";
 import type { DashboardView } from "@/lib/types";
 import { boardHref } from "./board-helpers";
 import { plural } from "./text";
@@ -13,40 +13,37 @@ export interface NextStep {
 type DashboardAssignment = DashboardView["assignments"][number];
 
 /**
- * The one thing an assignment card asks the teacher to do next, most urgent first; null when nothing is pending.
- * While students can't upload, the teacher uploads the papers, and there is nothing to open or remind about.
+ * The one line an assignment card shows: what the teacher should do next, most urgent first, or where things stand
+ * once nothing is waiting for them (papers being graded, or everything checked).
  */
-export function nextStep(a: DashboardAssignment, o: { studentsCanUpload: boolean }): NextStep | null {
+export function nextStep(a: DashboardAssignment): NextStep {
   const keyHref = `/teacher/assignments/${a.id}/key`;
   switch (a.keyStatus) {
     case "empty":
-      return { text: "Add the answer key", href: keyHref, tone: "info" };
+      return { text: "Next: add the answer key", href: keyHref, tone: "info" };
     case "processing":
-      return { text: "Reading the answer key…", href: keyHref, tone: "info" };
+      return { text: "Reading your answer key…", href: keyHref, tone: "info" };
     case "failed":
-      return { text: "The answer key couldn't be read", href: keyHref, tone: "danger" };
+      return { text: "The answer key couldn't be read — open it to try again", href: keyHref, tone: "danger" };
     case "ready":
       break;
   }
-  if (!a.keyApproved) return { text: "Check and approve the answer key", href: keyHref, tone: "warning" };
+  if (!a.keyApproved) return { text: "Next: check and approve the answer key", href: keyHref, tone: "warning" };
   if (a.counts.needs_review > 0) {
-    return { text: `${plural(a.counts.needs_review, "paper")} to review`, href: boardHref(a.id, "needs_review"), tone: "warning" };
+    const n = a.counts.needs_review;
+    return { text: `Next: check ${plural(n, "paper")} the AI flagged`, href: boardHref(a.id, "needs_review"), tone: "warning" };
   }
   if (a.counts.failed > 0) {
-    return { text: `${plural(a.counts.failed, "paper")} failed to grade`, href: boardHref(a.id, "failed"), tone: "danger" };
+    const n = a.counts.failed;
+    return { text: `${plural(n, "paper")} couldn't be graded — retry or grade by hand`, href: boardHref(a.id, "failed"), tone: "danger" };
   }
   const scanStep = pendingScanStep(a);
   if (scanStep) return scanStep;
-  if (!o.studentsCanUpload) {
-    return a.counts.total === 0 ? { text: uploadLabel(a.kind), href: uploadHref(a.id), tone: "info" } : null;
+  if (a.counts.total === 0) {
+    return { text: `Next: upload the students' ${kindNoun(a.kind, true)}`, href: uploadHref(a.id), tone: "info" };
   }
-  if (a.status === "draft") return { text: "Open it for students", href: boardHref(a.id, "all"), tone: "info" };
-  // Everything is graded and checked, but students still see only "received": the switch is on the assignment page.
-  const inProgress = a.counts.queued + a.counts.grading;
-  if (!a.released && a.counts.graded > 0 && inProgress === 0) {
-    return { text: `Release feedback on ${plural(a.counts.graded, "graded paper")}`, href: boardHref(a.id, "all"), tone: "info" };
-  }
-  return null;
+  if (a.counts.queued + a.counts.grading > 0) return { text: "Grading papers…", href: boardHref(a.id, "all"), tone: "info" };
+  return { text: "All papers graded and checked — see the results", href: boardHref(a.id, "all"), tone: "success" };
 }
 
 function uploadHref(assignmentId: string): string {
@@ -61,7 +58,7 @@ function pendingScanStep(a: DashboardAssignment): NextStep | null {
   const { review, failed, splitting, firstReviewId } = a.scans;
   if (review > 0) {
     return {
-      text: review === 1 ? "Check the split of your scan" : `Check the split of ${review} scans`,
+      text: review === 1 ? "Next: check how your scan was split" : `Next: check how ${review} scans were split`,
       href: review === 1 && firstReviewId ? `/teacher/assignments/${a.id}/scans/${firstReviewId}` : uploadHref(a.id),
       tone: "warning",
     };
@@ -70,7 +67,7 @@ function pendingScanStep(a: DashboardAssignment): NextStep | null {
     return { text: failed === 1 ? "A scan couldn't be split" : `${failed} scans couldn't be split`, href: uploadHref(a.id), tone: "danger" };
   }
   if (splitting > 0 && a.counts.total === 0) {
-    const text = a.scans.onePass === splitting ? "Grading your scan in one pass…" : "Splitting your scan…";
+    const text = a.scans.onePass === splitting ? "Grading your scan…" : "Finding each student's paper in your scan…";
     return { text, href: uploadHref(a.id), tone: "info" };
   }
   return null;

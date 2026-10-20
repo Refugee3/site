@@ -31,10 +31,6 @@ export function parsePointsInput(s: string): number | null {
   return whole * 100 + fraction;
 }
 
-export function formatShareCode(code: string): string {
-  return code.toUpperCase();
-}
-
 export function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
@@ -48,17 +44,18 @@ export function kindNoun(kind: AssignmentKind, plural = false): string {
   return plural ? "quizzes" : "quiz";
 }
 
-/** The upload tab and buttons while the teacher uploads every paper: "Upload homework" / "Upload quizzes". */
+/** The upload buttons: "Upload homework" / "Upload quizzes". */
 export function uploadLabel(kind: AssignmentKind): string {
   return `Upload ${kindNoun(kind, true)}`;
 }
 
+/** Plain-language paper statuses, on the board, the review page and in the CSV. */
 export const STATUS_LABEL: Record<SubmissionStatus, string> = {
-  queued: "Queued",
-  grading: "Grading",
+  queued: "Waiting to be graded",
+  grading: "Being graded",
   graded: "Graded",
-  needs_review: "Needs review",
-  failed: "Failed",
+  needs_review: "Needs your check",
+  failed: "Couldn't be graded",
 };
 
 export const ATTEMPT_LABEL: Record<Attempt, string> = {

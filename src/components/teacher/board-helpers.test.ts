@@ -4,7 +4,7 @@ import { BOARD_FILTERS, boardHref, boardRefreshMs, firstNeedsReviewId, parseBoar
 
 function row(submissionId: string, status: BoardRow["status"]): BoardRow {
   return {
-    submissionId, displayName: submissionId, status, statusNote: null, source: "student", scoreEarnedCenti: null,
+    submissionId, displayName: submissionId, status, statusNote: null, scoreEarnedCenti: null,
     scoreMaxCenti: null, percentTenths: null, flags: [], stale: false, earlier: [], pageCount: 1, createdAt: 0,
   };
 }
@@ -39,11 +39,9 @@ describe("links", () => {
 });
 
 describe("boardRefreshMs", () => {
-  it("polls every 4 s while grading, every 15 s while open, otherwise not at all", () => {
-    expect(boardRefreshMs({ active: true, open: true })).toBe(4000);
-    expect(boardRefreshMs({ active: true, open: false })).toBe(4000);
-    expect(boardRefreshMs({ active: false, open: true })).toBe(15000);
-    expect(boardRefreshMs({ active: false, open: false })).toBeNull();
+  it("polls every 4 s while grading, otherwise not at all", () => {
+    expect(boardRefreshMs({ active: true })).toBe(4000);
+    expect(boardRefreshMs({ active: false })).toBeNull();
   });
 });
 

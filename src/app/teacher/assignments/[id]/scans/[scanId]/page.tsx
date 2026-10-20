@@ -14,7 +14,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { requireOwnedScan } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { getScanReviewView } from "@/lib/services/views";
-import { uploadLabel } from "@/lib/format";
 import { formatPageRanges } from "@/lib/scan-layout";
 import type { ScanReviewView, SkippedPageReason } from "@/lib/types";
 
@@ -33,7 +32,7 @@ export default async function ScanPage(props: PageProps<"/teacher/assignments/[i
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <Link href={`/teacher/assignments/${assignment.id}/upload`} className="self-start text-sm">
-          ← {uploadLabel(assignment.kind)}
+          ← Upload work
         </Link>
         <h2 className="text-xl font-semibold">{shown.splitMode === "one_pass" ? "Grade in one pass" : "Check the split"}</h2>
         <p className="break-words text-sm text-muted">
@@ -126,7 +125,7 @@ function Done({ assignmentId, view }: { assignmentId: string; view: ScanReviewVi
       {scan.autoGraded && (
         <Alert tone="info">
           The split looked clean, so grading started automatically.{" "}
-          <Link href={boardHref(assignmentId, "all")}>Follow it on the Submissions board</Link>
+          <Link href={boardHref(assignmentId, "all")}>Follow it on the Results tab</Link>
         </Alert>
       )}
       <Alert tone="success">
@@ -204,7 +203,7 @@ function OnePassFailed({ view }: { view: ScanReviewView }) {
         {started && (
           <p>
             {plural(graded, "paper")} from pages 1–{onePass?.pagesDone ?? 0} {graded === 1 ? "was" : "were"} graded and{" "}
-            {graded === 1 ? "stays" : "stay"} on the Submissions board.
+            {graded === 1 ? "stays" : "stay"} on the Results tab.
           </p>
         )}
       </Alert>
@@ -233,7 +232,7 @@ function OnePassDone({ assignmentId, view }: { assignmentId: string; view: ScanR
       <Alert tone="success">
         <p>
           Graded {plural(graded, "paper")} in one pass.{" "}
-          <Link href={boardHref(assignmentId, "all")}>See them on the Submissions board</Link>
+          <Link href={boardHref(assignmentId, "all")}>See them on the Results tab</Link>
         </p>
         {duplicates > 0 && (
           <p>

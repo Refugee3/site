@@ -3,7 +3,7 @@ import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
   clearStoredApiKey, getAiModel, getAppSettings, getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError,
-  saveHostedAgentReady, setAiModel, setGradingEngine, setStoredApiKey, setStudentsCanUpload,
+  saveHostedAgentReady, setAiModel, setGradingEngine, setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 
@@ -18,28 +18,20 @@ beforeEach(() => {
 });
 
 describe("app settings", () => {
-  it("start with student uploads off and no saved key", () => {
+  it("start with no saved key", () => {
     expect(getAppSettings()).toEqual({
-      studentsCanUpload: false, apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
+      apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
       apiKeySetAt: null, updatedAt: 0, gradingEngine: null, aiModel: "claude-sonnet-5-5",
     });
   });
 
-  it("turn student uploads on and off", () => {
-    setStudentsCanUpload(true);
-    expect(getAppSettings()).toMatchObject({ studentsCanUpload: true, updatedAt: T0 });
-    setStudentsCanUpload(false);
-    expect(getAppSettings().studentsCanUpload).toBe(false);
-  });
-
-  it("store, replace and clear the API key, leaving the upload switch alone", () => {
+  it("store, replace and clear the API key", () => {
     const teacher = seedTeacher();
     const other = seedTeacher();
-    setStudentsCanUpload(true);
 
     setStoredApiKey({ ...STORED, setBy: teacher.id });
     expect(getAppSettings()).toEqual({
-      studentsCanUpload: true, apiKeyCiphertext: STORED.ciphertext, apiKeyMasked: STORED.masked, apiKeyCheck: "verified",
+      apiKeyCiphertext: STORED.ciphertext, apiKeyMasked: STORED.masked, apiKeyCheck: "verified",
       apiKeySetBy: teacher.id, apiKeySetAt: T0, updatedAt: T0, gradingEngine: null, aiModel: "claude-sonnet-5-5",
     });
 
@@ -52,7 +44,7 @@ describe("app settings", () => {
     setClockForTests(() => T0 + 9);
     clearStoredApiKey();
     expect(getAppSettings()).toEqual({
-      studentsCanUpload: true, apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
+      apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
       apiKeySetAt: null, updatedAt: T0 + 9, gradingEngine: null, aiModel: "claude-sonnet-5-5",
     });
   });
@@ -102,11 +94,10 @@ describe("grading engine", () => {
     expect(getAppSettings().gradingEngine).toBe("agent");
   });
 
-  it("is kept when the key or the upload switch changes", () => {
+  it("is kept when the key changes", () => {
     setGradingEngine("direct");
     setStoredApiKey({ ...STORED, setBy: seedTeacher().id });
     clearStoredApiKey();
-    setStudentsCanUpload(true);
     expect(getGradingEngine()).toBe("direct");
   });
 });
@@ -124,16 +115,15 @@ describe("AI model", () => {
     expect(getAiModel()).toBe("claude-sonnet-5-5");
   });
 
-  it("is kept when the engine, the key or the upload switch changes, and changes none of them", () => {
+  it("is kept when the engine or the key changes, and changes neither", () => {
     setGradingEngine("agent");
     setAiModel("claude-opus-5-5");
     expect(getGradingEngine()).toBe("agent");
     setGradingEngine("direct");
     setStoredApiKey({ ...STORED, setBy: seedTeacher().id });
     clearStoredApiKey();
-    setStudentsCanUpload(true);
     expect(getAiModel()).toBe("claude-opus-5-5");
-    expect(getAppSettings()).toMatchObject({ gradingEngine: "direct", studentsCanUpload: true, apiKeyCiphertext: null });
+    expect(getAppSettings()).toMatchObject({ gradingEngine: "direct", apiKeyCiphertext: null });
   });
 
   it("refuses a model that isn't offered", () => {

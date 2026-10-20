@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { deleteSubmissionAction, gradeManuallyAction, markReviewedAction, regradeSubmissionAction } from "@/actions/review";
-import { CopyButton } from "@/components/copy-button";
 import { FlagChips } from "@/components/flag-chips";
 import { PdfFrame } from "@/components/pdf-frame";
 import { StatusBadge } from "@/components/status-badge";
@@ -125,18 +124,17 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
   return (
     <div className="flex flex-col gap-2">
       <Link href={boardHref(assignmentId, "all")} className="self-start text-sm">
-        ← All papers
+        ← All results
       </Link>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="text-xl font-semibold">{s.studentName ?? "No name"}</h2>
         <span className="text-muted">{section}</span>
         <StatusBadge status={s.status} />
-        {view.stale && <Badge tone="warning">Old key</Badge>}
-        {s.reviewedAt !== null && <Badge tone="success">Reviewed</Badge>}
-        {s.source === "teacher" && <Badge tone="neutral">Scanned copy</Badge>}
+        {view.stale && <Badge tone="warning">Graded with an older key</Badge>}
+        {s.reviewedAt !== null && <Badge tone="success">Checked by you</Badge>}
       </div>
       <p className="text-sm text-muted">
-        Submitted <LocalTime ms={s.createdAt} /> · {plural(s.pageCount, "page")}
+        Uploaded <LocalTime ms={s.createdAt} /> · {plural(s.pageCount, "page")}
         {byHostedAgent && " · Graded by the hosted agent"}
       </p>
       {view.earlierAttempts.length > 0 && (
@@ -274,7 +272,7 @@ function ItemList({ assignmentId, submissionId, items, onShowPage }: ItemListPro
 type HeldAction = "review" | "regrade";
 
 const HELD: Record<HeldAction, { before: string; anyway: string }> = {
-  review: { before: "marking this paper reviewed", anyway: "Mark reviewed without saving" },
+  review: { before: "moving on to the next paper", anyway: "Move on without saving" },
   regrade: { before: "regrading", anyway: "Regrade without saving" },
 };
 
@@ -320,7 +318,7 @@ function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "s
     const them = lessons === 1 ? "it" : "them";
     const kept = lessons === 0 ? "" : ` The ${plural(lessons, "lesson")} from your corrections on it stay on the Lessons tab with this`
       + ` student's answer and your notes; delete ${them} there if you don't want ${them} kept.`;
-    if (!window.confirm(`Delete this paper? Its grade is lost and the student's receipt link stops working.${kept}`)) return;
+    if (!window.confirm(`Delete this paper? Its grade is lost.${kept}`)) return;
     // On success the action redirects to the board.
     runner.run(() => deleteSubmissionAction(s.id));
   }
@@ -346,9 +344,12 @@ function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "s
         </Alert>
       )}
       {allDone && (
-        <Alert tone="success" title="No more papers need review">
-          {!view.released && <p>Students see their grades and notes once you release feedback on the Submissions page.</p>}
-          <Link href={boardHref(assignmentId, "all")}>Back to all papers</Link>
+        <Alert tone="success" title="You've checked every flagged paper">
+          <p>The grades are ready. Download them as a CSV from the Results tab, or see which questions the class struggled with.</p>
+          <p className="mt-1 flex flex-wrap gap-x-4">
+            <Link href={boardHref(assignmentId, "all")}>Back to the results</Link>
+            <Link href={`/teacher/assignments/${assignmentId}/questions`}>See the questions</Link>
+          </p>
         </Alert>
       )}
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
@@ -358,7 +359,6 @@ function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "s
           <NavLink href={view.nextId && reviewHref(assignmentId, view.nextId)} label="Next →" />
         </nav>
         <span className="hidden flex-1 sm:block" />
-        <CopyButton value={view.receiptUrl} label="Copy student link" />
         {canRegrade && (
           <Button variant="secondary" size="sm" disabled={runner.pending} onClick={() => regrade()}>
             Regrade
@@ -370,11 +370,11 @@ function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "s
         {s.status === "needs_review" && (
           <Button disabled={runner.pending} onClick={() => markReviewedAndNext()}>
             {runner.pending && <Spinner className="size-4" />}
-            Mark reviewed &amp; next
+            Looks right — next paper
           </Button>
         )}
         {s.status !== "needs_review" && view.nextNeedsReviewId && (
-          <LinkButton href={reviewHref(assignmentId, view.nextNeedsReviewId)}>Next to review</LinkButton>
+          <LinkButton href={reviewHref(assignmentId, view.nextNeedsReviewId)}>Next paper to check</LinkButton>
         )}
       </div>
     </div>

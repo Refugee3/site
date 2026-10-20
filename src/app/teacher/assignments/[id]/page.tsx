@@ -17,13 +17,10 @@ import { now } from "@/lib/clock";
 import { getWorkerStatus } from "@/lib/jobs/queue";
 import { getBoardView, getItemStats } from "@/lib/services/views";
 import { kindNoun, uploadLabel } from "@/lib/format";
-import type { AssignmentKind, AssignmentStatus, BoardView } from "@/lib/types";
+import type { AssignmentKind, BoardView } from "@/lib/types";
 
-const NO_PAPERS_HINT: Record<AssignmentStatus, string> = {
-  draft: "Open the assignment, then share the code or link. Papers appear here as students hand them in, grouped by section.",
-  open: "Share the code or link with your students. Papers appear here as they arrive, grouped by section.",
-  closed: "This assignment is closed, so students can't hand anything in. You can still upload scanned paper copies.",
-};
+/** The tab where the teacher uploads the papers (see AssignmentTabs). */
+const UPLOAD_TAB = "Upload work";
 
 export default async function SubmissionsPage(props: PageProps<"/teacher/assignments/[id]">) {
   await connection();
@@ -46,7 +43,7 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
           halted={worker === null || worker.state !== "running"}
         />
       )}
-      <ScanCallout assignmentId={assignment.id} kind={assignment.kind} scans={view.scans} />
+      <ScanCallout assignmentId={assignment.id} scans={view.scans} />
       <ReviewCallout assignmentId={assignment.id} groups={view.groups} />
       <MissedQuestionsCard assignmentId={assignment.id} stats={itemStats} activeItemId={view.missed?.itemId ?? null} />
 
@@ -65,7 +62,7 @@ export default async function SubmissionsPage(props: PageProps<"/teacher/assignm
       {view.missed && <MissedFilterBanner assignmentId={assignment.id} missed={view.missed} />}
 
       {view.counts.total === 0 ? (
-        <NoPapers assignmentId={assignment.id} kind={assignment.kind} status={assignment.status} studentsCanUpload={view.studentsCanUpload} />
+        <NoPapers assignmentId={assignment.id} kind={assignment.kind} keyApproved={view.keyApproved} />
       ) : view.groups.length === 0 ? (
         <EmptyState
           title={view.missed ? `No graded paper missed ${questionName(view.missed.label)}` : "No papers match this filter"}
@@ -109,24 +106,22 @@ function MissedFilterBanner({ assignmentId, missed }: { assignmentId: string; mi
   );
 }
 
-/** While students can't upload, the teacher uploads every paper, so the empty board points there first. */
-function NoPapers(props: { assignmentId: string; kind: AssignmentKind; status: AssignmentStatus; studentsCanUpload: boolean }) {
-  const uploadHref = `/teacher/assignments/${props.assignmentId}/upload`;
-  const upload = uploadLabel(props.kind);
-  if (!props.studentsCanUpload) {
+/** An empty board says exactly what to do next: approve the key first, then upload the papers. */
+function NoPapers(props: { assignmentId: string; kind: AssignmentKind; keyApproved: boolean }) {
+  if (!props.keyApproved) {
     return (
       <EmptyState
         title="No papers yet"
-        body={`Upload the ${kindNoun(props.kind, true)} on the ${upload} tab: one file per student, or one scan of the whole stack. Papers appear here, grouped by section, as they're graded.`}
-        action={<LinkButton href={uploadHref}>{upload}</LinkButton>}
+        body="Start with step 1: add the answer key and approve it. Then upload the students' work, and their results appear here."
+        action={<LinkButton href={`/teacher/assignments/${props.assignmentId}/key`}>Add the answer key</LinkButton>}
       />
     );
   }
   return (
     <EmptyState
       title="No papers yet"
-      body={NO_PAPERS_HINT[props.status]}
-      action={<LinkButton href={uploadHref} variant="secondary">Upload scanned papers</LinkButton>}
+      body={`Upload the students' ${kindNoun(props.kind, true)}: one file per student, or one scan of the whole stack. Each paper is graded against your key and shows up here, grouped by class section.`}
+      action={<LinkButton href={`/teacher/assignments/${props.assignmentId}/upload`}>{uploadLabel(props.kind)}</LinkButton>}
     />
   );
 }
@@ -135,9 +130,9 @@ function NoPapers(props: { assignmentId: string; kind: AssignmentKind; status: A
  * A scan of the class's papers waiting for the teacher (its papers appear only once they check the split), or one the
  * AI couldn't split or is still splitting. Scans are listed on the upload tab.
  */
-function ScanCallout({ assignmentId, kind, scans }: { assignmentId: string; kind: AssignmentKind; scans: BoardView["scans"] }) {
+function ScanCallout({ assignmentId, scans }: { assignmentId: string; scans: BoardView["scans"] }) {
   const uploadHref = `/teacher/assignments/${assignmentId}/upload`;
-  const upload = uploadLabel(kind);
+  const upload = UPLOAD_TAB;
   if (scans.review > 0) {
     const href = scans.review === 1 && scans.firstReviewId ? `/teacher/assignments/${assignmentId}/scans/${scans.firstReviewId}` : uploadHref;
     return (
@@ -185,10 +180,9 @@ function ReviewCallout({ assignmentId, groups }: { assignmentId: string; groups:
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning-200 bg-warning-50 px-4 py-3">
       <p className="font-medium text-warning-800">
-        {plural(count, "paper")} {count === 1 ? "needs" : "need"} your review before {count === 1 ? "its" : "their"} grade
-        can be released.
+        The AI flagged {plural(count, "paper")} for you to check before you record {count === 1 ? "its grade" : "their grades"}.
       </p>
-      <LinkButton href={reviewHref(assignmentId, firstId)}>Start reviewing</LinkButton>
+      <LinkButton href={reviewHref(assignmentId, firstId)}>Check the first one</LinkButton>
     </div>
   );
 }

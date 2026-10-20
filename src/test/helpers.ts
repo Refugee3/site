@@ -7,7 +7,6 @@ import { insertAssignment, replaceSections, shareCodeExists, updateAssignment } 
 import { createEmptyKey, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { updateLesson, upsertLesson, type LessonSnapshot } from "@/lib/db/repos/lessons";
 import { insertScan, updateScan } from "@/lib/db/repos/scans";
-import { setStudentsCanUpload } from "@/lib/db/repos/settings";
 import { insertSubmission, updateSubmission, type NewSubmission } from "@/lib/db/repos/submissions";
 import { insertTeacher } from "@/lib/db/repos/teachers";
 import { newId, newShareCode, newToken, sha256Hex } from "@/lib/ids";
@@ -96,7 +95,7 @@ export function seedSubmission(
   const submission = insertSubmission({
     id,
     assignmentId,
-    source: "student",
+    source: "teacher",
     receiptToken: newToken(),
     pdfPath,
     originalFilename: "submission.pdf",
@@ -111,11 +110,6 @@ export function seedSubmission(
     fs.writeFileSync(file, ONE_PAGE_PDF);
   }
   return status && status !== submission.status ? updateSubmission(id, { status }) : submission;
-}
-
-/** Turns on "Students can upload their own work" (off by default since migration 3). */
-export function enableStudentUploads(): void {
-  setStudentsCanUpload(true);
 }
 
 /**

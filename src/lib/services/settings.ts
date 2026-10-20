@@ -1,8 +1,7 @@
 import { checkApiKey, resetGrader, setUpHostedAgentNow, startHostedAgentSetup, type KeyCheck } from "@/lib/ai";
 import { maskApiKey, normalizeApiKeyInput } from "@/lib/ai/api-key";
 import {
-  clearStoredApiKey, getAiModel, getAppSettings, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine, setStoredApiKey,
-  setStudentsCanUpload,
+  clearStoredApiKey, getAiModel, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine, setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
@@ -11,25 +10,13 @@ import { resumeWorker } from "@/lib/jobs/queue";
 import { encryptSecret } from "@/lib/secrets";
 import type { AiModel, GradingEngineChoice, Teacher } from "@/lib/types";
 
-// App-wide settings (the API key, the AI model, the grading engine, the student switch) and the teacher's own grading
-// preferences.
-
-export const UPLOADS_OFF_MESSAGE = "Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.";
+// App-wide settings (the API key, the AI model, the grading engine) and the teacher's own grading preferences.
 
 export type KeyChecker = (key: string) => Promise<KeyCheck>;
 
 export const MAX_GRADING_PREFERENCES = 4000;
 const KEY_REJECTED = "Anthropic rejected this key. Check that you copied all of it and that it hasn't been revoked.";
 const KEY_UNREACHABLE = "Key saved, but Anthropic couldn't be reached to check it. If the key is wrong, grading will pause and say so.";
-
-/** "Students can upload their own work" (off unless a teacher turned it on). */
-export function studentUploadsEnabled(): boolean {
-  return getAppSettings().studentsCanUpload;
-}
-
-export function setStudentUploads(enabled: boolean): void {
-  setStudentsCanUpload(enabled);
-}
 
 /**
  * Checks the pasted key with Anthropic (against the model chosen in Settings), then stores it encrypted and switches

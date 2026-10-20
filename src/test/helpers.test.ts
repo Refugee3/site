@@ -7,10 +7,9 @@ import { getKey, listKeyItems } from "@/lib/db/repos/keys";
 import { listSections } from "@/lib/db/repos/assignments";
 import { getLesson } from "@/lib/db/repos/lessons";
 import { getScan } from "@/lib/db/repos/scans";
-import { getAppSettings } from "@/lib/db/repos/settings";
 import { sha256Hex } from "@/lib/ids";
 import {
-  ENCRYPTED_PDF, ONE_PAGE_PDF, TINY_JPEG, TINY_PNG, enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson,
+  ENCRYPTED_PDF, ONE_PAGE_PDF, TINY_JPEG, TINY_PNG, makePdf, seedApprovedKey, seedAssignment, seedLesson,
   seedScan, seedSubmission, seedTeacher, useTestDb,
 } from "@/test/helpers";
 
@@ -78,13 +77,6 @@ describe("seed helpers", () => {
     const file = path.join(getConfig().dataDir, s.pdfPath);
     expect(new Uint8Array(fs.readFileSync(file))).toEqual(ONE_PAGE_PDF);
     expect(s.byteSize).toBe(ONE_PAGE_PDF.length);
-  });
-
-  it("enableStudentUploads turns the student upload switch on", () => {
-    useTestDb();
-    expect(getAppSettings().studentsCanUpload).toBe(false);
-    enableStudentUploads();
-    expect(getAppSettings().studentsCanUpload).toBe(true);
   });
 
   it("seedScan stores a splitting scan of makePdf(pages) by default", async () => {

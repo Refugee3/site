@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  commonAnswers, computeItemStats, isHighlighted, MISS_HIGHLIGHT_MIN_PAPERS, MISS_HIGHLIGHT_MIN_TENTHS, paperOutcomes,
+  commonAnswers, computeItemStats, isHighlighted, MISS_HIGHLIGHT_ABOVE_TENTHS, MISS_HIGHLIGHT_MIN_PAPERS, paperOutcomes,
 } from "@/lib/grading/item-stats";
 import { nameKey, nameSortKey } from "@/lib/grading/names";
 import { makeJudgment, makeKeyItem, makeResult, makeSection, makeSubmission } from "@/lib/grading/test-utils";
@@ -59,11 +59,13 @@ describe("computeItemStats", () => {
     expect(stats.countedPapers).toBe(5);
   });
 
-  it("highlights only at the paper and miss-rate thresholds", () => {
+  it("highlights only questions a majority missed, once enough papers are judged", () => {
     expect(MISS_HIGHLIGHT_MIN_PAPERS).toBe(5);
-    expect(MISS_HIGHLIGHT_MIN_TENTHS).toBe(400);
-    expect(isHighlighted({ judged: 5, missedTenths: 400 })).toBe(true);
-    expect(isHighlighted({ judged: 5, missedTenths: 399 })).toBe(false);
+    expect(MISS_HIGHLIGHT_ABOVE_TENTHS).toBe(500);
+    expect(isHighlighted({ judged: 5, missedTenths: 501 })).toBe(true);
+    expect(isHighlighted({ judged: 5, missedTenths: 600 })).toBe(true);
+    expect(isHighlighted({ judged: 5, missedTenths: 500 })).toBe(false);
+    expect(isHighlighted({ judged: 5, missedTenths: 400 })).toBe(false);
     expect(isHighlighted({ judged: 4, missedTenths: 1000 })).toBe(false);
     expect(isHighlighted({ judged: 0, missedTenths: null })).toBe(false);
 
@@ -71,16 +73,23 @@ describe("computeItemStats", () => {
     const few = classOf(Array.from({ length: 4 }, () => [judged("incorrect"), judged("correct")] as [ItemJudgment, ItemJudgment]));
     expect(computeItemStats(ITEMS, few.submissions, [], few.results, ACCURACY).highlighted).toEqual([]);
 
-    // Two of five wrong is exactly 40%.
-    const atLine = classOf([
-      [judged("incorrect"), judged("correct")],
-      [judged("incorrect"), judged("correct")],
-      [judged("correct"), judged("correct")],
+    // Two of five wrong (40%) is a minority; three of five (60%) a majority.
+    const minority = classOf([
+      [judged("incorrect"), judged("incorrect")],
+      [judged("incorrect"), judged("incorrect")],
+      [judged("correct"), judged("incorrect")],
       [judged("correct"), judged("correct")],
       [judged("correct"), judged("correct")],
     ]);
-    const stats = computeItemStats(ITEMS, atLine.submissions, [], atLine.results, ACCURACY);
-    expect(stats.items[0]).toMatchObject({ missedTenths: 400, highlighted: true });
+    const stats = computeItemStats(ITEMS, minority.submissions, [], minority.results, ACCURACY);
+    expect(stats.items[0]).toMatchObject({ missedTenths: 400, highlighted: false });
+    expect(stats.items[1]).toMatchObject({ missedTenths: 600, missedPapers: 3, highlighted: true });
+
+    // Exactly half missed is not a majority: ten papers, five wrong.
+    const half = classOf(Array.from({ length: 10 }, (_, i) => [judged(i < 5 ? "incorrect" : "correct"), null] as [ItemJudgment, null]));
+    expect(computeItemStats(ITEMS, half.submissions, [], half.results, ACCURACY).items[0]).toMatchObject({
+      judged: 10, missedTenths: 500, highlighted: false,
+    });
   });
 
   it("counts teacher overrides, which also decide the outcome", () => {
@@ -92,8 +101,11 @@ describe("computeItemStats", () => {
     // And takes the credit away from a correct answer.
     results.get("p4")![1].overrideCenti = 0;
     const stats = computeItemStats(ITEMS, submissions, [], results, ACCURACY);
-    // Earned 4 + 4 + 2 + 0 + 0 of 20: 50% missed.
-    expect(stats.items[0]).toMatchObject({ correct: 2, partly: 1, wrong: 2, missedTenths: 500, highlighted: true });
+    // Earned 4 + 4 + 2 + 0 + 0 of 20: 50% missed, which is not a majority.
+    expect(stats.items[0]).toMatchObject({ correct: 2, partly: 1, wrong: 2, missedTenths: 500, highlighted: false });
+    // Without the half credit, 60% missed.
+    results.get("p3")![0].overrideCenti = 0;
+    expect(computeItemStats(ITEMS, submissions, [], results, ACCURACY).items[0]).toMatchObject({ missedTenths: 600, highlighted: true });
     expect(stats.items[1]).toMatchObject({ correct: 4, wrong: 1, missedTenths: 200 });
   });
 
@@ -177,9 +189,9 @@ describe("computeItemStats", () => {
     const q3 = makeKeyItem({ id: "q3", label: "3", position: 2, pointsCenti: 400 });
     const submissions = Array.from({ length: 5 }, (_, i) => paper(`p${i}`, `Student ${i}`, { createdAt: i }));
     const results = new Map<string, SubmissionItem[]>(submissions.map((s, i) => [s.id, [
-      { ...makeResult("q1", judged(i < 2 ? "incorrect" : "correct")), submissionId: s.id },
+      { ...makeResult("q1", judged(i < 3 ? "incorrect" : "correct")), submissionId: s.id },
       { ...makeResult("q2", judged(i < 4 ? "incorrect" : "correct")), submissionId: s.id },
-      { ...makeResult("q3", judged(i < 2 ? "incorrect" : "correct")), submissionId: s.id },
+      { ...makeResult("q3", judged(i < 3 ? "incorrect" : "correct")), submissionId: s.id },
     ]]));
     const stats = computeItemStats([q1, q2, q3], submissions, [], results, ACCURACY);
     expect(stats.highlighted.map((s) => s.item.id)).toEqual(["q2", "q1", "q3"]);

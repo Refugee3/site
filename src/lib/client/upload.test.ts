@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isAbortError, newUploadId, readUploadError, uploadWithProgress } from "./upload";
+import { isAbortError, readUploadError, uploadWithProgress } from "./upload";
 
 type Listener = (event: { lengthComputable: boolean; loaded: number; total: number }) => void;
 
@@ -58,18 +58,18 @@ beforeEach(() => {
 describe("uploadWithProgress", () => {
   it("POSTs the form data and resolves with the status and parsed JSON", async () => {
     const body = new FormData();
-    const pending = uploadWithProgress("/api/s/K7M4QX/submissions", body, () => {});
+    const pending = uploadWithProgress("/api/teacher/assignments/a1/submissions", body, () => {});
     const xhr = lastXhr();
     expect(xhr.method).toBe("POST");
-    expect(xhr.url).toBe("/api/s/K7M4QX/submissions");
+    expect(xhr.url).toBe("/api/teacher/assignments/a1/submissions");
     expect(xhr.headers.Accept).toBe("application/json");
     expect(xhr.body).toBe(body);
 
-    xhr.respond(201, JSON.stringify({ receiptUrl: "/r/abc" }));
-    await expect(pending).resolves.toEqual({ status: 201, json: { receiptUrl: "/r/abc" } });
+    xhr.respond(201, JSON.stringify({ submissionId: "s1" }));
+    await expect(pending).resolves.toEqual({ status: 201, json: { submissionId: "s1" } });
   });
 
-  it("sends extra headers, such as the upload id", async () => {
+  it("sends extra headers", async () => {
     const pending = uploadWithProgress("/u", new FormData(), () => {}, undefined, { "Idempotency-Key": "abc" });
     expect(lastXhr().headers).toEqual({ Accept: "application/json", "Idempotency-Key": "abc" });
     lastXhr().respond(201, "{}");
@@ -142,13 +142,5 @@ describe("isAbortError", () => {
     expect(isAbortError(new DOMException("x", "AbortError"))).toBe(true);
     expect(isAbortError(new DOMException("x", "NotAllowedError"))).toBe(false);
     expect(isAbortError(new Error("AbortError"))).toBe(false);
-  });
-});
-
-describe("newUploadId", () => {
-  it("is 32 random hex characters", () => {
-    const id = newUploadId();
-    expect(id).toMatch(/^[0-9a-f]{32}$/);
-    expect(newUploadId()).not.toBe(id);
   });
 });

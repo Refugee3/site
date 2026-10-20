@@ -36,7 +36,7 @@ export function UploadChooser({ assignmentId, view }: UploadChooserProps) {
   return (
     <div className="flex flex-col gap-4">
       <fieldset className="flex min-w-0 flex-col gap-2">
-        <legend className="sr-only">How are the papers scanned?</legend>
+        <legend className="mb-1.5 text-sm font-medium text-ink">How are the papers scanned?</legend>
         <div className="grid gap-2 sm:grid-cols-2">
           {options.map((option) => (
             <label
@@ -62,14 +62,7 @@ export function UploadChooser({ assignmentId, view }: UploadChooserProps) {
 
       <div hidden={kind !== "per_student"}>
         <Card>
-          <div className="flex flex-col gap-4">
-            {view.studentsCanUpload && (
-              <p className="text-sm text-muted">
-                Each upload gives you the student&apos;s receipt link, where they see their feedback once you release it.
-              </p>
-            )}
-            <BulkUpload uploadUrl={`/api/teacher/assignments/${assignmentId}/submissions`} disabled={!view.keyApproved} />
-          </div>
+          <BulkUpload assignmentId={assignmentId} disabled={!view.keyApproved} />
         </Card>
       </div>
       <div hidden={kind !== "stack"}>

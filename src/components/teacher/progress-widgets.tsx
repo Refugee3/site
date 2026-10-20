@@ -45,7 +45,7 @@ function anchorFor(p: GradingProgress, serverNow: number): InFlightAnchor {
   return { startedAt: p.startedAt, done: p.done, at: p.done === 0 ? p.startedAt : serverNow };
 }
 
-/** The Submissions board's card for the grading batch: papers done, a bar, the time so far and the time left. */
+/** The Results tab's card for the grading batch: papers done, a bar, the time so far and the time left. */
 export function GradingProgressCard({ progress: p, serverNow, throttledUntil, halted }: GradingProgressCardProps) {
   const now = useServerClock(serverNow);
   const [stored, setStored] = useState<InFlightAnchor>(() => anchorFor(p, serverNow));

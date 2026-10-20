@@ -3,7 +3,7 @@ import type { ReviewItemView } from "@/lib/types";
 // The pure parts of an item's override form on the review page (item-card.tsx): what is unsaved, what a save
 // sends, and what became of the correction.
 
-/** The form's fields as typed: points (text), the two notes the student reads, and why the teacher corrected the AI. */
+/** The form's fields as typed: points (text), the two notes for the student, and why the teacher corrected the AI. */
 export interface OverrideTexts {
   points: string;
   feedback: string;

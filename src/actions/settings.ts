@@ -11,7 +11,7 @@ import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
+  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setUpHostedAgentAgain,
 } from "@/lib/services/settings";
 import { AI_MODELS, type ActionResult, type AiModel, type GradingEngineChoice } from "@/lib/types";
 
@@ -24,7 +24,6 @@ const ApiKeyFormSchema = z.object({
 const PreferencesFormSchema = z.object({
   gradingPreferences: z.string().max(8000, "Use at most 4000 characters."),
 });
-const EnabledSchema = z.boolean();
 const EngineSchema = z.enum(["agent", "direct"]);
 const AiModelSchema = z.enum(AI_MODELS, "Choose Claude Sonnet 5.5 or Claude Opus 5.5.");
 
@@ -47,13 +46,6 @@ export async function removeApiKeyAction(): Promise<ActionResult> {
   if (!result.ok) return result;
   refresh();
   return { ok: true, message: "Saved key removed." };
-}
-
-export async function setStudentUploadsAction(enabled: boolean): Promise<ActionResult> {
-  await requireTeacher();
-  const result = await attempt(() => setStudentUploads(parseInput(EnabledSchema, enabled)));
-  if (result.ok) refresh();
-  return result;
 }
 
 /** Settings → Grader: switches the grading engine from the next paper on. */

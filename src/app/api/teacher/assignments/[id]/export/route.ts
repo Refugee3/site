@@ -1,14 +1,14 @@
 import type { NextRequest } from "next/server";
 import { ownedAssignmentOr404, requireRouteTeacher } from "@/lib/auth/dal";
-import { getPublicOrigin, toErrorResponse } from "@/lib/http/request";
+import { toErrorResponse } from "@/lib/http/request";
 import { buildGradesCsv } from "@/lib/services/views";
 
 /** The grades as CSV (BOM, CRLF), current attempts in board order. */
-export async function GET(req: NextRequest, ctx: RouteContext<"/api/teacher/assignments/[id]/export">): Promise<Response> {
+export async function GET(_req: NextRequest, ctx: RouteContext<"/api/teacher/assignments/[id]/export">): Promise<Response> {
   try {
     const teacher = await requireRouteTeacher();
     const assignment = ownedAssignmentOr404((await ctx.params).id, teacher);
-    const { filename, csv } = buildGradesCsv(assignment, getPublicOrigin(req.headers));
+    const { filename, csv } = buildGradesCsv(assignment);
     return new Response(csv, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",

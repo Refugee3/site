@@ -15,7 +15,7 @@ import * as jobsRepo from "@/lib/db/repos/jobs";
 import { cancelQueuedJobs, claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getAiModel } from "@/lib/db/repos/settings";
-import { getSubmission, getSubmissionByReceipt, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
+import { getSubmission, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY, resumeWorker } from "@/lib/jobs/queue";
@@ -23,11 +23,11 @@ import { answeringGrader, deferred, drainQueue, FAKE_META, jobRows, scriptedGrad
 import { createWorker, startWorker } from "@/lib/jobs/worker";
 import { updateAssignment } from "@/lib/services/assignments";
 import { ingestKeyPdf, saveKey } from "@/lib/services/keys";
-import { ingestStudentUpload, regradeSubmission, updateIdentity } from "@/lib/services/submissions";
+import { ingestTeacherUpload, regradeSubmission, updateIdentity } from "@/lib/services/submissions";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import type { Assignment, AssignmentFormInput } from "@/lib/types";
 import {
-  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson, seedSubmission, seedTeacher, useTestDb,
+  makePdf, seedApprovedKey, seedAssignment, seedLesson, seedSubmission, seedTeacher, useTestDb,
 } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
@@ -39,8 +39,7 @@ beforeEach(() => {
   clock = T0;
   setClockForTests(() => clock);
   db = useTestDb();
-  enableStudentUploads();
-  assignment = seedAssignment(seedTeacher().id, { status: "open" });
+  assignment = seedAssignment(seedTeacher().id);
   seedApprovedKey(assignment.id, [{ label: "1" }, { label: "2", pointsCenti: 200 }]);
 });
 
@@ -50,10 +49,10 @@ function workerWith(grader: Grader) {
   return createWorker({ grader, concurrency: 1, pollMs: 1000 });
 }
 
-/** Uploads a one-page paper through the student service; returns the submission id. */
+/** Uploads a one-page paper through the teacher upload service; returns the submission id. */
 async function uploadPaper(label = "paper"): Promise<string> {
-  const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: `${label}.pdf`, bytes: await makePdf(1, { label }) }]);
-  return getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.id;
+  const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: `${label}.pdf`, bytes: await makePdf(1, { label }) }]);
+  return submissionId;
 }
 
 function rejectingGrader(err: AiError): Grader {
@@ -508,11 +507,10 @@ describe("races and crashes", () => {
     };
 
     async function sectionedPaper(sectionsText: string, wrote: string) {
-      const sectioned = seedAssignment(seedTeacher().id, { status: "open" });
+      const sectioned = seedAssignment(seedTeacher().id);
       updateAssignment(sectioned, { ...FORM, sectionsText });
       seedApprovedKey(sectioned.id, [{ label: "1" }]);
-      const { receiptUrl } = await ingestStudentUpload(sectioned.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label: wrote }) }]);
-      const id = getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.id;
+      const { submissionId: id } = await ingestTeacherUpload(sectioned, [{ filename: "p.pdf", bytes: await makePdf(1, { label: wrote }) }]);
       const run = await startGatedAnswer((refs) => makeGradingOutput(refs, { student: { section_raw: wrote, section_match: null } }));
       return { sectioned, id, run };
     }
@@ -650,13 +648,13 @@ describe("key extraction", () => {
         id: null, label: "1", groupLabel: "", prompt: "", answerType: "short_answer", expectedAnswer: "4", acceptableAnswers: [],
         gradingCriteria: "", pointsCenti: 100, partialCredit: true, page: null,
       }],
-    }, { open: true });
-    const { receiptUrl } = await ingestStudentUpload(draft.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label: "ana" }) }]);
+    });
+    const { submissionId } = await ingestTeacherUpload(draft, [{ filename: "p.pdf", bytes: await makePdf(1, { label: "ana" }) }]);
     const inputs: GradeInput[] = [];
     await drainQueue(recordingGrader(inputs));
 
     expect(inputs.map((input) => input.keyPdf)).toEqual([null]);
-    expect(getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.status).toBe("graded");
+    expect(getSubmission(submissionId)!.status).toBe("graded");
   });
 
   it("keeps the PDF of a key that was read but had no questions, so it can be read again", async () => {
@@ -707,7 +705,8 @@ describe("startWorker", () => {
     const orphaned = seedSubmission(assignment.id, { status: "grading" });
     enqueueGrade(orphaned.id, assignment.id, PRIORITY.student);
     expect(claimNextJob(clock)).toMatchObject({ targetId: orphaned.id, status: "running" });
-    const unqueued = seedSubmission(assignment.id);
+    // A paper a student handed in before the app became teacher-only keeps its own priority.
+    const unqueued = seedSubmission(assignment.id, { source: "student" });
     const scanned = seedSubmission(assignment.id, { source: "teacher" });
     const keyAssignment = seedAssignment(seedTeacher().id);
     updateKey(keyAssignment.id, { status: "processing" });

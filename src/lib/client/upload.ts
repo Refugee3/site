@@ -17,14 +17,6 @@ function parseJson(text: string): unknown {
   }
 }
 
-/** The header that identifies one upload, so the server can tell a retry of it from a different upload of the same bytes. */
-export const UPLOAD_ID_HEADER = "Idempotency-Key";
-
-/** A random id for one upload: 32 hex characters. getRandomValues also works on plain-http school networks. */
-export function newUploadId(): string {
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 /**
  * POSTs multipart form data with XMLHttpRequest, because fetch cannot report upload progress.
  * `onProgress` receives the uploaded fraction (0..1). Resolves for every HTTP status, so callers inspect

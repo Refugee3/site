@@ -8,35 +8,33 @@ import type { GradingOutput } from "@/lib/ai/schemas";
 import { setClockForTests } from "@/lib/clock";
 import { getDb } from "@/lib/db/connection";
 import { getConfig, resetConfigForTests } from "@/lib/config";
-import { addAssignmentUsage, getGradingBatchStartedAt } from "@/lib/db/repos/assignments";
+import { addAssignmentUsage, getGradingBatchStartedAt, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateScan } from "@/lib/db/repos/scans";
 import { updateLesson } from "@/lib/db/repos/lessons";
 import { saveHostedAgentError, setGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
-import { getSubmission, getSubmissionByReceipt, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
+import { getSubmission, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jobs/test-utils";
 import { createWorker } from "@/lib/jobs/worker";
 import { ingestKeyPdf } from "@/lib/services/keys";
 import { everyNLayout } from "@/lib/scan-layout";
-import { rotateShareCode, setFeedbackReleased } from "@/lib/services/assignments";
-import { removeApiKey, saveApiKey, setAiModel, setStudentUploads } from "@/lib/services/settings";
+import { removeApiKey, saveApiKey, setAiModel } from "@/lib/services/settings";
 import {
-  deleteSubmission, gradeManually, ingestStudentUpload, markReviewed, regradeSubmission, saveItemOverride,
+  deleteSubmission, gradeManually, ingestTeacherUpload, markReviewed, regradeSubmission, saveItemOverride,
 } from "@/lib/services/submissions";
 import {
   AGENT_RUNTIME_USD_PER_HOUR, buildGradesCsv, buildQuestionStatsCsv, estimateCostUsd, estimateLedgerCostUsd, getAssignmentHeader, getBoardView,
-  getDashboardView, getKeyEditorView, getLessonsView, getReceiptView, getReviewView, getScanReviewView, getSettingsView,
-  getItemStats, getStudentUploadView, getTeacherSettingsView, getUploadPageView,
+  getDashboardView, getKeyEditorView, getLessonsView, getReviewView, getScanReviewView, getSettingsView, getItemStats,
+  getStrugglingQuestions, getTeacherSettingsView, getUploadPageView,
 } from "@/lib/services/views";
-import type { AiUsage, Assignment, KeyItem, Submission, SubmissionStatus, Teacher } from "@/lib/types";
+import type { AiUsage, Assignment, KeyItem, Submission, Teacher } from "@/lib/types";
 import {
-  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedLesson, seedScan, seedSubmission, seedTeacher, useTestDb,
+  makePdf, seedApprovedKey, seedAssignment, seedLesson, seedScan, seedSubmission, seedTeacher, useTestDb,
 } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
-const ORIGIN = "https://school.test";
 let clock = T0;
 let teacher: Teacher;
 let assignment: Assignment;
@@ -48,9 +46,8 @@ beforeEach(() => {
   // Saving a key in claude mode starts setting up the hosted agent; nothing here may reach for Anthropic.
   vi.spyOn(ai, "startHostedAgentSetup").mockImplementation(() => undefined);
   useTestDb();
-  enableStudentUploads();
   teacher = seedTeacher({ displayName: "Ms. Rivera" });
-  assignment = seedAssignment(teacher.id, { status: "open", title: "Unit 4: Ratios & Rates!" });
+  assignment = seedAssignment(teacher.id, { title: "Unit 4: Ratios & Rates!" });
   items = seedApprovedKey(assignment.id, [
     { label: "1" },
     { label: "2a", groupLabel: "2", pointsCenti: 200 },
@@ -64,105 +61,17 @@ beforeEach(() => {
  */
 async function gradedPaper(name: string | null, label = name ?? "anonymous", output: Partial<GradingOutput> = {}): Promise<Submission> {
   clock += 60_000;
-  const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label }) }]);
+  const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1, { label }) }]);
   await drainQueue(answeringGrader((refs) => makeGradingOutput(refs, {
     student: { name },
     items: refs.map((ref) => makeOutputItem(ref, { what_student_did: `You answered ${ref}.`, feedback: `Feedback for ${ref}.` })),
     overall_feedback: "Well done.",
     ...output,
   })));
-  return getSubmissionByReceipt(receiptUrl.slice("/r/".length))!;
+  return getSubmission(submissionId)!;
 }
 
 const PAGES_MISSING: Partial<GradingOutput> = { document_check: { match: "matches", pages_appear_missing: true, note: "" } };
-
-describe("getReceiptView", () => {
-  const cases: Array<{ status: SubmissionStatus; released: boolean; phase: string }> = [
-    { status: "queued", released: true, phase: "processing" },
-    { status: "grading", released: true, phase: "processing" },
-    { status: "failed", released: true, phase: "problem" },
-    { status: "graded", released: false, phase: "checked" },
-    { status: "needs_review", released: false, phase: "checked" },
-    { status: "needs_review", released: true, phase: "checked" },
-    { status: "graded", released: true, phase: "released" },
-  ];
-
-  it.each(cases)("$status with release=$released is $phase", async ({ status, released, phase }) => {
-    const paper = await gradedPaper("Maria Lopez");
-    updateSubmission(paper.id, { status });
-    if (released) setFeedbackReleased(assignment, true);
-
-    const view = getReceiptView(paper.receiptToken)!;
-    expect(view.phase).toBe(phase);
-    expect(view.result === null).toBe(phase !== "released");
-  });
-
-  it("shows the released result grouped by question, with the teacher's feedback over the AI's", async () => {
-    const paper = await gradedPaper("Maria Lopez");
-    setItemOverride(paper.id, items[1].id, { overrideCenti: 150, overrideFeedback: "Check your units." });
-    setFeedbackReleased(assignment, true);
-
-    const view = getReceiptView(paper.receiptToken)!;
-    expect(view).toMatchObject({
-      assignmentTitle: "Unit 4: Ratios & Rates!", pageCount: 1, notices: [],
-      pdfUrl: `/api/r/${paper.receiptToken}/pdf`, detectedName: "Maria Lopez",
-    });
-    expect(view.result).toEqual({
-      earnedCenti: 350, maxCenti: 400, percentTenths: 875, overallFeedback: "Well done.",
-      groups: [
-        { groupLabel: "", items: [{ label: "1", earnedCenti: 100, maxCenti: 100, whatStudentDid: "You answered Q1.", feedback: "Feedback for Q1." }] },
-        {
-          groupLabel: "2",
-          items: [
-            { label: "2a", earnedCenti: 150, maxCenti: 200, whatStudentDid: "You answered Q2.", feedback: "Check your units." },
-            { label: "2b", earnedCenti: 100, maxCenti: 100, whatStudentDid: "You answered Q3.", feedback: "Feedback for Q3." },
-          ],
-        },
-      ],
-    });
-  });
-
-  it("shows the teacher's \"what you did\" note instead of the AI's, and hides it when the teacher emptied it", async () => {
-    const paper = await gradedPaper("Maria Lopez");
-    saveItemOverride(paper, items[0].id, { pointsCenti: null, feedback: null, whatStudentDid: "You found x = 4." });
-    saveItemOverride(paper, items[2].id, { pointsCenti: null, feedback: null, whatStudentDid: "" });
-    setFeedbackReleased(assignment, true);
-
-    const groups = getReceiptView(paper.receiptToken)!.result!.groups;
-    expect(groups.flatMap((group) => group.items.map((item) => item.whatStudentDid))).toEqual(["You found x = 4.", "You answered Q2.", ""]);
-  });
-
-  it("drops the warnings once the teacher has reviewed and accepted the paper", async () => {
-    const paper = await gradedPaper("Maria Lopez", "maria", PAGES_MISSING);
-    expect(getReceiptView(paper.receiptToken)).toMatchObject({ phase: "checked", notices: ["pages_missing"] });
-
-    markReviewed(paper);
-
-    expect(getReceiptView(paper.receiptToken)).toMatchObject({ phase: "checked", notices: [] });
-  });
-
-  it("never reveals the assignment's current share code", async () => {
-    const paper = await gradedPaper(null);
-    const rotated = rotateShareCode(assignment);
-    const view = getReceiptView(paper.receiptToken)!;
-    expect(view.notices).toEqual(["no_name"]);
-    expect(JSON.stringify(view)).not.toContain(rotated.shareCode);
-    expect(JSON.stringify(view)).not.toContain(assignment.shareCode);
-  });
-
-  it("lists notices from the flags only while the paper is checked", async () => {
-    const paper = await gradedPaper(null);
-    updateSubmission(paper.id, { status: "needs_review", flags: ["name_missing", "pages_missing", "low_confidence"] });
-
-    expect(getReceiptView(paper.receiptToken)).toMatchObject({ phase: "checked", detectedName: null, notices: ["no_name", "pages_missing"] });
-    updateSubmission(paper.id, { status: "queued" });
-    expect(getReceiptView(paper.receiptToken)!.notices).toEqual([]);
-  });
-
-  it("returns null for an unknown token", () => {
-    expect(getReceiptView("x".repeat(43))).toBeNull();
-  });
-});
 
 describe("buildGradesCsv", () => {
   it("has one row per current paper in board order, after the pinned columns and one column per item", async () => {
@@ -170,30 +79,31 @@ describe("buildGradesCsv", () => {
     await gradedPaper("Ana Diaz");
     const resubmission = await gradedPaper("Maria Lopez", "maria-2");
     clock += 60_000;
-    await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label: "queued" }) }]);
+    await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1, { label: "queued" }) }]);
 
-    const { filename, csv } = buildGradesCsv(assignment, ORIGIN);
+    const { filename, csv } = buildGradesCsv(assignment);
 
     expect(filename).toBe("unit-4-ratios-rates-grades.csv");
     expect(csv.startsWith("﻿")).toBe(true);
     const lines = csv.slice(1).trimEnd().split("\r\n");
     expect(lines[0]).toBe([
       "Section", "Student name", "Status", "Points earned", "Points possible", "Percent", "Completion %", "Accuracy %", "Reviewed",
-      "Flags", "Overall feedback", "Submitted at", "Earlier attempts", "Receipt link", "1 (1 pt)", "2a (2 pt)", "2b (1 pt)",
+      "Flags", "Overall feedback", "Submitted at", "Earlier attempts", "1 (1 pt)", "2a (2 pt)", "2b (1 pt)",
     ].map((cell) => `"${cell}"`).join(","));
     expect(lines).toHaveLength(4); // header, Diaz, Lopez (newest attempt only), the unnamed queued paper
     expect(lines[1]).toContain('"Ana Diaz","Graded","4","4","100%","100%","100%","",""');
-    expect(lines[1]).toContain(`Z","","${ORIGIN}/r/`); // no earlier attempts
+    expect(lines[1]).toContain('Z","","1","2","1"'); // no earlier attempts, then the item points
     expect(lines[2]).toContain(`"Maria Lopez","Graded"`);
-    expect(lines[2]).toContain(`Z","1","${ORIGIN}/r/${resubmission.receiptToken}","1","2","1"`);
-    expect(lines[3]).toMatch(/^"No section","","Queued","","","","","",/);
+    expect(lines[2]).toContain('Z","1","1","2","1"');
+    expect(lines[2]).not.toContain(resubmission.receiptToken);
+    expect(lines[3]).toMatch(/^"No section","","Waiting to be graded","","","","","",/);
   });
 
   it("keeps two students who both wrote only the same first name as two rows", async () => {
     const first = await gradedPaper("Maria", "maria-a");
     const second = await gradedPaper("Maria", "maria-b");
 
-    const lines = buildGradesCsv(assignment, ORIGIN).csv.slice(1).trimEnd().split("\r\n");
+    const lines = buildGradesCsv(assignment).csv.slice(1).trimEnd().split("\r\n");
     expect(lines).toHaveLength(3);
     expect(getBoardView(assignment, "all").groups[0].rows.map((row) => [row.submissionId, row.earlier.length])).toEqual([
       [first.id, 0], [second.id, 0],
@@ -218,7 +128,7 @@ describe("teacher views", () => {
       earlier: [{ submissionId: first.id, createdAt: first.createdAt, status: "graded" }],
     });
     // Counts cover the rows the board shows: the folded earlier attempt is not counted.
-    expect(board).toMatchObject({ counts: { graded: 1, needs_review: 1, total: 2 }, active: false, open: true, staleCount: 0 });
+    expect(board).toMatchObject({ counts: { graded: 1, needs_review: 1, total: 2 }, active: false, keyApproved: true, staleCount: 0 });
     expect(getBoardView(assignment, "needs_review").groups[0].rows.map((row) => row.submissionId)).toEqual([flagged.id]);
     expect(getBoardView(assignment, "failed").groups).toEqual([]);
   });
@@ -228,14 +138,14 @@ describe("teacher views", () => {
     const latest = await gradedPaper("Maria Lopez", "maria-2");
     const flagged = await gradedPaper(null);
 
-    const view = getReviewView(getSubmission(latest.id)!, assignment, ORIGIN);
+    const view = getReviewView(getSubmission(latest.id)!, assignment);
     expect(view).toMatchObject({
       prevId: null, nextId: flagged.id, nextNeedsReviewId: flagged.id, stale: false, sectionLabel: null,
-      pdfUrl: `/api/teacher/submissions/${latest.id}/pdf`, receiptUrl: `${ORIGIN}/r/${latest.receiptToken}`,
+      pdfUrl: `/api/teacher/submissions/${latest.id}/pdf`,
       earlierAttempts: [{ submissionId: first.id, createdAt: first.createdAt, status: "graded" }],
     });
     expect(view.items.map((item) => [item.item.label, item.score.earnedCenti])).toEqual([["1", 100], ["2a", 200], ["2b", 100]]);
-    expect(getReviewView(getSubmission(first.id)!, assignment, ORIGIN).earlierAttempts).toEqual([]);
+    expect(getReviewView(getSubmission(first.id)!, assignment).earlierAttempts).toEqual([]);
   });
 
   it("does not ask for a review of an earlier attempt that a clean resubmission replaced", async () => {
@@ -245,7 +155,7 @@ describe("teacher views", () => {
 
     const counts = { needs_review: 0, graded: 1, total: 1 };
     expect(getBoardView(assignment, "needs_review")).toMatchObject({ counts, groups: [] });
-    expect(getAssignmentHeader(assignment, ORIGIN).counts).toMatchObject(counts);
+    expect(getAssignmentHeader(assignment).counts).toMatchObject(counts);
     expect(getDashboardView(teacher).assignments[0].counts).toMatchObject(counts);
     expect(getBoardView(assignment, "all").groups[0].rows[0]).toMatchObject({
       submissionId: resubmission.id, earlier: [{ submissionId: earlier.id, status: "needs_review" }],
@@ -254,11 +164,11 @@ describe("teacher views", () => {
 
   it("builds the assignment header", async () => {
     await gradedPaper("Maria Lopez");
-    const header = getAssignmentHeader(assignment, ORIGIN);
+    const header = getAssignmentHeader(assignment);
     expect(header).toEqual({
-      assignment, shareUrl: `${ORIGIN}/s/${assignment.shareCode}`, keyStatus: "ready", keyApproved: true, itemCount: 3,
-      totalPointsCenti: 400, counts: { queued: 0, grading: 0, graded: 1, needs_review: 0, failed: 0, total: 1 }, canOpen: false,
-      studentsCanUpload: true,
+      assignment, keyStatus: "ready", keyApproved: true, itemCount: 3, totalPointsCenti: 400,
+      counts: { queued: 0, grading: 0, graded: 1, needs_review: 0, failed: 0, total: 1 },
+      scans: { splitting: 0, onePass: 0, review: 0, failed: 0, firstReviewId: null },
     });
   });
 
@@ -270,9 +180,9 @@ describe("teacher views", () => {
         return { output: makeGradingOutput(refs), refs, keyPdfIncluded: false, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage } };
       },
     });
-    const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
+    const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
     await drainQueue(billed);
-    const paper = getSubmissionByReceipt(receiptUrl.slice("/r/".length))!;
+    const paper = getSubmission(submissionId)!;
     regradeSubmission(paper);
     await drainQueue(billed);
     regradeSubmission(getSubmission(paper.id)!);
@@ -369,7 +279,7 @@ describe("teacher views", () => {
 
   it("tells the review page which engine would grade the paper now", async () => {
     const paper = await gradedPaper("Maria Lopez");
-    const engine = () => getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).gradingEngine;
+    const engine = () => getReviewView(getSubmission(paper.id)!, assignment).gradingEngine;
     expect(engine()).toBe("fake");
 
     vi.stubEnv("AI_MODE", "claude");
@@ -385,60 +295,16 @@ describe("teacher views", () => {
 
   it("doesn't mark papers for regrading when the AI model changes", async () => {
     const paper = await gradedPaper("Maria Lopez");
-    const before = { board: getBoardView(assignment, "all"), review: getReviewView(getSubmission(paper.id)!, assignment, ORIGIN) };
+    const before = { board: getBoardView(assignment, "all"), review: getReviewView(getSubmission(paper.id)!, assignment) };
     expect(before.board).toMatchObject({ staleCount: 0, guidanceStaleCount: 0 });
 
     setAiModel("claude-opus-5-5");
     setAiModel("claude-sonnet-5-5");
 
     expect(getBoardView(assignment, "all")).toMatchObject({ staleCount: 0, guidanceStaleCount: 0 });
-    const review = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    const review = getReviewView(getSubmission(paper.id)!, assignment);
     expect(review).toMatchObject({ stale: false, guidanceStale: false });
     expect(getSubmission(paper.id)).toEqual(before.review.submission);
-  });
-});
-
-describe("getStudentUploadView", () => {
-  it("shows what a student needs before uploading", () => {
-    expect(getStudentUploadView(assignment.shareCode)).toEqual({
-      code: assignment.shareCode, title: "Unit 4: Ratios & Rates!", instructions: "", teacherName: "Ms. Rivera", status: "open",
-      accepting: true, maxUploadMb: 20, maxPages: 40, maxFiles: 20,
-    });
-    expect(getStudentUploadView("ZZZZZZ")).toBeNull();
-  });
-});
-
-describe("with student uploads turned off", () => {
-  beforeEach(() => {
-    setStudentUploads(false);
-  });
-
-  it("an open assignment accepts nothing, and nothing offers to open one", async () => {
-    const draft = seedAssignment(teacher.id);
-    seedApprovedKey(draft.id, [{ label: "1" }]);
-
-    expect(getStudentUploadView(assignment.shareCode)).toMatchObject({ status: "open", accepting: false });
-    expect(getBoardView(assignment, "all")).toMatchObject({ open: false, studentsCanUpload: false });
-    expect(getAssignmentHeader(draft, ORIGIN)).toMatchObject({ keyApproved: true, canOpen: false, studentsCanUpload: false });
-    expect(getDashboardView(teacher).studentsCanUpload).toBe(false);
-    expect(getKeyEditorView(assignment).studentsCanUpload).toBe(false);
-  });
-
-  it("receipts keep working but don't ask the student to submit again", async () => {
-    enableStudentUploads();
-    const paper = await gradedPaper("Maria Lopez");
-    setStudentUploads(false);
-
-    expect(getReceiptView(paper.receiptToken)).toMatchObject({ phase: "checked", canResubmit: false });
-    enableStudentUploads();
-    expect(getReceiptView(paper.receiptToken)!.canResubmit).toBe(true);
-  });
-
-  it("offers to open a draft with an approved key again once they are on", () => {
-    const draft = seedAssignment(teacher.id);
-    seedApprovedKey(draft.id, [{ label: "1" }]);
-    enableStudentUploads();
-    expect(getAssignmentHeader(draft, ORIGIN)).toMatchObject({ canOpen: true, studentsCanUpload: true });
   });
 });
 
@@ -459,23 +325,23 @@ describe("guidance in the teacher views", () => {
   it("shows each item's lesson and whether the paper was graded before the latest guidance", async () => {
     const paper = await gradedPaper("Maria Lopez");
     const untouched = await gradedPaper("Ben Ode");
-    expect(getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).guidanceStale).toBe(false);
+    expect(getReviewView(getSubmission(paper.id)!, assignment).guidanceStale).toBe(false);
 
     saveItemOverride(paper, items[0].id, { pointsCenti: 50, feedback: null, reason: "Half credit without units." });
 
     // The paper the teacher just corrected is not told to regrade with its own correction; an untouched paper is.
-    const view = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    const view = getReviewView(getSubmission(paper.id)!, assignment);
     expect(view.items.map((item) => item.lesson)).toEqual([
       { id: expect.any(String), reason: "Half credit without units.", active: true, sent: true, notSent: null }, null, null,
     ]);
     expect(view.guidanceStale).toBe(false);
-    expect(getReviewView(getSubmission(untouched.id)!, assignment, ORIGIN).guidanceStale).toBe(true);
+    expect(getReviewView(getSubmission(untouched.id)!, assignment).guidanceStale).toBe(true);
     expect(getBoardView(assignment, "all").guidanceStaleCount).toBe(1);
   });
 
   it("says whether each item's lesson is sent to the grader, and why not", async () => {
     const paper = await gradedPaper("Maria Lopez");
-    const lessonOf = (i: number) => getReviewView(getSubmission(paper.id)!, assignment, ORIGIN).items[i].lesson;
+    const lessonOf = (i: number) => getReviewView(getSubmission(paper.id)!, assignment).items[i].lesson;
 
     // The AI's own points (2 of 2), with no reason: nothing to learn.
     saveItemOverride(paper, items[1].id, { pointsCenti: 200, feedback: null });
@@ -498,7 +364,7 @@ describe("guidance in the teacher views", () => {
 
     saveItemOverride(getSubmission(paper.id)!, items[0].id, { pointsCenti: 100, feedback: null, reason: "Full marks." });
 
-    const view = getReviewView(getSubmission(paper.id)!, assignment, ORIGIN);
+    const view = getReviewView(getSubmission(paper.id)!, assignment);
     expect(view.items[0]).toMatchObject({ result: { overrideCenti: 100, judgment: null }, lesson: null });
   });
 
@@ -541,7 +407,7 @@ describe("guidance in the teacher views", () => {
     setGradingPreferences(teacher.id, "Ignore spelling.");
     // Only the untouched paper: the corrected one is left alone.
     expect(getLessonsView(assignment)).toMatchObject({ guidanceStaleCount: 1, sentCount: 1, activeCount: 1, hasPreferences: true });
-    expect(getReviewView(getSubmission(untouched.id)!, assignment, ORIGIN).guidanceStale).toBe(true);
+    expect(getReviewView(getSubmission(untouched.id)!, assignment).guidanceStale).toBe(true);
 
     const [entry] = getLessonsView(assignment).lessons;
     updateLesson(entry.lesson.id, { active: false });
@@ -558,7 +424,7 @@ describe("upload and scan views", () => {
     const view = getUploadPageView(assignment);
     expect(view).toEqual({
       keyApproved: true, keyPageCount: null, scans: [], maxUploadMb: 20, maxPages: 40, maxScanMb: 100, maxScanPages: 200,
-      studentsCanUpload: true, onePassAvailable: true,
+      onePassAvailable: true,
     });
 
     const older = await seedScan(assignment.id, { pages: 4 });
@@ -616,11 +482,11 @@ describe("upload and scan views", () => {
 describe("getTeacherSettingsView", () => {
   const KEY = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz-a1b2";
 
-  it("shows no key, the student switch and the teacher's preferences", () => {
+  it("shows no key and the teacher's preferences", () => {
     setGradingPreferences(teacher.id, "Ignore spelling.");
     expect(getTeacherSettingsView(teacher)).toEqual({
       apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
-      aiMode: "fake", aiModel: "claude-sonnet-5-5", studentsCanUpload: true, openAssignmentCount: 1,
+      aiMode: "fake", aiModel: "claude-sonnet-5-5",
       gradingPreferences: "Ignore spelling.", worker: null, grader: { engine: "direct", agent: null },
     });
   });
@@ -656,15 +522,6 @@ describe("getTeacherSettingsView", () => {
     expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
     setGradingEngine("agent");
     expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
-  });
-
-  it("counts the open assignments of every teacher, which take student uploads as soon as the switch is on", () => {
-    seedAssignment(seedTeacher().id, { status: "open" });
-    seedAssignment(teacher.id, { status: "closed" });
-    seedAssignment(teacher.id);
-    setStudentUploads(false);
-
-    expect(getTeacherSettingsView(teacher)).toMatchObject({ studentsCanUpload: false, openAssignmentCount: 2 });
   });
 
   it("falls back to the server's ANTHROPIC_API_KEY", () => {
@@ -741,10 +598,10 @@ describe("getTeacherSettingsView", () => {
 });
 
 describe("progress and timing", () => {
-  /** Uploads a one-page student paper (queued); returns its id. */
+  /** Uploads a one-page paper (queued); returns its id. */
   async function upload(label: string): Promise<string> {
-    const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1, { label }) }]);
-    return getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.id;
+    const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1, { label }) }]);
+    return submissionId;
   }
 
   /** Grades every queued paper, each taking `ms` on the test clock. */
@@ -815,20 +672,20 @@ describe("progress and timing", () => {
     const first = await upload("a");
     const second = await upload("b");
 
-    expect(getReviewView(getSubmission(first)!, assignment, ORIGIN)).toMatchObject({ queue: { position: 0 }, gradingTiming: null });
-    expect(getReviewView(getSubmission(second)!, assignment, ORIGIN)).toMatchObject({ queue: { position: 1 }, gradingTiming: null });
+    expect(getReviewView(getSubmission(first)!, assignment)).toMatchObject({ queue: { position: 0 }, gradingTiming: null });
+    expect(getReviewView(getSubmission(second)!, assignment)).toMatchObject({ queue: { position: 1 }, gradingTiming: null });
 
     clock += 5_000;
     updateSubmission(first, { status: "grading" });
     getDbRun("UPDATE submissions SET grading_started_at = ? WHERE id = ?", clock, first);
     getDbRun("UPDATE jobs SET status = 'running' WHERE target_id = ?", first);
-    expect(getReviewView(getSubmission(first)!, assignment, ORIGIN)).toMatchObject({
+    expect(getReviewView(getSubmission(first)!, assignment)).toMatchObject({
       queue: null, gradingTiming: { gradingStartedAt: clock, typicalPaperMs: 60_000 },
     });
-    expect(getReviewView(getSubmission(second)!, assignment, ORIGIN).queue).toEqual({ position: 0 });
+    expect(getReviewView(getSubmission(second)!, assignment).queue).toEqual({ position: 0 });
 
     const graded = await gradedPaper("Maria Lopez");
-    expect(getReviewView(graded, assignment, ORIGIN)).toMatchObject({ queue: null, gradingTiming: null });
+    expect(getReviewView(graded, assignment)).toMatchObject({ queue: null, gradingTiming: null });
   });
 
   it("tells the key tab when the key's reading started and how long readings take", async () => {
@@ -894,6 +751,14 @@ describe("question stats", () => {
     expect(stats.items[0]).toMatchObject({ judged: 5, correct: 2, wrong: 2, blank: 1, missedTenths: 600 });
   });
 
+  it("doesn't highlight a question only a minority missed", async () => {
+    await answering("Ana Diaz", "incorrect", "x = 5");
+    await answering("Ben Cho", "incorrect", "x = 5");
+    for (const name of ["Cal Eze", "Dee Fox", "Eve Gold"]) await answering(name, "correct", "x = 4");
+    expect(getItemStats(assignment)).toMatchObject({ countedPapers: 5, highlighted: [] });
+    expect(getItemStats(assignment).items[0].missedTenths).toBe(400);
+  });
+
   it("filters the board to the papers that missed a question, with their answers", async () => {
     const { wrong, blank } = await classWithMisses();
     const board = getBoardView(assignment, "all", items[0].id);
@@ -927,12 +792,71 @@ describe("question stats", () => {
     const lines = csv.slice(1).trimEnd().split("\r\n");
     expect(lines[0]).toBe([
       "Question", "Part of", "Prompt", "Points", "Papers judged", "Correct", "Partly right", "Wrong", "Blank", "Unreadable",
-      "% correct", "% missed", "Average points earned", "Average % earned", "Many missed",
+      "% correct", "% missed", "Average points earned", "Average % earned", "Most students got it wrong",
     ].map((cell) => `"${cell}"`).join(","));
     expect(lines).toHaveLength(4);
     // The assignment is graded on completion: the wrong answers still earn their points, but count as missed.
     expect(lines[1]).toMatch(/^"1","",".*","1","5","2","0","2","1","0","40%","60%","0.8","80%","yes"$/);
     expect(lines[2]).toMatch(/^"2a","2",".*","2","5","5","0","0","0","0","100%","0%","2","100%",""$/);
+  });
+});
+
+describe("getStrugglingQuestions", () => {
+  /** Uploads and grades one paper in `a`, item 1 answered with `q1` and every other item right. */
+  async function paperIn(a: Assignment, name: string, q1: "correct" | "incorrect"): Promise<void> {
+    clock += 60_000;
+    await ingestTeacherUpload(a, [{ filename: "p.pdf", bytes: await makePdf(1, { label: `${a.id}-${name}` }) }]);
+    await drainQueue(answeringGrader((refs) => makeGradingOutput(refs, {
+      student: { name },
+      items: refs.map((ref) => (ref === "Q1" ? makeOutputItem(ref, { correctness: q1 }) : makeOutputItem(ref))),
+    })));
+  }
+
+  /** Five graded papers, the first `wrong` of them wrong on item 1. */
+  async function classIn(a: Assignment, wrong: number, names = ["Ana Diaz", "Ben Cho", "Cal Eze", "Dee Fox", "Eve Gold"]) {
+    for (const [i, name] of names.entries()) await paperIn(a, name, i < wrong ? "incorrect" : "correct");
+  }
+
+  it("lists every question most of a class missed, across the teacher's assignments, most missed first", async () => {
+    await classIn(assignment, 3);
+    const quiz = updateAssignmentRow(seedAssignment(teacher.id, { title: "Fractions quiz" }).id, { kind: "quiz" });
+    const [quizQ1] = seedApprovedKey(quiz.id, [{ label: "1", prompt: "Simplify 6/8." }, { label: "2" }]);
+    await classIn(quiz, 4);
+    // Another assignment where a minority missed item 1; one with too few papers; another teacher's.
+    const fine = seedAssignment(teacher.id, { title: "Fine" });
+    seedApprovedKey(fine.id, [{ label: "1" }]);
+    await classIn(fine, 2);
+    const few = seedAssignment(teacher.id, { title: "Few" });
+    seedApprovedKey(few.id, [{ label: "1" }]);
+    await classIn(few, 4, ["Ana Diaz", "Ben Cho", "Cal Eze", "Dee Fox"]);
+    const other = seedAssignment(seedTeacher().id, { title: "Someone else's" });
+    seedApprovedKey(other.id, [{ label: "1" }]);
+    await classIn(other, 5);
+
+    expect(getStrugglingQuestions(teacher)).toEqual([
+      {
+        assignmentId: quiz.id, assignmentTitle: "Fractions quiz", kind: "quiz", itemId: quizQ1.id, label: "1", prompt: "Simplify 6/8.",
+        missedTenths: 800, missedPapers: 4, judged: 5,
+      },
+      {
+        assignmentId: assignment.id, assignmentTitle: "Unit 4: Ratios & Rates!", kind: "homework", itemId: items[0].id, label: "1",
+        prompt: "", missedTenths: 600, missedPapers: 3, judged: 5,
+      },
+    ]);
+  });
+
+  it("is empty until a question is missed by most of a class", async () => {
+    expect(getStrugglingQuestions(teacher)).toEqual([]);
+    await classIn(assignment, 2);
+    expect(getStrugglingQuestions(teacher)).toEqual([]);
+  });
+
+  it("follows the teacher's corrections", async () => {
+    await classIn(assignment, 3);
+    expect(getStrugglingQuestions(teacher)).toHaveLength(1);
+    const [missed] = getBoardView(assignment, "all", items[0].id).groups.flatMap((group) => group.rows);
+    setItemOverride(missed.submissionId, items[0].id, { overrideCenti: items[0].pointsCenti });
+    expect(getStrugglingQuestions(teacher)).toEqual([]);
   });
 });
 

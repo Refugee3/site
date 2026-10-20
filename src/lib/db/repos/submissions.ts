@@ -216,11 +216,6 @@ export function getSubmission(id: string): Submission | null {
   return row ? submissionFromRow(row) : null;
 }
 
-export function getSubmissionByReceipt(token: string): Submission | null {
-  const row = one<SubmissionRow>("SELECT * FROM submissions WHERE receipt_token = ?", token);
-  return row ? submissionFromRow(row) : null;
-}
-
 export function getSubmissionForTeacher(id: string, teacherId: string): { submission: Submission; assignment: Assignment } | null {
   const row = one<SubmissionRow>(
     `SELECT s.* FROM submissions s JOIN assignments a ON a.id = s.assignment_id

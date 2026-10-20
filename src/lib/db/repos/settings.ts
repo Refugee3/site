@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import * as z from "zod";
 import { DEFAULT_AI_MODEL, isAiModel } from "@/lib/ai-models";
 import { now } from "@/lib/clock";
-import { one, run, toBit } from "@/lib/db/sql";
+import { one, run } from "@/lib/db/sql";
 import { truncateChars } from "@/lib/grading/text";
 import type { AiModel, GradingEngineChoice, HostedAgentRole } from "@/lib/types";
 
-export interface AppSettings { studentsCanUpload: boolean; apiKeyCiphertext: string | null; apiKeyMasked: string | null;
+export interface AppSettings { apiKeyCiphertext: string | null; apiKeyMasked: string | null;
   apiKeyCheck: "verified" | "unverified" | null; apiKeySetBy: string | null; apiKeySetAt: number | null; updatedAt: number;
   gradingEngine: GradingEngineChoice | null; aiModel: AiModel }
 
@@ -26,6 +26,7 @@ export interface HostedAgentState {
 
 interface AppSettingsRow {
   id: 1;
+  /** Unused: the app is for teachers only (the column stays from migration 3). */
   students_can_upload: 0 | 1;
   api_key_ciphertext: string | null;
   api_key_masked: string | null;
@@ -62,7 +63,6 @@ function settingsRow(): AppSettingsRow {
 export function getAppSettings(): AppSettings {
   const row = settingsRow();
   return {
-    studentsCanUpload: row.students_can_upload === 1,
     apiKeyCiphertext: row.api_key_ciphertext,
     apiKeyMasked: row.api_key_masked,
     apiKeyCheck: row.api_key_check,
@@ -73,10 +73,6 @@ export function getAppSettings(): AppSettings {
     // The column's CHECK allows only the known models; anything else (never expected) reads as the default.
     aiModel: isAiModel(row.ai_model) ? row.ai_model : DEFAULT_AI_MODEL,
   };
-}
-
-export function setStudentsCanUpload(on: boolean): void {
-  run("UPDATE app_settings SET students_can_upload = ?, updated_at = ? WHERE id = 1", toBit(on), now());
 }
 
 export function setStoredApiKey(k: { ciphertext: string; masked: string; check: "verified" | "unverified"; setBy: string }): void {

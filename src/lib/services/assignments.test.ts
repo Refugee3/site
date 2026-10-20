@@ -5,17 +5,15 @@ import { setClockForTests } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { getKey } from "@/lib/db/repos/keys";
-import { getSubmission, getSubmissionByReceipt } from "@/lib/db/repos/submissions";
+import { getSubmission } from "@/lib/db/repos/submissions";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue } from "@/lib/jobs/test-utils";
 import {
-  AssignmentFormSchema, createAssignment, defaultSectionsText, deleteAssignment, rotateShareCode, setAssignmentStatus,
-  setFeedbackReleased, updateAssignment,
+  AssignmentFormSchema, createAssignment, defaultSectionsText, deleteAssignment, updateAssignment,
 } from "@/lib/services/assignments";
-import { setStudentUploads } from "@/lib/services/settings";
-import { ingestStudentUpload, updateIdentity } from "@/lib/services/submissions";
+import { ingestTeacherUpload, updateIdentity } from "@/lib/services/submissions";
 import type { Assignment, AssignmentFormInput, Submission, Teacher } from "@/lib/types";
-import { enableStudentUploads, makePdf, seedApprovedKey, seedTeacher, useTestDb } from "@/test/helpers";
+import { makePdf, seedApprovedKey, seedTeacher, useTestDb } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
 let teacher: Teacher;
@@ -23,7 +21,6 @@ let teacher: Teacher;
 beforeEach(() => {
   setClockForTests(() => T0);
   useTestDb();
-  enableStudentUploads();
   teacher = seedTeacher();
 });
 
@@ -34,17 +31,16 @@ function form(o: Partial<AssignmentFormInput> = {}): AssignmentFormInput {
   };
 }
 
-/** An open assignment with an approved two-item key and one graded paper (both answers attempted, item 1 wrong). */
+/** An assignment with an approved two-item key and one graded paper (both answers attempted, item 1 wrong). */
 async function withGradedPaper(o: Partial<AssignmentFormInput> = {}): Promise<{ assignment: Assignment; paper: Submission }> {
   const assignment = createAssignment(teacher.id, form(o));
   seedApprovedKey(assignment.id, [{ label: "1" }, { label: "2", pointsCenti: 200 }]);
-  const open = setAssignmentStatus(assignment, "open");
-  const { receiptUrl } = await ingestStudentUpload(open.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
+  const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
   await drainQueue(answeringGrader((refs) => makeGradingOutput(refs, {
     student: { section_raw: "P3", section_match: null },
     items: [makeOutputItem(refs[0], { correctness: "incorrect" }), makeOutputItem(refs[1])],
   })));
-  return { assignment: open, paper: getSubmissionByReceipt(receiptUrl.slice("/r/".length))! };
+  return { assignment, paper: getSubmission(submissionId)! };
 }
 
 describe("AssignmentFormSchema", () => {
@@ -102,7 +98,7 @@ describe("updateAssignment", () => {
     expect(updated.writeNotes).toBe(true);
     expect(getSubmission(paper.id)).toEqual(paper);
 
-    await ingestStudentUpload(updated.shareCode, [{ filename: "p.pdf", bytes: await makePdf(2) }]);
+    await ingestTeacherUpload(updated, [{ filename: "p.pdf", bytes: await makePdf(2) }]);
     await drainQueue(answeringGrader((refs, input) => {
       seen.push(input.writeNotes);
       return makeGradingOutput(refs);
@@ -180,49 +176,7 @@ describe("updateAssignment", () => {
   });
 });
 
-describe("lifecycle", () => {
-  it("opens only with an approved key, and closes only once opened", () => {
-    const a = createAssignment(teacher.id, form());
-    expect(() => setAssignmentStatus(a, "open")).toThrow(expect.objectContaining({ code: "key_not_ready" }));
-    expect(() => setAssignmentStatus(a, "closed")).toThrow(expect.objectContaining({ code: "invalid_state" }));
-
-    seedApprovedKey(a.id, [{}]);
-    expect(setAssignmentStatus(a, "open").status).toBe("open");
-    expect(setAssignmentStatus(a, "closed").status).toBe("closed");
-    expect(setAssignmentStatus(a, "open").status).toBe("open");
-  });
-
-  it("opens only while student uploads are turned on; closing still works", () => {
-    const a = createAssignment(teacher.id, form());
-    seedApprovedKey(a.id, [{}]);
-    setStudentUploads(false);
-
-    expect(() => setAssignmentStatus(a, "open")).toThrow(expect.objectContaining({
-      code: "invalid_state", message: "Student submissions are turned off. Turn them on in Settings to open an assignment.",
-    }));
-    expect(getAssignment(a.id)!.status).toBe("draft");
-
-    setStudentUploads(true);
-    setAssignmentStatus(a, "open");
-    setStudentUploads(false);
-    expect(setAssignmentStatus(a, "closed").status).toBe("closed");
-  });
-
-  it("releases feedback and can take it back", () => {
-    const a = createAssignment(teacher.id, form());
-    expect(setFeedbackReleased(a, true).feedbackReleasedAt).toBe(T0);
-    setClockForTests(() => T0 + 1000);
-    expect(setFeedbackReleased(a, true).feedbackReleasedAt).toBe(T0);
-    expect(setFeedbackReleased(a, false).feedbackReleasedAt).toBeNull();
-  });
-
-  it("rotates the share code", () => {
-    const a = createAssignment(teacher.id, form());
-    const rotated = rotateShareCode(a);
-    expect(rotated.shareCode).not.toBe(a.shareCode);
-    expect(rotated.shareCode).toHaveLength(6);
-  });
-
+describe("deleteAssignment", () => {
   it("deletes the assignment with its rows and files", async () => {
     const { assignment, paper } = await withGradedPaper();
     const dir = path.join(getConfig().dataDir, "files", assignment.id);

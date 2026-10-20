@@ -31,7 +31,7 @@ describe("shouldGuardClick", () => {
     expect(shouldGuardClick(click({ altKey: true }), HERE)).toBe(false);
     expect(shouldGuardClick(click({ button: 1 }), HERE)).toBe(false);
     expect(shouldGuardClick(click({ target: "_blank" }), HERE)).toBe(false);
-    expect(shouldGuardClick(click({ target: "receipt" }), HERE)).toBe(false);
+    expect(shouldGuardClick(click({ target: "preview" }), HERE)).toBe(false);
   });
 
   it("lets downloads, in-page jumps and already-handled clicks through", () => {

@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { saveKeyAction } from "@/actions/key";
 import { Alert } from "@/components/ui/alert";
@@ -15,8 +14,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { moveItem } from "@/lib/client/upload-files";
 import { ANSWER_TYPE_LABEL, formatPoints, uploadLabel } from "@/lib/format";
-import { ANSWER_TYPES, type AnswerType, type AssignmentKind, type AssignmentStatus, type KeyItem } from "@/lib/types";
-import { boardHref } from "./board-helpers";
+import { ANSWER_TYPES, type AnswerType, type AssignmentKind, type KeyItem } from "@/lib/types";
 import {
   buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
   rowErrors, totalPointsCenti, type DraftRow, type FieldErrors, type RowField,
@@ -27,7 +25,6 @@ import { useLeaveGuard } from "./use-leave-guard";
 
 export interface KeyEditorProps {
   assignmentId: string;
-  assignmentStatus: AssignmentStatus;
   items: KeyItem[];
   teacherNotes: string;
   /** The stored key's `updatedAt`: when it changes (after a save), the editor reloads from `items`. */
@@ -35,8 +32,6 @@ export interface KeyEditorProps {
   approved: boolean;
   /** Papers already graded or awaiting review with the current key. */
   gradedCount: number;
-  /** Off: no "Save & open"; once approved, the next step is uploading the papers. */
-  studentsCanUpload: boolean;
   kind: AssignmentKind;
 }
 
@@ -49,8 +44,7 @@ function initialRows(items: KeyItem[]): DraftRow[] {
 
 /** The answer-key table: one card per gradable item, with the save bar pinned to the bottom of the screen. */
 export function KeyEditor(props: KeyEditorProps) {
-  const { assignmentId, assignmentStatus, items, teacherNotes, version, approved, gradedCount, studentsCanUpload, kind } = props;
-  const router = useRouter();
+  const { assignmentId, items, teacherNotes, version, approved, gradedCount, kind } = props;
   const runner = useActionRunner();
   const [rows, setRows] = useState(() => initialRows(items));
   const [notes, setNotes] = useState(teacherNotes);
@@ -122,7 +116,7 @@ export function KeyEditor(props: KeyEditorProps) {
     setRows((current) => current.map((row) => ({ ...row, pointsText })));
   }
 
-  function save(goToSubmissions: boolean) {
+  function save() {
     setSavedMessage(null);
     const built = buildSaveKeyInput(rows, notes, acknowledged);
     if (!built.ok) {
@@ -130,14 +124,9 @@ export function KeyEditor(props: KeyEditorProps) {
       return;
     }
     setFieldErrors({});
-    // Opening is part of "Save & open" only for a draft; a closed assignment stays closed.
-    const open = goToSubmissions && assignmentStatus === "draft";
     runner.run(
-      () => saveKeyAction(assignmentId, built.input, { open }),
-      (result) => {
-        if (goToSubmissions) router.push(boardHref(assignmentId, "all"));
-        else setSavedMessage(savedText(result.data?.staleCount ?? 0));
-      },
+      () => saveKeyAction(assignmentId, built.input),
+      (result) => setSavedMessage(savedText(result.data?.staleCount ?? 0)),
       (failure) => setFieldErrors(failure.fieldErrors ?? {}),
     );
   }
@@ -211,21 +200,16 @@ export function KeyEditor(props: KeyEditorProps) {
           </label>
         )}
         <div className="flex flex-wrap items-center gap-3">
-          <Button disabled={runner.pending} onClick={() => save(false)}>
+          <Button disabled={runner.pending} onClick={save}>
             {runner.pending && <Spinner className="size-4" />}
-            {studentsCanUpload ? "Save" : "Save answer key"}
+            Save and approve the key
           </Button>
-          {studentsCanUpload && (
-            <Button variant="secondary" disabled={runner.pending} onClick={() => save(true)}>
-              {assignmentStatus === "draft" ? "Save & open submissions" : "Save & view submissions"}
-            </Button>
-          )}
           <p role="status" className="text-sm text-muted">
             {saveStatus({ pending: runner.pending, dirty, approved, savedMessage })}
           </p>
-          {!studentsCanUpload && approved && !dirty && !runner.pending && (
+          {approved && !dirty && !runner.pending && (
             <LinkButton href={`/teacher/assignments/${assignmentId}/upload`} variant="secondary" size="sm">
-              {uploadLabel(kind)} →
+              Next: {uploadLabel(kind).toLowerCase()} →
             </LinkButton>
           )}
         </div>
@@ -237,7 +221,7 @@ export function KeyEditor(props: KeyEditorProps) {
 function savedText(staleCount: number): string {
   if (staleCount === 0) return "Saved. The key is approved.";
   const papers = plural(staleCount, "paper");
-  return `Saved. ${papers} ${staleCount === 1 ? "was" : "were"} graded with an earlier version of the key — regrade them from Submissions.`;
+  return `Saved. ${papers} ${staleCount === 1 ? "was" : "were"} graded with an earlier version of the key — regrade them from the Results tab.`;
 }
 
 function saveStatus(s: { pending: boolean; dirty: boolean; approved: boolean; savedMessage: string | null }): string {

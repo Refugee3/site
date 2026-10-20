@@ -1,8 +1,7 @@
 import { currentGraderEngine, getHostedAgentStatus } from "@/lib/ai";
 import { getConfig } from "@/lib/config";
 import {
-  countOpenAssignments, getAssignment, getAssignmentByShareCode, getAssignmentUsage, listAssignmentsForTeacher, listSections,
-  type ModelUsage,
+  getAssignmentUsage, listAssignmentsForTeacher, listSections, type ModelUsage,
 } from "@/lib/db/repos/assignments";
 import { queuedJobsAhead } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
@@ -11,7 +10,7 @@ import { countPendingScans, listScans } from "@/lib/db/repos/scans";
 import { getAppSettings, getGradingEngine } from "@/lib/db/repos/settings";
 import { onePassAvailable } from "@/lib/services/scans";
 import {
-  countByStatus, countSubmissions, getSubmissionByReceipt, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
+  countByStatus, countSubmissions, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
   listSubmissions,
 } from "@/lib/db/repos/submissions";
 import { getGradingPreferences, getTeacher } from "@/lib/db/repos/teachers";
@@ -19,7 +18,9 @@ import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
 import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
 import { toCsv } from "@/lib/grading/csv";
-import { commonAnswers, computeItemStats, isCountedStatus, paperOutcomes, type ItemStatsSummary } from "@/lib/grading/item-stats";
+import {
+  commonAnswers, computeItemStats, isCountedStatus, MISS_HIGHLIGHT_MIN_PAPERS, paperOutcomes, type ItemStatsSummary,
+} from "@/lib/grading/item-stats";
 import { computeScore, percentTenths } from "@/lib/grading/scoring";
 import { sectionsToText } from "@/lib/grading/sections";
 import { keyPageCountHint } from "@/lib/grading/split";
@@ -27,14 +28,12 @@ import { getWorkerStatus } from "@/lib/jobs/queue";
 import { decryptSecret } from "@/lib/secrets";
 import { isGuidanceStale, loadGuidance } from "@/lib/services/guidance";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
-import { studentUploadsEnabled } from "@/lib/services/settings";
 import { getGradingCounts, getGradingProgress, getSplitProgress, typicalExtractionMs, typicalPaperMs } from "@/lib/services/progress";
-import { currentOnly, receiptUrl } from "@/lib/services/submissions";
+import { currentOnly } from "@/lib/services/submissions";
 import type {
-  AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, FlagCode, KeyEditorView, KeyItem,
-  LessonsView, LessonView, ReceiptNotice, ReceiptPhase, ReceiptView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult,
-  SettingsView, StatusCounts, StudentUploadView, Submission, SubmissionItem, SubmissionStatus, Teacher, TeacherSettingsView,
-  UploadPageView,
+  AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, KeyEditorView, KeyItem, LessonsView,
+  LessonView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult, SettingsView, StatusCounts, Submission, SubmissionItem,
+  StrugglingQuestion, SubmissionStatus, Teacher, TeacherSettingsView, UploadPageView,
 } from "@/lib/types";
 
 const MIB = 1_048_576;
@@ -45,20 +44,16 @@ const UNNAMED = "No name";
 
 export function getDashboardView(t: Teacher): DashboardView {
   return {
-    studentsCanUpload: studentUploadsEnabled(),
     assignments: listAssignmentsForTeacher(t.id).map((a) => {
       const { key, approved } = loadKeyState(a.id);
       return {
         id: a.id,
         title: a.title,
         kind: a.kind,
-        status: a.status,
-        shareCode: a.shareCode,
         keyStatus: key.status,
         keyApproved: approved,
         counts: currentCounts(a.id),
         scans: countPendingScans(a.id),
-        released: a.feedbackReleasedAt !== null,
         createdAt: a.createdAt,
         progress: getGradingCounts(a.id),
       };
@@ -66,19 +61,52 @@ export function getDashboardView(t: Teacher): DashboardView {
   };
 }
 
-export function getAssignmentHeader(a: Assignment, origin: string): AssignmentHeader {
+/**
+ * "Where students are struggling": every question, across all of the teacher's assignments, that most of the class
+ * missed (the same rule as each assignment's "Questions most students got wrong"), most missed first. Computed from the
+ * stored judgments without AI calls, one pass per assignment; an assignment with too few graded papers to highlight
+ * anything is skipped after reading its papers alone.
+ */
+export function getStrugglingQuestions(t: Teacher): StrugglingQuestion[] {
+  const found: Array<{ question: StrugglingQuestion; createdAt: number; position: number }> = [];
+  for (const a of listAssignmentsForTeacher(t.id)) {
+    const submissions = listSubmissions(a.id);
+    if (submissions.filter((s) => isCountedStatus(s.status)).length < MISS_HIGHLIGHT_MIN_PAPERS) continue;
+    const stats = computeItemStats(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
+    for (const s of stats.highlighted) {
+      found.push({
+        question: {
+          assignmentId: a.id,
+          assignmentTitle: a.title,
+          kind: a.kind,
+          itemId: s.item.id,
+          label: s.item.label,
+          prompt: s.item.prompt,
+          missedTenths: s.missedTenths ?? 0,
+          missedPapers: s.missedPapers,
+          judged: s.judged,
+        },
+        createdAt: a.createdAt,
+        position: s.item.position,
+      });
+    }
+  }
+  // Most missed first; ties: more students, then the newest assignment, then key order.
+  found.sort((x, y) => y.question.missedTenths - x.question.missedTenths || y.question.missedPapers - x.question.missedPapers
+    || y.createdAt - x.createdAt || x.position - y.position);
+  return found.map((entry) => entry.question);
+}
+
+export function getAssignmentHeader(a: Assignment): AssignmentHeader {
   const { key, items, approved } = loadKeyState(a.id);
-  const studentsCanUpload = studentUploadsEnabled();
   return {
     assignment: a,
-    shareUrl: `${origin}/s/${a.shareCode}`,
     keyStatus: key.status,
     keyApproved: approved,
     itemCount: items.length,
     totalPointsCenti: items.reduce((sum, item) => sum + item.pointsCenti, 0),
     counts: currentCounts(a.id),
-    canOpen: approved && a.status !== "open" && studentsCanUpload,
-    studentsCanUpload,
+    scans: countPendingScans(a.id),
   };
 }
 
@@ -92,8 +120,7 @@ function currentCounts(assignmentId: string): StatusCounts {
 
 /** `missedItemId` (`?missed=`): show only the current graded papers that missed that key item (ignored if unknown). */
 export function getBoardView(a: Assignment, filter: BoardFilter, missedItemId: string | null = null): BoardView {
-  const { revision } = requireKey(a.id);
-  const studentsCanUpload = studentUploadsEnabled();
+  const { key: { revision }, approved: keyApproved } = loadKeyState(a.id);
   const submissions = listSubmissions(a.id);
   const board = organizeBoard(submissions, listSections(a.id));
   const current = new Set(boardOrderIds(board));
@@ -126,8 +153,7 @@ export function getBoardView(a: Assignment, filter: BoardFilter, missedItemId: s
     guidanceStaleCount: listGuidanceStaleIds(a.id, revision, loadGuidance(a).fingerprint).filter((id) => current.has(id)).length,
     // Polls while anything is being graded, including a regraded earlier attempt, or a scan is being split.
     active: submissions.some((s) => s.status === "queued" || s.status === "grading") || scans.splitting > 0,
-    open: studentsCanUpload && a.status === "open",
-    studentsCanUpload,
+    keyApproved,
     progress: getGradingProgress(a.id),
   };
 }
@@ -158,12 +184,11 @@ export function getItemStats(a: Assignment): ItemStatsSummary {
 }
 
 /** The Questions tab: the stats, and whether papers are still being graded (the page refreshes while they are). */
-export function getQuestionsView(a: Assignment): { stats: ItemStatsSummary; active: boolean; open: boolean } {
+export function getQuestionsView(a: Assignment): { stats: ItemStatsSummary; active: boolean } {
   const submissions = listSubmissions(a.id);
   return {
     stats: computeItemStats(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a),
     active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
-    open: studentUploadsEnabled() && a.status === "open",
   };
 }
 
@@ -173,7 +198,6 @@ function boardRow({ current: s, earlier }: BoardGroup["rows"][number], keyRevisi
     displayName: s.studentName ?? UNNAMED,
     status: s.status,
     statusNote: s.statusNote,
-    source: s.source,
     ...cachedScore(s),
     flags: s.flags,
     stale: isStale(s, keyRevision),
@@ -199,14 +223,13 @@ export function getKeyEditorView(a: Assignment): KeyEditorView {
     keyPdfUrl: key.sourcePdfPath ? `/api/teacher/assignments/${a.id}/key/pdf` : null,
     gradedCount: counts.graded + counts.needs_review,
     locked: isKeyLocked(a.id),
-    studentsCanUpload: studentUploadsEnabled(),
     extraction: key.status === "processing"
       ? { extractionStartedAt: key.processingStartedAt ?? key.updatedAt, typicalExtractionMs: typicalExtractionMs() }
       : null,
   };
 }
 
-export function getReviewView(s: Submission, a: Assignment, origin: string): ReviewView {
+export function getReviewView(s: Submission, a: Assignment): ReviewView {
   const sections = listSections(a.id);
   const { key, items } = loadKeyState(a.id);
   const results = listItems(s.id);
@@ -242,13 +265,11 @@ export function getReviewView(s: Submission, a: Assignment, origin: string): Rev
     stale: isStale(s, key.revision),
     guidanceStale: isGuidanceStale(s, key.revision, guidance.fingerprint, results),
     pdfUrl: `/api/teacher/submissions/${s.id}/pdf`,
-    receiptUrl: receiptUrl(s.receiptToken, origin),
     prevId: index > 0 ? rows[index - 1].current.id : null,
     nextId: index >= 0 && index < rows.length - 1 ? rows[index + 1].current.id : null,
     nextNeedsReviewId: nextNeedsReview(groups, s.id),
     // Attempts are newest first, so the ones after this paper are older.
     earlierAttempts: attempts.slice(attempts.findIndex((attempt) => attempt.id === s.id) + 1).map(attemptSummary),
-    released: a.feedbackReleasedAt !== null,
     gradingEngine: currentGraderEngine(),
     queue: s.status === "queued" ? queuePosition(s.id) : null,
     gradingTiming: s.status === "grading"
@@ -303,7 +324,6 @@ export function getUploadPageView(a: Assignment): UploadPageView {
     maxPages: cfg.maxPages,
     maxScanMb: cfg.maxScanBytes / MIB,
     maxScanPages: cfg.maxScanPages,
-    studentsCanUpload: studentUploadsEnabled(),
     onePassAvailable: onePassAvailable(),
   };
 }
@@ -376,8 +396,6 @@ export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
     },
     aiMode: cfg.aiMode,
     aiModel: settings.aiModel,
-    studentsCanUpload: settings.studentsCanUpload,
-    openAssignmentCount: countOpenAssignments(),
     gradingPreferences: getGradingPreferences(t.id),
     worker: getWorkerStatus(),
     grader: { engine: getGradingEngine(), agent: getHostedAgentStatus() },
@@ -483,120 +501,29 @@ export function estimateCostUsd(u: AiUsage, model: string, ttl: "5m" | "1h"): nu
 }
 
 // ---------------------------------------------------------------------------------------------
-// Student pages (authorized by share code or receipt token only)
-
-export function getStudentUploadView(code: string): StudentUploadView | null {
-  const a = getAssignmentByShareCode(code);
-  if (!a) return null;
-  const cfg = getConfig();
-  return {
-    code: a.shareCode,
-    title: a.title,
-    instructions: a.instructions,
-    teacherName: a.teacherName,
-    status: a.status,
-    accepting: studentUploadsEnabled() && a.status === "open",
-    maxUploadMb: cfg.maxUploadBytes / MIB,
-    maxPages: cfg.maxPages,
-    maxFiles: cfg.maxUploadFiles,
-  };
-}
-
-const RECEIPT_NOTICES: Array<[FlagCode, ReceiptNotice]> = [
-  ["name_missing", "no_name"],
-  ["wrong_assignment", "wrong_assignment"],
-  ["blank_submission", "blank"],
-  ["pages_missing", "pages_missing"],
-];
-
-/**
- * What a student sees on their receipt: results only once released, and never for a paper
- * under review. Never the assignment's current share code: a rotated code must not leak through old receipts.
- */
-export function getReceiptView(token: string): ReceiptView | null {
-  const s = getSubmissionByReceipt(token);
-  const a = s && getAssignment(s.assignmentId);
-  if (!s || !a) return null;
-  const phase = receiptPhase(s, a);
-  // Once the teacher has reviewed and accepted the paper, its warnings no longer ask the student to resubmit.
-  const showNotices = phase === "checked" && s.reviewedAt === null;
-  return {
-    assignmentTitle: a.title,
-    submittedAt: s.createdAt,
-    pageCount: s.pageCount,
-    phase,
-    pdfUrl: `/api/r/${token}/pdf`,
-    detectedName: s.studentName,
-    detectedSection: listSections(a.id).find((section) => section.id === s.sectionId)?.label ?? s.aiSectionRaw,
-    notices: showNotices ? RECEIPT_NOTICES.filter(([flag]) => s.flags.includes(flag)).map(([, notice]) => notice) : [],
-    result: phase === "released" ? releasedResult(s, a) : null,
-    canResubmit: studentUploadsEnabled(),
-  };
-}
-
-function receiptPhase(s: Submission, a: Assignment): ReceiptPhase {
-  if (s.status === "queued" || s.status === "grading") return "processing";
-  if (s.status === "failed") return "problem";
-  if (a.feedbackReleasedAt !== null && s.status === "graded") return "released";
-  return "checked";
-}
-
-function releasedResult(s: Submission, a: Assignment): NonNullable<ReceiptView["result"]> {
-  const items = listKeyItems(a.id);
-  const results = listItems(s.id);
-  const score = scoreOf(s, a, items, results);
-  const resultByItem = new Map(results.map((result) => [result.itemId, result]));
-
-  const groups: NonNullable<ReceiptView["result"]>["groups"] = [];
-  items.forEach((item, i) => {
-    const result = resultByItem.get(item.id);
-    const entry = {
-      label: item.label,
-      earnedCenti: score.items[i].earnedCenti,
-      maxCenti: score.items[i].maxCenti,
-      whatStudentDid: result?.overrideWhatStudentDid ?? result?.judgment?.whatStudentDid ?? "",
-      feedback: result?.overrideFeedback ?? result?.judgment?.feedback ?? "",
-    };
-    // Consecutive parts of one question share a group; standalone items share the "" group.
-    const last = groups.at(-1);
-    if (last && last.groupLabel === item.groupLabel) last.items.push(entry);
-    else groups.push({ groupLabel: item.groupLabel, items: [entry] });
-  });
-
-  return {
-    earnedCenti: score.earnedCenti,
-    maxCenti: score.maxCenti,
-    percentTenths: score.percentTenths,
-    overallFeedback: s.overallFeedback,
-    groups,
-  };
-}
-
-// ---------------------------------------------------------------------------------------------
 // CSV export
 
 const CSV_COLUMNS = [
   "Section", "Student name", "Status", "Points earned", "Points possible", "Percent", "Completion %", "Accuracy %",
-  "Reviewed", "Flags", "Overall feedback", "Submitted at", "Earlier attempts", "Receipt link",
+  "Reviewed", "Flags", "Overall feedback", "Submitted at", "Earlier attempts",
 ];
 
 /**
  * Current papers in board order, scored from the live key, judgments and overrides (like the review
  * page). "Earlier attempts" counts the papers folded under each row, so a merge is visible in the export.
  */
-export function buildGradesCsv(a: Assignment, origin: string): { filename: string; csv: string } {
+export function buildGradesCsv(a: Assignment): { filename: string; csv: string } {
   const items = listKeyItems(a.id);
   const resultsBySubmission = listItemsForAssignment(a.id);
   const header = [...CSV_COLUMNS, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
   const rows = organizeBoard(listSubmissions(a.id), listSections(a.id)).flatMap((group) =>
     group.rows.map(({ current, earlier }) =>
-      csvRow(group.label, current, earlier.length, a, items, resultsBySubmission.get(current.id) ?? [], origin)));
+      csvRow(group.label, current, earlier.length, a, items, resultsBySubmission.get(current.id) ?? [])));
   return { filename: `${slugify(a.title)}-grades.csv`, csv: toCsv([header, ...rows]) };
 }
 
 function csvRow(
   sectionLabel: string, s: Submission, earlierAttempts: number, a: Assignment, items: KeyItem[], results: SubmissionItem[],
-  origin: string,
 ): Array<string | null> {
   const identity = [sectionLabel, s.studentName ?? "", STATUS_LABEL[s.status]];
   const trailing = [
@@ -605,7 +532,6 @@ function csvRow(
     s.overallFeedback,
     new Date(s.createdAt).toISOString(),
     earlierAttempts > 0 ? String(earlierAttempts) : "",
-    receiptUrl(s.receiptToken, origin),
   ];
   if (!hasGrade(s)) {
     // Not graded yet (or grading failed): leave the score columns empty rather than report a 0.
@@ -626,7 +552,7 @@ function csvRow(
 
 const QUESTION_CSV_COLUMNS = [
   "Question", "Part of", "Prompt", "Points", "Papers judged", "Correct", "Partly right", "Wrong", "Blank", "Unreadable",
-  "% correct", "% missed", "Average points earned", "Average % earned", "Many missed",
+  "% correct", "% missed", "Average points earned", "Average % earned", "Most students got it wrong",
 ];
 
 /**

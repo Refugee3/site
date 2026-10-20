@@ -67,7 +67,7 @@ export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, fail
         )}
         {hasPapers && (
           <LinkButton href={`/api/teacher/assignments/${assignmentId}/export`} variant="secondary" size="sm" download>
-            Export CSV
+            Download grades (CSV)
           </LinkButton>
         )}
         {hasPapers && (

@@ -9,15 +9,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { KIND_LABEL } from "@/lib/format";
 import { ASSIGNMENT_KINDS, type ActionResult, type AssignmentFormInput, type GradingMode } from "@/lib/types";
-import { instructionsField } from "./assignment-form-text";
 import { useSyncedState } from "./use-synced-state";
 
 export interface AssignmentFormProps {
   mode: "create" | "edit";
   action: (prev: ActionResult | null, fd: FormData) => Promise<ActionResult>;
   defaults: AssignmentFormInput;
-  /** Off: there is no student upload page to show the instructions on. */
-  studentsCanUpload: boolean;
 }
 
 const GRADING_MODE_OPTIONS: Array<{ value: GradingMode; label: string; description: string }> = [
@@ -39,8 +36,9 @@ const GRADING_MODE_OPTIONS: Array<{ value: GradingMode; label: string; descripti
 ];
 
 /** Notes are most of what the AI writes, and written tokens are the expensive ones (see README → Cost). */
-const WRITE_NOTES_HINT = "The AI explains what each student did and gives feedback on every question. Turning this on makes each paper "
-  + "cost roughly 1.5 times as much, more for assignments with many questions. Off, you can still write your own notes.";
+const WRITE_NOTES_HINT = "The AI writes a short note on what each student did and feedback on every question, which you see when "
+  + "you check a paper. Turning this on makes each paper cost roughly 1.5 times as much, more for assignments with many questions. "
+  + "Off, the grades are the same and you can still write your own notes.";
 
 const SECTIONS_PLACEHOLDER = "Period 1 | P1, 1st\nPeriod 3 | P3, 3rd";
 
@@ -54,7 +52,7 @@ function toDraft(input: AssignmentFormInput): FormDraft {
 const sameDraft = (a: FormDraft, b: FormDraft) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Create and settings form. Field names are the AssignmentFormInput keys the actions parse. */
-export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: AssignmentFormProps) {
+export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) {
   const [state, dispatch, pending] = useActionState(action, null);
   // Controlled and submitted without React's automatic form reset, so a rejected save keeps every choice.
   const initial = toDraft(defaults);
@@ -118,9 +116,9 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       </fieldset>
 
       <Field
-        label={instructionsField(studentsCanUpload).label}
+        label="Instructions the students were given (optional)"
         htmlFor="assignment-instructions"
-        hint={instructionsField(studentsCanUpload).hint}
+        hint="The AI grader reads these with each paper."
         error={errors.instructions}
       >
         <Textarea
@@ -150,7 +148,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
             checked={values.writeNotes}
             onChange={(e) => update("writeNotes", e.target.checked)}
           />
-          <span className="font-medium">Write notes for students</span>
+          <span className="font-medium">Write feedback notes</span>
         </label>
         <p id="assignment-write-notes-hint" className="text-sm text-muted">
           {WRITE_NOTES_HINT}
@@ -158,7 +156,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       </div>
 
       <Field
-        label="Sections (optional)"
+        label="Class sections (optional)"
         htmlFor="assignment-sections"
         hint={
           <>
@@ -183,7 +181,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       <Field
         label="Maximum number of papers"
         htmlFor="assignment-max"
-        hint="Uploads stop once this many papers are in. Resubmissions count too."
+        hint="Uploads stop once this many papers are in. Re-uploads of a student's paper count too."
         error={errors.maxSubmissions}
       >
         <Input
@@ -202,7 +200,7 @@ export function AssignmentForm({ mode, action, defaults, studentsCanUpload }: As
       {mode === "edit" && (
         <p className="text-sm text-muted">
           Changing the grading mode or weight rescores every paper right away, and changing sections re-sorts papers
-          into them. Neither uses the AI. Turning notes on or off applies to papers graded from then on.
+          into them. Neither uses the AI. Turning feedback notes on or off applies to papers graded from then on.
         </p>
       )}
 

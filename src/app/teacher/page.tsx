@@ -3,11 +3,12 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { AssignmentCard } from "@/components/teacher/assignment-card";
+import { StrugglingQuestions } from "@/components/teacher/struggling-questions";
 import { cx } from "@/components/ui/cx";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireTeacher } from "@/lib/auth/dal";
-import { getDashboardView } from "@/lib/services/views";
+import { getDashboardView, getStrugglingQuestions } from "@/lib/services/views";
 import type { AssignmentKind } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Assignments" };
@@ -25,8 +26,9 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
   await connection();
   const teacher = await requireTeacher();
   const view = getDashboardView(teacher);
-  const type = (await props.searchParams).type;
+  const { type, struggling } = await props.searchParams;
   const kind: AssignmentKind | null = type === "homework" || type === "quiz" ? type : null;
+  const typeQuery = kind ? `type=${kind}` : "";
   const shown = kind ? view.assignments.filter((a) => a.kind === kind) : view.assignments;
   // Polls for every assignment, shown or not, so switching filters never shows stale cards.
   const busy = view.assignments.some((a) => a.progress !== null || a.scans.splitting > 0 || a.keyStatus === "processing");
@@ -39,6 +41,17 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
           New homework or quiz
         </LinkButton>
       </div>
+
+      {view.assignments.length > 0 && (
+        <StrugglingQuestions
+          questions={getStrugglingQuestions(teacher)}
+          showAll={struggling === "all"}
+          showAllHref={`/teacher?${[typeQuery, "struggling=all"].filter(Boolean).join("&")}`}
+          showTopHref={`/teacher${typeQuery ? `?${typeQuery}` : ""}`}
+        />
+      )}
+
+      {view.assignments.length > 0 && <h2 className="text-xl font-semibold">Your homework and quizzes</h2>}
 
       {view.assignments.length > 0 && (
         <nav aria-label="Filter assignments by type">
@@ -68,11 +81,7 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
       {view.assignments.length === 0 ? (
         <EmptyState
           title="No assignments yet"
-          body={
-            view.studentsCanUpload
-              ? "Create an assignment, add its answer key, then share the link with your students. The AI reads each paper against your key and you review anything it flags."
-              : "Create an assignment, add its answer key, then upload your students' homework. The AI reads each paper against your key and you review anything it flags."
-          }
+          body="Start with a homework or quiz: 1. add its answer key, 2. upload your students' work, 3. review the results. The AI grades each paper against your key and flags anything it isn't sure about for you to check."
           action={<LinkButton href="/teacher/assignments/new">Create your first homework or quiz</LinkButton>}
         />
       ) : shown.length === 0 ? (
@@ -88,7 +97,7 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
         <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {shown.map((assignment) => (
             <li key={assignment.id} className="flex min-w-0 flex-col [&>article]:flex-1">
-              <AssignmentCard assignment={assignment} studentsCanUpload={view.studentsCanUpload} />
+              <AssignmentCard assignment={assignment} />
             </li>
           ))}
         </ul>

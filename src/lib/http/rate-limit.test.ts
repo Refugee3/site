@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import { AppError } from "@/lib/errors";
 import {
-  checkApiKeySave, checkCodeLookup, checkLogin, checkSignup, checkStudentUpload, countCodeLookupMiss, countStudentSubmission, hit,
+  checkApiKeySave, checkLogin, checkSignup, hit,
   resetRateLimitsForTests,
 } from "@/lib/http/rate-limit";
 
@@ -79,81 +79,6 @@ function passesBeforeRefusal(check: () => void, max = 10_000): number {
   }
   return max;
 }
-
-describe("checkCodeLookup and countCodeLookupMiss", () => {
-  it("count only misses: successful lookups from one address never trip the limit", () => {
-    for (let i = 0; i < 500; i++) checkCodeLookup("203.0.113.7");
-    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
-  });
-
-  it("refuse every lookup from an address after 60 misses in a minute, then forget them", () => {
-    for (let i = 0; i < 59; i++) countCodeLookupMiss("203.0.113.7");
-    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
-    countCodeLookupMiss("203.0.113.7");
-    const error = refusalAfter(0, () => checkCodeLookup("203.0.113.7"));
-    expect(error).toMatchObject({ code: "rate_limited", extra: { retryAfterMs: MINUTE } });
-    expect(error?.message).toContain("1 minute.");
-    expect(() => checkCodeLookup("203.0.113.8")).not.toThrow();
-
-    clock += MINUTE;
-    expect(() => checkCodeLookup("203.0.113.7")).not.toThrow();
-  });
-
-  it("put lookups without an IP in one shared bucket", () => {
-    for (let i = 0; i < 60; i++) countCodeLookupMiss(null);
-    expect(() => checkCodeLookup(null)).toThrow(AppError);
-  });
-});
-
-describe("checkStudentUpload and countStudentSubmission", () => {
-  it("allow 120 uploads per address and assignment per 10 minutes (one class behind one NAT)", () => {
-    const error = refusalAfter(120, () => checkStudentUpload("203.0.113.7", "K7M4QX"));
-    expect(error).toMatchObject({ code: "rate_limited", status: 429, extra: { retryAfterMs: 10 * MINUTE } });
-    expect(error?.message).toContain("10 minutes");
-    expect(() => checkStudentUpload("203.0.113.7", "ABCDEF")).not.toThrow();
-    expect(() => checkStudentUpload("203.0.113.8", "K7M4QX")).not.toThrow();
-
-    clock += 10 * MINUTE;
-    expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
-  });
-
-  it("allow 300 uploads per address per 10 minutes over all assignments (several classes behind one NAT)", () => {
-    let n = 0;
-    expect(passesBeforeRefusal(() => checkStudentUpload("203.0.113.7", `CODE${n++ % 5}`))).toBe(300);
-    expect(() => checkStudentUpload("203.0.113.8", "CODE0")).not.toThrow();
-  });
-
-  it("do not charge the shared budgets for uploads that create no submission", () => {
-    let n = 0;
-    for (let i = 0; i < 2000; i++) checkStudentUpload(`ip-${n++}`, "K7M4QX");
-    expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
-  });
-
-  it("allow 300 new submissions per assignment per hour, whatever the addresses, and refuse before reading", () => {
-    for (let i = 0; i < 299; i++) countStudentSubmission("K7M4QX");
-    expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).not.toThrow();
-    countStudentSubmission("K7M4QX");
-    expect(refusalAfter(0, () => checkStudentUpload("203.0.113.9", "K7M4QX")))
-      .toMatchObject({ code: "rate_limited", extra: { retryAfterMs: 60 * MINUTE } });
-    expect(() => checkStudentUpload("203.0.113.9", "ABCDEF")).not.toThrow();
-  });
-
-  it("allow 1000 new submissions per hour in all", () => {
-    for (let i = 0; i < 1000; i++) countStudentSubmission(`CODE${i % 4}`);
-    expect(refusalAfter(0, () => checkStudentUpload("203.0.113.7", "OTHER1"))).toMatchObject({ code: "rate_limited" });
-  });
-
-  it("count a refused upload against no rule at all", () => {
-    for (let i = 0; i < 300; i++) countStudentSubmission("K7M4QX");
-    for (let i = 0; i < 200; i++) expect(() => checkStudentUpload("203.0.113.7", "K7M4QX")).toThrow(AppError);
-    // Those refusals used none of this address's own allowance.
-    expect(refusalAfter(120, () => checkStudentUpload("203.0.113.7", "ABCDEF"))).toMatchObject({ code: "rate_limited" });
-  });
-
-  it("put uploads without an IP in one shared bucket", () => {
-    expect(refusalAfter(120, () => checkStudentUpload(null, "K7M4QX"))).toMatchObject({ code: "rate_limited" });
-  });
-});
 
 describe("checkLogin", () => {
   /** A failed login: counted, and never given back. */

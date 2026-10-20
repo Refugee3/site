@@ -28,19 +28,13 @@ const SaveKeyInputSchema: z.ZodType<SaveKeyInput> = z.object({
   })),
 });
 
-const SaveKeyOptionsSchema = z.object({ open: z.boolean() });
-
-/** Saving also approves the key; with `open` the assignment opens in the same step. */
+/** Saving also approves the key. */
 export async function saveKeyAction(
   assignmentId: string,
   input: SaveKeyInput,
-  opts: { open: boolean },
 ): Promise<ActionResult<{ revision: number; staleCount: number }>> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
-  const result = await attemptWithData(() => {
-    const options = parseInput(SaveKeyOptionsSchema, opts);
-    return saveKey(assignment, parseInput(SaveKeyInputSchema, input), options);
-  });
+  const result = await attemptWithData(() => saveKey(assignment, parseInput(SaveKeyInputSchema, input)));
   if (result.ok) refresh();
   return result;
 }

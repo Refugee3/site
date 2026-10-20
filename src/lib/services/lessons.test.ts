@@ -296,12 +296,12 @@ describe("guidance staleness", () => {
     });
 
     // Saved once as it is, so the key has its real fingerprint before papers are graded.
-    const { revision } = saveKey(assignment, key(items), { open: false });
+    const { revision } = saveKey(assignment, key(items));
     await regradedWithTwoLessons();
     const before = loadGuidance(assignment).fingerprint;
 
     // Reordering does not change the key's revision: no paper is stale against the key.
-    expect(saveKey(assignment, key([...items].reverse()), { open: false })).toEqual({ revision, staleCount: 0 });
+    expect(saveKey(assignment, key([...items].reverse()))).toEqual({ revision, staleCount: 0 });
     expect(getKey(assignment.id)!.revision).toBe(revision);
     expect(listKeyItems(assignment.id).map((item) => item.id)).toEqual([items[1].id, items[0].id]);
     expect(loadGuidance(assignment).fingerprint).toBe(before);

@@ -1,24 +1,29 @@
 # PDF Auto-Grader
 
-A small self-hosted web app that grades handwritten student work against a teacher's answer key.
+A small self-hosted web app **for teachers** that grades handwritten student work against the teacher's answer key. Students never log in or use it: the teacher scans or photographs the papers and uploads them.
 
-1. The teacher uploads an **answer key** (PDF, photos, Word or text file). Claude turns it into a structured list of items, which the teacher reviews and edits.
-2. The teacher uploads the **homework or quiz**: one file per student, or **one scan of the whole stack** that Claude grades in one pass (or splits into papers for the teacher to check first). Students can also hand in work themselves through a share link, once a teacher turns that on.
-3. Claude **reads every page**, in any handwriting, and judges each item against the key.
-4. The grade is **computed in code** from those judgments: by completion (the default), accuracy, or a blend of both.
-5. The teacher sees papers **organized by section and name**, with anything doubtful flagged for review and a CSV export. Optionally (per assignment), each student also gets **notes on what they did** and feedback per question.
+Every homework or quiz follows three steps, shown at the top of its page with a tick once each is done:
 
-> **AI grades can be wrong.** Review the flagged papers, spot-check the others, and only then release feedback to students.
+1. **Add the answer key** (PDF, photos, Word or text file). Claude turns it into a structured list of questions, which the teacher checks, edits and approves.
+2. **Upload students' work**: one file per student, or **one scan of the whole stack** that Claude grades in one pass (or splits into papers for the teacher to check first). Claude **reads every page**, in any handwriting, and judges each question against the key; the grade is **computed in code** from those judgments: by completion (the default), accuracy, or a blend of both.
+3. **Review results**: papers **organized by class section and name**, with anything doubtful flagged "Needs your check", a per-question breakdown, and a CSV export. Optionally (per assignment), the AI also writes **feedback notes** on what each student did.
+
+The dashboard's **Where students are struggling** lists every question that most of a class got wrong, across all of the teacher's homework and quizzes, so it's clear what to teach again.
+
+> **AI grades can be wrong.** Check the flagged papers and spot-check the others before you record any grade.
 
 ## What's new
 
-- **Notes for students are optional, and off by default** (new and existing assignments). Tick **Write notes for students** when creating an assignment or on its **Settings** tab to have the AI explain what each student did and give feedback on every question. Notes are most of what the AI writes, so turning them on makes each paper cost roughly **1.5×** as much (more for assignments with many questions). With notes off the AI still reads and judges every answer, scores are the same, and you can still write your own feedback on the review page; receipts and the CSV simply leave the notes out. Changing the setting applies to papers graded from then on and doesn't mark graded papers for regrading.
+- **Teachers only.** The app no longer has anything for students: the start page sends you to your assignments (or to log in), and the student pages — the class-code box, `/s/CODE` upload pages, receipt links (`/r/…`) and their PDFs — are gone (old links now show "not found"). With them went the "Students can upload their own work" switch, share codes and links, opening and closing assignments, "release feedback", "Copy student link" and the CSV's "Receipt link" column. Teachers upload every paper, exactly as before (an approved answer key is all an upload needs). Nothing is deleted from the database: papers students handed in earlier, and their grades, stay on the Results tab.
+- **Simpler pages.** Each assignment shows its three steps — 1. Add the answer key → 2. Upload students' work → 3. Review results — with ticks and a link to the right tab. The tabs are **Results**, **Answer key**, **Upload work**, **Questions**, **Lessons** and **Settings**; a paper the AI isn't sure about "Needs your check"; every dashboard card says the next step in one line; and empty pages say what to do next.
+- **Where students are struggling** (dashboard): every question most of a class missed, across all your homework and quizzes, most missed first: the assignment, the question and its prompt, "{pct}% missed ({n} of {total} students)", a bar, and **See who missed it**, which opens that assignment's results filtered to the papers that missed it. The top 10 show, with **Show all**. Nothing is sent to the AI for it.
+- **"Questions most students got wrong"** (Results and Questions tabs): a question is highlighted once at least 5 papers are graded and **more than half** of the class missed it (it was 40% before). Partly right answers count by the credit they lost, as before.
+- **Feedback notes are optional, and off by default** (new and existing assignments). Tick **Write feedback notes** when creating an assignment or on its **Settings** tab to have the AI explain what each student did and give feedback on every question. Notes are most of what the AI writes, so turning them on makes each paper cost roughly **1.5×** as much (more for assignments with many questions). With notes off the AI still reads and judges every answer, scores are the same, and you can still write your own feedback on the review page; the CSV simply leaves the notes out. Changing the setting applies to papers graded from then on and doesn't mark graded papers for regrading.
 - **Quizzes:** each assignment is now **Homework** or a **Quiz** (choose when creating it, or change it on its **Settings** tab). Both are graded exactly the same way; quizzes get a "Quiz" badge, "Upload quizzes" wording, and the dashboard can be filtered to **All**, **Homework** or **Quizzes**. Existing assignments become Homework.
-- **Any file format:** every upload (answer key, per-student papers, whole-stack scans and student uploads) accepts **PDFs, photos, Word (.docx) and text files (.txt, .md, .csv)**, and several files are joined into one paper in the order picked. Everything is turned into a PDF on the server before grading. JPEG and PNG become pages as they are; other images (iPhone HEIC, WebP, GIF, TIFF, AVIF…) are converted to JPEG in the browser first, so a browser that can't open a format says so. Word and text files become plain text pages (formatting and pictures in a Word file are dropped, so upload a PDF when layout or drawings matter). Old `.doc`, `.pages` and other formats are refused with "Save it as PDF or .docx first".
+- **Any file format:** every upload (answer key, per-student papers and whole-stack scans) accepts **PDFs, photos, Word (.docx) and text files (.txt, .md, .csv)**, and several files are joined into one paper in the order picked. Everything is turned into a PDF on the server before grading. JPEG and PNG become pages as they are; other images (iPhone HEIC, WebP, GIF, TIFF, AVIF…) are converted to JPEG in the browser first, so a browser that can't open a format says so. Word and text files become plain text pages (formatting and pictures in a Word file are dropped, so upload a PDF when layout or drawings matter). Old `.doc`, `.pages` and other formats are refused with "Save it as PDF or .docx first".
 - **Choose the AI model** under **Settings → AI model**: **Claude Sonnet 5.5** (the default, about half the cost, good for most homework) or **Claude Opus 5.5** (the most capable, for messy handwriting or tricky answers). Servers upgraded from an earlier version start on Sonnet 5.5 too. `ANTHROPIC_MODEL` is no longer used: if your `.env.local` still sets it, the server ignores it and logs a warning at startup, so delete the line.
 - **Grading with an Anthropic-hosted agent (optional, off by default):** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's slower and more expensive than the direct API, which is the default (also on upgraded servers, unless a teacher chose the hosted agent); switch under **Settings → Grader**.
 - **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. By default a scan is **graded in one pass** (the cheapest way): the AI reads each page once, finds whose paper it is and grades it in the same step, and papers whose start or end it isn't sure about are flagged ("Check the paper's pages") for your review. You can instead have the AI **split first, then grade** (or split it every N pages yourself) and check the split before anything is graded — unless the AI's split looks clean (every paper has one name, the usual number of pages, and every page was read confidently): then grading starts on its own and the scan's page says so. The hosted agent can't grade in one pass, so with it a scan is always split first.
-- **Student uploads are off by default**, on new and upgraded servers alike. Turn them on in Settings when you want students to hand in work through a code or link.
 - **The grader learns from your corrections:** each correction (with your reason) becomes a lesson that later gradings of the assignment follow, together with your grading preferences.
 - **The Anthropic API key can be set in the app** (Settings), stored encrypted; `ANTHROPIC_API_KEY` is now optional.
 - **One-click regrade** of the papers graded before your latest corrections.
@@ -33,7 +38,7 @@ cp .env.example .env.local
 AI_MODE=fake npm run dev
 ```
 
-Open <http://localhost:3000/signup> and create the first teacher account. `AI_MODE=fake` replaces Claude with a deterministic stand-in, so the whole flow (key, uploads, scans, grading, review, lessons, release, CSV) works without an API key. Every teacher page then shows "FAKE AI MODE — grades are not real".
+Open <http://localhost:3000/signup> and create the first teacher account. `AI_MODE=fake` replaces Claude with a deterministic stand-in, so the whole flow (key, uploads, scans, grading, review, lessons, question stats, CSV) works without an API key. Every teacher page then shows "FAKE AI MODE — grades are not real".
 
 For real grading in production, set `APP_URL` in the environment or `.env.local`, then:
 
@@ -50,12 +55,12 @@ All settings are listed, with defaults, in [`.env.example`](.env.example). The m
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Optional. Used when no key is saved in Settings; a key saved there takes precedence. With neither, the grading worker stays paused. |
 | `APP_SECRET` | — | 32+ random characters (`openssl rand -base64 32`) that encrypt the API key saved in Settings. Empty: `DATA_DIR/secret.key` is generated and used instead (see Backups). Changing it makes the saved key unreadable; Settings then asks for it again. |
-| `APP_URL` | — | Public origin, e.g. `https://grader.school.org`. Used for share and receipt links, the origin check and secure cookies. |
+| `APP_URL` | — | Public origin, e.g. `https://grader.school.org`. Used for the origin check and secure cookies. |
 | `DATA_DIR` | `./data` | SQLite database and uploaded PDFs. |
 | `ANTHROPIC_EFFORT` | `low` | `low` … `max`. How long the AI thinks before marking. `low` is the cheapest and fastest; try `medium` or `high` for hard or messy work. |
 | `ANTHROPIC_MODEL` | — | **No longer used.** Choose the model under Settings → AI model. If it is still set, it is ignored and the server logs "ANTHROPIC_MODEL is no longer used — choose the model on the Settings page." at startup. |
 | `TEACHER_SIGNUP_CODE` | — | Required to sign up, when set (see below). At least 12 characters. |
-| `MAX_UPLOAD_MB` / `MAX_PAGES` | `20` / `40` | Per-upload limits for students, teacher uploads and keys; also the limit for each paper cut from a scan. |
+| `MAX_UPLOAD_MB` / `MAX_PAGES` | `20` / `40` | Per-upload limits for papers and answer keys; also the limit for each paper cut from a scan. |
 | `MAX_SCAN_MB` / `MAX_SCAN_PAGES` | `100` / `200` | Limits for one scan of a whole class's stack (at most 200 MB / 500 pages). The reverse proxy must allow uploads this large. |
 | `GRADING_CONCURRENCY` | `10` | How many papers (and other AI jobs) run at once, 1–32. When Anthropic answers "rate limited" or "overloaded", the paper is retried without using up one of its attempts, the server starts nothing new until the time Anthropic asks for (or a short pause), and it runs half as many at once, climbing back by one after each paper that finishes. Lower it if your Anthropic account's rate limits are low and you'd rather not see these pauses. |
 | `SCAN_SPLIT_PARALLEL` | `4` | How many batches of up to 20 pages of one whole-class scan the AI reads at once, 1–8. |
@@ -70,15 +75,17 @@ The server checks the settings, the data directory and the database when it star
 - If `TEACHER_SIGNUP_CODE` is set, **every** sign-up needs it, the first one included. Use a random code of at least 12 characters (for example the output of `openssl rand -base64 12`), not a word, and share it only with colleagues who should get an account. Wrong codes are limited to 20 per hour server-wide.
 - If `TEACHER_SIGNUP_CODE` is unset, the **first** account can be created by anyone who reaches `/signup` (so create it right after deploying), and sign-up is closed once it exists.
 
-## Students can upload their own work
+## Teachers only
 
-The switch **Settings → Student submissions → "Students can upload their own work"** applies to every teacher on the server. It is **off by default, also on existing installs after the upgrade**: assignments that were open stop taking student uploads until a teacher turns the switch on (they keep their status and take uploads again once it is on).
+Only teachers use the app; students never need an account, a code or a link. Sign in, create a homework or quiz, and follow its three steps. Everything students wrote reaches the app through your uploads.
 
-While it is off:
+Servers upgraded from a version where students could hand in work themselves keep all of that data — the papers, their grades and your corrections show on each assignment's Results tab as before — but the student pages and links no longer exist, and the old setting is ignored.
 
-- Teachers upload all the homework on each assignment's **Upload homework** tab. Codes, share links, the open/close buttons and "Save & open" are hidden.
-- The start page and every `/s/CODE` page tell students their teacher isn't accepting online submissions and to hand in their paper instead; the upload endpoint refuses before looking up the code.
-- **Receipt links keep working**: copy a paper's student link from its page or from the upload list, and the student sees their feedback there once you release it.
+## Where students are struggling
+
+The dashboard's first section lists every question that **most of a class got wrong**, across all of your homework and quizzes, most missed first. A question counts once at least **5 papers** are graded (each student's latest paper; papers waiting for your check count too) and its miss rate is **above 50%**. An answer is missed when it isn't fully right — wrong, blank or unreadable, or partly right by the credit it lost — whatever the grading mode, and your point changes count. Each row shows the assignment, "Question 3", the question's prompt, "{pct}% missed ({n} of {total} students)" and **See who missed it**, which opens that assignment's results showing only the papers that missed it and what those students wrote most often. The 10 most missed show first; **Show all** lists the rest.
+
+The same rule highlights "Questions most students got wrong" on each assignment's Results and Questions tabs, and fills the "Most students got it wrong" column of the question-stats CSV. It is worked out from the stored grades, with no AI calls.
 
 ## How the grader learns
 
@@ -87,7 +94,7 @@ It is not retrained. When you correct the AI on a paper — the points, the feed
 - Each assignment's **Lessons** tab lists its lessons, says which ones the grader is sent (and why others aren't), and lets you edit the reason, turn a lesson off, or copy its reason into your grading preferences. A lesson stays with your correction on its paper, so turning it off is how you stop the grader using it (it stays off when you edit that correction later).
 - Deleting a paper keeps the lessons from your corrections on it, with that student's answer and your notes: the Lessons tab marks them "Its paper was deleted", and you can delete them there.
 - A lesson shows the answer as the AI read it, so say in the reason when you corrected a misreading ("The student wrote x = -3; the minus is faint."). A correction of an answer the AI saw as blank or couldn't read is sent only once it has a reason, and a ruling without a reason that contradicts the answer key sends the paper to you instead of overriding the key. Points that no judgment gives exactly (3 of 5 on an all-or-nothing question) are passed on too, and matching answers on later papers come to you to set the points.
-- Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the board or the Lessons tab. Papers you already corrected or marked reviewed are left alone (you can still regrade one from its page); your overrides and edits are always kept.
+- Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the Results tab or the Lessons tab. Papers you already corrected or checked are left alone (you can still regrade one from its page); your overrides and edits are always kept.
 
 ## Choosing the AI model
 
@@ -117,7 +124,7 @@ The grading queue lives in SQLite and the worker runs inside the Next.js server 
 
 Terminate TLS in a reverse proxy and let it pass the client's address and the original host. Raise the body limit above `MAX_SCAN_MB` (a whole-class scan is the largest upload; 110 MB for the default 100 MB). Set `APP_URL` to the public origin.
 
-Make the Node server reachable **only through the proxy**: start it on the loopback interface with `npm start -- -H 127.0.0.1` (or firewall port 3000). The per-address rate limits (login, uploads, code lookups) read the client's address from `X-Forwarded-For`, which only the proxy can be trusted to set. A client that reaches `next start` directly can put any address there, and those limits then mean nothing; only the limits that don't depend on the address (uploads per assignment and in all, wrong signup codes) still hold.
+Make the Node server reachable **only through the proxy**: start it on the loopback interface with `npm start -- -H 127.0.0.1` (or firewall port 3000). The per-address rate limits (login and sign-up) read the client's address from `X-Forwarded-For`, which only the proxy can be trusted to set. A client that reaches `next start` directly can put any address there, and those limits then mean nothing; only the limits that don't depend on the address (wrong signup codes, API-key checks per teacher) still hold.
 
 Caddy:
 

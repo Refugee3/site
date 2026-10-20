@@ -12,8 +12,7 @@ import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { attemptWithData } from "@/lib/http/action-result";
 import { decryptSecret, encryptSecret } from "@/lib/secrets";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setStudentUploads, setUpHostedAgentAgain,
-  studentUploadsEnabled, UPLOADS_OFF_MESSAGE, type KeyChecker,
+  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setUpHostedAgentAgain, type KeyChecker,
 } from "@/lib/services/settings";
 import type { Teacher } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
@@ -49,20 +48,6 @@ function registerWorker() {
   };
   return resume;
 }
-
-describe("the student switch", () => {
-  it("starts off and can be turned on and off", () => {
-    expect(studentUploadsEnabled()).toBe(false);
-    setStudentUploads(true);
-    expect(studentUploadsEnabled()).toBe(true);
-    setStudentUploads(false);
-    expect(studentUploadsEnabled()).toBe(false);
-  });
-
-  it("tells students to hand in their paper", () => {
-    expect(UPLOADS_OFF_MESSAGE).toBe("Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.");
-  });
-});
 
 describe("saveApiKey", () => {
   it("checks the trimmed key, stores it encrypted and masked, and says nothing more when it works", async () => {
@@ -233,9 +218,8 @@ describe("setAiModel", () => {
     expect(resume).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves the engine, the key and the student switch alone", () => {
+  it("leaves the engine and the key alone", () => {
     setStoredApiKeyForTest();
-    setStudentUploads(true);
     setGradingEngine("agent");
     const settings = getAppSettings();
 

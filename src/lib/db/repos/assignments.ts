@@ -85,27 +85,12 @@ export function getAssignmentForTeacher(id: string, teacherId: string): Assignme
   return row ? assignmentFromRow(row) : null;
 }
 
-export function getAssignmentByShareCode(code: string): (Assignment & { teacherName: string }) | null {
-  const row = one<AssignmentRow & { teacher_name: string }>(
-    `SELECT a.*, t.display_name AS teacher_name
-     FROM assignments a JOIN teachers t ON t.id = a.teacher_id
-     WHERE a.share_code = ?`,
-    code,
-  );
-  return row ? { ...assignmentFromRow(row), teacherName: row.teacher_name } : null;
-}
-
 /** Newest first. */
 export function listAssignmentsForTeacher(teacherId: string): Assignment[] {
   return all<AssignmentRow>(
     "SELECT * FROM assignments WHERE teacher_id = ? ORDER BY created_at DESC, rowid DESC",
     teacherId,
   ).map(assignmentFromRow);
-}
-
-/** Open assignments of every teacher: they take student uploads whenever the app-wide switch is on. */
-export function countOpenAssignments(): number {
-  return one<{ n: number }>("SELECT COUNT(*) AS n FROM assignments WHERE status = 'open'")!.n;
 }
 
 type AssignmentPatch = Pick<Assignment, "title" | "kind" | "instructions" | "writeNotes" | "status" | "gradingMode" | "accuracyWeight" | "shareCode"

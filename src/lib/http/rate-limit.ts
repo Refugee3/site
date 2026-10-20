@@ -131,52 +131,6 @@ function ipKey(ip: string | null): string {
   return ip ?? "unknown";
 }
 
-function codeLookupMisses(ip: string | null): Rule {
-  return { bucket: `lookup:miss:ip:${ipKey(ip)}`, limit: 60, windowMs: MINUTE };
-}
-
-/**
- * Before looking up a share code (/go, the /s/[code] page and student uploads): refuses an IP that has
- * asked for 60 unknown codes within the minute. Only misses are counted (`countCodeLookupMiss`), so a
- * whole school behind one address can open real codes freely. Once the limit is reached, known codes are
- * refused too, or the refusal itself would tell guessed codes apart.
- */
-export function checkCodeLookup(ip: string | null): void {
-  peek([codeLookupMisses(ip)], "Too many code lookups.");
-}
-
-/** A share code that matched no assignment. */
-export function countCodeLookupMiss(ip: string | null): void {
-  charge([codeLookupMisses(ip)]);
-}
-
-function newSubmissionRules(shareCode: string): Rule[] {
-  return [
-    { bucket: `upload:code:${shareCode}`, limit: 300, windowMs: HOUR },
-    { bucket: "upload:all", limit: 1000, windowMs: HOUR },
-  ];
-}
-
-/**
- * Before reading the body of an upload to an open assignment. Counts the request per IP and assignment
- * (one class behind one NAT address, retries included) and per IP (several classes behind it), and
- * refuses when the assignment's or the server's budget of new submissions is used up. Those two budgets
- * bound what uploads cost whatever the IPs, so only uploads that create a submission count against them
- * (`countStudentSubmission`).
- */
-export function checkStudentUpload(ip: string | null, shareCode: string): void {
-  const perIp: Rule[] = [
-    { bucket: `upload:ipcode:${ipKey(ip)}:${shareCode}`, limit: 120, windowMs: 10 * MINUTE },
-    { bucket: `upload:ip:${ipKey(ip)}`, limit: 300, windowMs: 10 * MINUTE },
-  ];
-  enforce([...perIp, ...newSubmissionRules(shareCode)], "Too many uploads right now.", perIp);
-}
-
-/** A student upload that created a submission (not a replay of an earlier one). */
-export function countStudentSubmission(shareCode: string): void {
-  charge(newSubmissionRules(shareCode));
-}
-
 /**
  * Before checking a password. The strict limit is per email and IP, so failures from elsewhere cannot lock
  * a teacher out; the much higher per-email ceiling bounds guessing spread over many addresses. The

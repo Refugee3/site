@@ -1,5 +1,4 @@
 import * as z from "zod";
-import { now } from "@/lib/clock";
 import { tx } from "@/lib/db/connection";
 import {
   deleteAssignmentRow, getAssignment, insertAssignment, latestSectionsForTeacher, listSections, replaceSections,
@@ -9,8 +8,6 @@ import { createEmptyKey } from "@/lib/db/repos/keys";
 import { AppError } from "@/lib/errors";
 import { parseSectionsText, sectionsToText, type ParsedSection } from "@/lib/grading/sections";
 import { newId, newShareCode } from "@/lib/ids";
-import { loadKeyState } from "@/lib/services/key-state";
-import { studentUploadsEnabled } from "@/lib/services/settings";
 import { rematchSections, rescoreAssignment } from "@/lib/services/submissions";
 import { removeAssignmentFiles } from "@/lib/storage/files";
 import { ASSIGNMENT_KINDS, GRADING_MODES, type Assignment, type AssignmentFormInput, type Section } from "@/lib/types";
@@ -49,7 +46,7 @@ function sectionsFromInput(text: string): ParsedSection[] {
   return sections;
 }
 
-/** A draft with an empty answer key, its sections and a fresh share code. */
+/** An assignment with an empty answer key and its sections (its share code column is unused but must be unique). */
 export function createAssignment(teacherId: string, i: AssignmentFormInput): Assignment {
   const sections = sectionsFromInput(i.sectionsText);
   return tx(() => {
@@ -102,37 +99,6 @@ export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignm
 function sameSections(current: Section[], next: ParsedSection[]): boolean {
   const shape = (s: ParsedSection) => [s.label, s.aliases, s.canonicalKey];
   return JSON.stringify(current.map(shape)) === JSON.stringify(next.map(shape));
-}
-
-/** draft → open (needs an approved key, and student uploads turned on in Settings) → closed → open. */
-export function setAssignmentStatus(a: Assignment, to: "open" | "closed"): Assignment {
-  return tx(() => {
-    const current = requireAssignment(a.id);
-    if (to === "open" && !studentUploadsEnabled()) {
-      throw new AppError("invalid_state", "Student submissions are turned off. Turn them on in Settings to open an assignment.");
-    }
-    if (to === "open" && !loadKeyState(a.id).approved) {
-      throw new AppError("key_not_ready", "Approve the answer key before opening the assignment.");
-    }
-    if (to === "closed" && current.status === "draft") {
-      throw new AppError("invalid_state", "This assignment hasn't been opened yet.");
-    }
-    return current.status === to ? current : updateAssignmentRow(a.id, { status: to });
-  });
-}
-
-/** Students see released results on their receipts; releasing again keeps the original release time. */
-export function setFeedbackReleased(a: Assignment, released: boolean): Assignment {
-  return tx(() => {
-    const current = requireAssignment(a.id);
-    if (released === (current.feedbackReleasedAt !== null)) return current;
-    return updateAssignmentRow(a.id, { feedbackReleasedAt: released ? now() : null });
-  });
-}
-
-/** The old link stops working at once; receipts are unaffected. */
-export function rotateShareCode(a: Assignment): Assignment {
-  return tx(() => updateAssignmentRow(a.id, { shareCode: unusedShareCode() }));
 }
 
 /** Deletes the assignment with everything in it (rows by cascade, then the stored PDFs). */

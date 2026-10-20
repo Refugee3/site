@@ -120,15 +120,6 @@ export function clientIp(h: Headers): string | null {
   return ip ? ip : null;
 }
 
-/** The origin browsers use for this server: APP_URL when set, else what the (proxied) request says. */
-export function getPublicOrigin(h: Headers): string {
-  const appUrl = getConfig().appUrl;
-  if (appUrl) return appUrl;
-  const proto = firstValue(h.get("x-forwarded-proto")) ?? "http";
-  const host = firstValue(h.get("x-forwarded-host")) ?? h.get("host") ?? "localhost";
-  return `${proto}://${host}`;
-}
-
 /** Proxies may append to forwarding headers ("a, b"); the first entry is the client-facing value. */
 function firstValue(header: string | null): string | null {
   const value = header?.split(",")[0].trim();

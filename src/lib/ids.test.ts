@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isId, isToken, newId, newShareCode, newToken, normalizeShareCode, sha256Hex } from "@/lib/ids";
+import { isId, isToken, newId, newShareCode, newToken, sha256Hex } from "@/lib/ids";
 
 describe("ids", () => {
   it("newId produces UUIDs that isId accepts", () => {
@@ -30,26 +30,8 @@ describe("ids", () => {
     for (let i = 0; i < 200; i++) {
       const code = newShareCode();
       expect(code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$/);
-      expect(normalizeShareCode(code)).toBe(code);
     }
   });
-
-  it.each([
-    ["K7M4QX", "K7M4QX"],
-    ["k7m4qx", "K7M4QX"],
-    ["K7M-4QX", "K7M4QX"],
-    [" k7m 4qx ", "K7M4QX"],
-    ["k-7-m-4-q-x", "K7M4QX"],
-  ])("normalizeShareCode(%j) → %j", (input, expected) => {
-    expect(normalizeShareCode(input)).toBe(expected);
-  });
-
-  it.each(["", "K7M4Q", "K7M4QXA", "K7M4Q0", "K7M4QI", "K7M4QL", "K7M4Q1", "K7M_4QX", "K7M4QX!", "КЕМ4QX"])(
-    "normalizeShareCode(%j) → null",
-    (input) => {
-      expect(normalizeShareCode(input)).toBeNull();
-    },
-  );
 
   it("sha256Hex hashes strings and bytes identically", () => {
     expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");

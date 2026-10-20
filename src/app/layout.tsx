@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: APP_NAME, template: `%s · ${APP_NAME}` },
-  description: "Hand in work as a PDF or photos; the teacher's AI-assisted grader reads it against the answer key.",
+  description: "For teachers: grade students' handwritten homework and quizzes against your answer key with AI, and see which questions the class missed.",
 };
 
 export const viewport: Viewport = {

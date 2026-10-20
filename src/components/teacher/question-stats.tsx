@@ -6,7 +6,7 @@ import { cx } from "@/components/ui/cx";
 import type { Tone } from "@/components/ui/tone";
 import { formatPercent, formatPoints, OUTCOME_LABEL } from "@/lib/format";
 import {
-  MISS_HIGHLIGHT_MIN_PAPERS, MISS_HIGHLIGHT_MIN_TENTHS, type ItemStats, type ItemStatsSummary, type ItemTally, type SectionItemStats,
+  MISS_HIGHLIGHT_ABOVE_TENTHS, MISS_HIGHLIGHT_MIN_PAPERS, type ItemStats, type ItemStatsSummary, type ItemTally, type SectionItemStats,
 } from "@/lib/grading/item-stats";
 import type { ItemOutcome } from "@/lib/types";
 import { missedHref, missedLine, questionName, shortPrompt } from "./question-text";
@@ -31,8 +31,6 @@ const SEGMENTS: ReadonlyArray<{ outcome: ItemOutcome; className: string }> = [
   { outcome: "unreadable", className: "bg-info-200" },
 ];
 
-const THRESHOLD_TEXT = formatPercent(MISS_HIGHLIGHT_MIN_TENTHS);
-
 // ---------------------------------------------------------------------------------------------
 // The board's card
 
@@ -41,24 +39,29 @@ export interface MissedQuestionsCardProps {
   stats: ItemStatsSummary;
   /** The item the board is filtered to (`?missed=`), if any. */
   activeItemId: string | null;
+  /** On the Questions tab itself: no link to it. */
+  onQuestionsTab?: boolean;
 }
 
+/** The card's title, also used for the Questions tab's highlight. */
+export const MOST_MISSED_TITLE = "Questions most students got wrong";
+
 /**
- * Top of the Submissions tab: the questions a large share of the class missed, most missed first, each linking to the
- * papers that missed it. A quiet line once enough papers are graded and none was; nothing before that.
+ * Top of the Results tab: the questions most of the class missed, most missed first, each linking to the papers that
+ * missed it. A quiet line once enough papers are graded and none was; nothing before that.
  */
-export function MissedQuestionsCard({ assignmentId, stats, activeItemId }: MissedQuestionsCardProps) {
+export function MissedQuestionsCard({ assignmentId, stats, activeItemId, onQuestionsTab = false }: MissedQuestionsCardProps) {
   const questionsHref = `/teacher/assignments/${assignmentId}/questions`;
   if (stats.highlighted.length === 0) {
-    if (stats.countedPapers < MISS_HIGHLIGHT_MIN_PAPERS) return null;
+    if (stats.countedPapers < MISS_HIGHLIGHT_MIN_PAPERS || onQuestionsTab) return null;
     return (
       <p className="text-sm text-muted">
-        No question was missed by {THRESHOLD_TEXT} or more of the class. <Link href={questionsHref}>See every question</Link>
+        No question was missed by most of the class. <Link href={questionsHref}>See how the class did on each question</Link>
       </p>
     );
   }
   return (
-    <Card title="Questions many students missed" actions={<Link href={questionsHref} className="text-sm">All questions</Link>}>
+    <Card title={MOST_MISSED_TITLE} actions={onQuestionsTab ? undefined : <Link href={questionsHref} className="text-sm">All questions</Link>}>
       <ul className="flex flex-col gap-5">
         {stats.highlighted.map((stat) => {
           const active = stat.item.id === activeItemId;
@@ -72,7 +75,7 @@ export function MissedQuestionsCard({ assignmentId, stats, activeItemId }: Misse
                   aria-current={active ? "page" : undefined}
                   className={cx("inline-flex min-h-11 items-center text-sm font-medium sm:min-h-0", active && "text-ink no-underline")}
                 >
-                  {active ? "Showing papers" : "Show papers"}
+                  {active ? "Showing who missed it" : "See who missed it"}
                   <span className="sr-only"> that missed {questionName(stat.item.label)}</span>
                 </Link>
               </div>
@@ -88,7 +91,7 @@ export function MissedQuestionsCard({ assignmentId, stats, activeItemId }: Misse
 }
 
 /** The accent bar: as long as the miss rate, red from 60%, amber below. Decorative; the text says the number. */
-function MissMeter({ tenths }: { tenths: number }) {
+export function MissMeter({ tenths }: { tenths: number }) {
   return (
     <div aria-hidden="true" className="h-2 w-full overflow-hidden rounded-full bg-subtle ring-1 ring-line ring-inset">
       <div
@@ -221,7 +224,7 @@ function QuestionCell({ assignmentId, stat }: { assignmentId: string; stat: Item
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold text-ink">{questionName(stat.item.label)}</span>
-        {stat.highlighted && <Badge tone={(stat.missedTenths ?? 0) >= RED_FROM_TENTHS ? "danger" : "warning"}>Many missed</Badge>}
+        {stat.highlighted && <Badge tone={(stat.missedTenths ?? 0) >= RED_FROM_TENTHS ? "danger" : "warning"}>Most got it wrong</Badge>}
       </div>
       {stat.item.prompt.trim() !== "" && <p className="line-clamp-2 break-words text-muted">{shortPrompt(stat.item.prompt)}</p>}
       {stat.missedPapers > 0 && (
@@ -287,7 +290,7 @@ function SectionBreakdown({ sections }: { sections: SectionItemStats[] }) {
             <span className="shrink-0 tabular-nums text-muted">
               {section.judged > 0 ? (
                 <>
-                  <span className={cx("font-semibold", (section.missedTenths ?? 0) >= MISS_HIGHLIGHT_MIN_TENTHS ? "text-danger-800" : "text-ink")}>
+                  <span className={cx("font-semibold", (section.missedTenths ?? 0) > MISS_HIGHLIGHT_ABOVE_TENTHS ? "text-danger-800" : "text-ink")}>
                     {formatPercent(section.missedTenths)}
                   </span>{" "}
                   missed of {section.judged}

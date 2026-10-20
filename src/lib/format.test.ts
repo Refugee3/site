@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPercent, formatPoints, formatShareCode, parsePointsInput } from "@/lib/format";
+import { formatPercent, formatPoints, parsePointsInput } from "@/lib/format";
 
 describe("formatPoints", () => {
   it.each([
@@ -61,8 +61,3 @@ describe("parsePointsInput", () => {
   });
 });
 
-describe("formatShareCode", () => {
-  it("shows the code as typed on the share card", () => {
-    expect(formatShareCode("K7M4QX")).toBe("K7M4QX");
-  });
-});

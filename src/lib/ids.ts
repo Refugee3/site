@@ -2,10 +2,10 @@ import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
-// No 0/O, 1/I/L: share codes are read aloud and typed from a projector.
+// Share codes are no longer shown anywhere (the app is for teachers only), but the column is unique and required.
+// No 0/O, 1/I/L, from when students typed them.
 const SHARE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const SHARE_CODE_LENGTH = 6;
-const SHARE_CODE_RE = new RegExp(`^[${SHARE_CODE_ALPHABET}]{${SHARE_CODE_LENGTH}}$`);
 
 export function newId(): string {
   return randomUUID();
@@ -30,12 +30,6 @@ export function newShareCode(): string {
     code += SHARE_CODE_ALPHABET[randomInt(SHARE_CODE_ALPHABET.length)];
   }
   return code;
-}
-
-/** Uppercases and strips spaces and dashes; returns null unless the result is a well-formed share code. */
-export function normalizeShareCode(input: string): string | null {
-  const code = input.toUpperCase().replace(/[\s-]/g, "");
-  return SHARE_CODE_RE.test(code) ? code : null;
 }
 
 export function sha256Hex(data: string | Uint8Array): string {

@@ -26,7 +26,6 @@ export function SignupForm({ codeRequired }: { codeRequired: boolean }) {
       <Field
         label="Your name"
         htmlFor="signup-name"
-        hint="Students see this on the upload page."
         error={errors.displayName}
       >
         <Input id="signup-name" autoComplete="name" required maxLength={100} {...bind("displayName")} />

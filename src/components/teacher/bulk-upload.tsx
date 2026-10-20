@@ -1,8 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { CopyButton } from "@/components/copy-button";
 import { Button } from "@/components/ui/button";
 import { buttonClasses } from "@/components/ui/button-styles";
 import { cx } from "@/components/ui/cx";
@@ -16,8 +16,7 @@ import { isRetryable, uploadErrorCode } from "./upload-retry";
 import { useLeaveGuard } from "./use-leave-guard";
 
 export interface BulkUploadProps {
-  /** `/api/teacher/assignments/<id>/submissions` */
-  uploadUrl: string;
+  assignmentId: string;
   disabled: boolean;
 }
 
@@ -28,7 +27,8 @@ interface Entry {
   file: File;
   state: EntryState;
   progress: number;
-  receiptUrl: string | null;
+  /** The paper the upload created, once done. */
+  submissionId: string | null;
   error: string | null;
   /** The server's error code for a failed upload; null when no usable answer came back. */
   code: string | null;
@@ -38,11 +38,12 @@ interface Entry {
 const PARALLEL_UPLOADS = 2;
 
 /**
- * Uploads scanned paper copies, one file per student (any accepted format; images are converted to JPEG
- * first) and one request per file. Files start uploading as soon as
- * they are added; each finished one shows its receipt link for the teacher to hand to the student.
+ * Uploads the students' papers, one file per student (any accepted format; images are converted to JPEG
+ * first) and one request per file. Files start uploading as soon as they are added; each finished one links to its
+ * paper, which is then graded.
  */
-export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
+export function BulkUpload({ assignmentId, disabled }: BulkUploadProps) {
+  const uploadUrl = `/api/teacher/assignments/${assignmentId}/submissions`;
   const router = useRouter();
   const hydrated = useHydrated();
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -104,7 +105,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
       const result = await uploadWithProgress(uploadUrl, body, (progress) => patch(entry.id, { progress }), controller.signal);
       const uploaded = result.status === 201 ? parseTeacherUploadResult(result.json) : null;
       if (uploaded) {
-        patch(entry.id, { state: "done", receiptUrl: uploaded.receiptUrl });
+        patch(entry.id, { state: "done", submissionId: uploaded.submissionId });
       } else if (result.status === 201) {
         patch(entry.id, { state: "failed", error: "The server sent an unexpected answer." });
       } else {
@@ -130,7 +131,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
       file,
       state: "waiting",
       progress: 0,
-      receiptUrl: null,
+      submissionId: null,
       error: null,
       code: null,
     }));
@@ -158,8 +159,6 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   function clearFinished() {
     setEntries((current) => current.filter((entry) => entry.state === "waiting" || entry.state === "uploading"));
   }
-
-  const allLinks = done.map((entry) => `${entry.file.name}\t${entry.receiptUrl}`).join("\n");
 
   return (
     <div className="flex flex-col gap-4">
@@ -192,7 +191,8 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
           Choose files
         </label>
         <p className="text-sm text-muted">
-          …or drop them here. One file per student ({UPLOAD_FORMATS}); uploads start right away.
+          …or drop them here. One file per student ({UPLOAD_FORMATS}); uploads start right away and each paper is graded
+          as soon as it arrives.
         </p>
       </div>
 
@@ -205,6 +205,12 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
             <p aria-live="polite" className="text-sm text-muted">
               {done.length} of {entries.length} uploaded
               {failed.length > 0 && ` · ${failed.length} failed`}
+              {!busy && done.length > 0 && (
+                <>
+                  {" · "}
+                  <Link href={`/teacher/assignments/${assignmentId}`}>See the results</Link>
+                </>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -213,7 +219,6 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
                 Retry failed ({retryable.length})
               </Button>
             )}
-            {done.length > 0 && <CopyButton value={allLinks} label="Copy all receipt links" />}
             {!busy && (
               <Button variant="ghost" size="sm" onClick={clearFinished}>
                 Clear list
@@ -222,7 +227,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
           </div>
           <ul className="flex flex-col gap-2">
             {entries.map((entry) => (
-              <UploadRow key={entry.id} entry={entry} />
+              <UploadRow key={entry.id} entry={entry} assignmentId={assignmentId} />
             ))}
           </ul>
         </section>
@@ -231,7 +236,7 @@ export function BulkUpload({ uploadUrl, disabled }: BulkUploadProps) {
   );
 }
 
-function UploadRow({ entry }: { entry: Entry }) {
+function UploadRow({ entry, assignmentId }: { entry: Entry; assignmentId: string }) {
   const percent = Math.round(entry.progress * 100);
   return (
     <li
@@ -257,13 +262,12 @@ function UploadRow({ entry }: { entry: Entry }) {
           <div className="h-full rounded-full bg-brand-600 transition-[width]" style={{ width: `${percent}%` }} />
         </div>
       )}
-      {entry.state === "done" && entry.receiptUrl && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-          <span className="font-medium text-success-800">Uploaded</span>
-          <a href={entry.receiptUrl} target="_blank" rel="noopener" className="min-w-0 break-all">
-            {entry.receiptUrl}
-          </a>
-          <CopyButton value={entry.receiptUrl} label="Copy student link" />
+      {entry.state === "done" && entry.submissionId && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="font-medium text-success-800">Uploaded — grading now</span>
+          <Link href={`/teacher/assignments/${assignmentId}/submissions/${entry.submissionId}`}>
+            Open this paper<span className="sr-only">: {entry.file.name}</span>
+          </Link>
         </div>
       )}
       {entry.state === "failed" && <p className="text-sm font-medium text-danger-700">{entry.error}</p>}

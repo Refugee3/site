@@ -36,7 +36,7 @@ function BoardGroup({ assignmentId, group }: { assignmentId: string; group: Boar
         {label}
         <span className="text-sm font-normal text-muted">
           {plural(rows.length, "paper")}
-          {toReview > 0 && <span className="font-medium text-warning-800"> · {toReview} to review</span>}
+          {toReview > 0 && <span className="font-medium text-warning-800"> · {toReview} to check</span>}
         </span>
       </h2>
 
@@ -56,7 +56,7 @@ function BoardGroup({ assignmentId, group }: { assignmentId: string; group: Boar
               <th scope="col" className="px-4 py-2">Status</th>
               <th scope="col" className="px-4 py-2 text-right">Score</th>
               <th scope="col" className="px-4 py-2">Flags</th>
-              <th scope="col" className="px-4 py-2">Submitted</th>
+              <th scope="col" className="px-4 py-2">Uploaded</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -128,13 +128,6 @@ function StudentCell({ assignmentId, row, stretched = false }: { assignmentId: s
         {row.displayName}
       </Link>
       {row.missed && <MissedAnswer missed={row.missed} />}
-      {row.source === "teacher" && (
-        <span>
-          <Badge tone="neutral" title="You uploaded this paper">
-            Scanned copy
-          </Badge>
-        </span>
-      )}
       {row.earlier.length > 0 && (
         <details className="relative z-10 text-xs text-muted">
           {/* 44 px tap targets on phone cards, where a near miss would open the newest paper instead. */}

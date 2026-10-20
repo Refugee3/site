@@ -5,7 +5,7 @@ import { listSections, replaceSections } from "@/lib/db/repos/assignments";
 import { enqueueJob } from "@/lib/db/repos/jobs";
 import { upsertKeyItems } from "@/lib/db/repos/keys";
 import {
-  batchCounts, countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getItem, getSubmission, getSubmissionByReceipt,
+  batchCounts, countByStatus, countSubmissions, deleteSubmissionRow, findBySha, getItem, getSubmission,
   getSubmissionForTeacher, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems, listItemsForAssignment, listQueuedWithoutJob,
   listStaleIds, listSubmissions, markFailed, oldestActiveQueuedAt, recentGradingDurations, requeueForRegrade, resetGradingToQueued, saveGradingResult, scheduleRetry,
   setItemOverride, startGrading, updateSubmission, type GradingWrite,
@@ -102,7 +102,6 @@ describe("insertSubmission", () => {
       updatedAt: T0,
     });
     expect(getSubmission(s.id)).toEqual(s);
-    expect(getSubmissionByReceipt(s.receiptToken)).toEqual(s);
     expect(findBySha(assignment.id, s.contentSha256)).toEqual(s);
   });
 
@@ -498,7 +497,7 @@ describe("boot recovery", () => {
 
     expect(resetGradingToQueued()).toBe(1);
     expect(getSubmission(orphan.id)!.status).toBe("queued");
-    expect(listQueuedWithoutJob()).toEqual([{ id: orphan.id, assignmentId: assignment.id, source: "student" }]);
+    expect(listQueuedWithoutJob()).toEqual([{ id: orphan.id, assignmentId: assignment.id, source: "teacher" }]);
   });
 });
 

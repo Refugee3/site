@@ -5,9 +5,9 @@ import type { BoardFilter, BoardView, StatusCounts } from "@/lib/types";
 export const BOARD_FILTERS: ReadonlyArray<{ filter: BoardFilter; label: string; count: (c: StatusCounts) => number }> = (
   [
     ["all", "All"],
-    ["needs_review", "Needs review"],
-    ["in_progress", "In progress"],
-    ["failed", "Failed"],
+    ["needs_review", "Needs your check"],
+    ["in_progress", "Being graded"],
+    ["failed", "Couldn't be graded"],
     ["graded", "Graded"],
   ] as const
 ).map(([filter, label]) => ({ filter, label, count: (c: StatusCounts) => boardFilterCount(filter, c) }));
@@ -27,12 +27,10 @@ export function reviewHref(assignmentId: string, submissionId: string): string {
 }
 
 const ACTIVE_POLL_MS = 4000;
-const OPEN_POLL_MS = 15_000;
 
-/** Quick polling while papers are being graded, slow while students can still submit, else none. */
-export function boardRefreshMs(view: Pick<BoardView, "active" | "open">): number | null {
-  if (view.active) return ACTIVE_POLL_MS;
-  return view.open ? OPEN_POLL_MS : null;
+/** Quick polling while papers are being graded (or a scan split), else none: only the teacher adds papers. */
+export function boardRefreshMs(view: Pick<BoardView, "active">): number | null {
+  return view.active ? ACTIVE_POLL_MS : null;
 }
 
 /** The first current paper in board order that needs review, if the board shows one. */

@@ -1,7 +1,7 @@
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
-import { getAssignment, getAssignmentByShareCode, listSections } from "@/lib/db/repos/assignments";
+import { getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import {
@@ -22,7 +22,6 @@ import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { loadGuidance } from "@/lib/services/guidance";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { readLessonReason, syncLessonForItem } from "@/lib/services/lessons";
-import { studentUploadsEnabled, UPLOADS_OFF_MESSAGE } from "@/lib/services/settings";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, uploadName, type UploadedFile } from "@/lib/storage/pdf";
@@ -41,45 +40,6 @@ const DUPLICATE_MESSAGE = "This exact file was already submitted for this assign
 // Ingest: the steps after the route's cheap checks (build the PDF, content-hash duplicate checks, atomic
 // file write, then insert and enqueue in one transaction)
 
-interface StoredPdf {
-  bytes: Uint8Array;
-  pageCount: number;
-  contentSha256: string;
-  clientUploadId?: string | null;
-}
-
-/**
- * A student upload through the share link. `clientUploadId` is the id the browser sends with one
- * upload (and again when it retries it); only a re-send with the same id gets the earlier receipt back.
- */
-export async function ingestStudentUpload(
-  code: string,
-  files: UploadedFile[],
-  clientUploadId: string | null = null,
-): Promise<{ receiptUrl: string; duplicate: boolean }> {
-  assertStudentUploadsOn(); // before the lookup, so it reveals nothing about which codes exist
-  const assignment = getAssignmentByShareCode(code);
-  if (!assignment) throw new AppError("not_found", "This assignment link is not valid.");
-  assertOpenForStudents(assignment);
-
-  const pdf = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
-  const earlier = checkContentSha(assignment.id, pdf.contentSha256, { source: "student", clientUploadId });
-  if (earlier) return studentReplay(earlier);
-
-  let submission: Submission;
-  try {
-    submission = await storeSubmission(assignment.id, "student", { ...pdf, clientUploadId }, uploadName(files), assertOpenForStudents);
-  } catch (e) {
-    // A double tap sends the same upload twice at once: the slower request gets the faster one's receipt.
-    const winner = isAppError(e) && e.code === "duplicate"
-      ? checkContentSha(assignment.id, pdf.contentSha256, { source: "student", clientUploadId })
-      : null;
-    if (winner) return studentReplay(winner);
-    throw e;
-  }
-  return { receiptUrl: receiptUrl(submission.receiptToken, ""), duplicate: false };
-}
-
 /**
  * One student's paper uploaded by the teacher (its files, in any accepted format, merged in order); needs an
  * approved key, whatever the assignment status.
@@ -87,14 +47,13 @@ export async function ingestStudentUpload(
 export async function ingestTeacherUpload(
   a: Assignment,
   upload: UploadedFile | UploadedFile[],
-  origin: string,
-): Promise<{ submissionId: string; receiptUrl: string }> {
+): Promise<{ submissionId: string }> {
   assertKeyApproved(a);
   const files = [upload].flat();
   const pdf = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
   const submission = await storeTeacherPaper(a, pdf, uploadName(files));
   if (!submission) throw new AppError("duplicate", DUPLICATE_MESSAGE);
-  return { submissionId: submission.id, receiptUrl: receiptUrl(submission.receiptToken, origin) };
+  return { submissionId: submission.id };
 }
 
 /**
@@ -108,21 +67,12 @@ export async function storeTeacherPaper(
 ): Promise<Submission | null> {
   assertKeyApproved(a);
   try {
-    checkContentSha(a.id, pdf.contentSha256, { source: "teacher", clientUploadId: null });
-    return await storeSubmission(a.id, "teacher", pdf, originalFilename, assertKeyApproved);
+    checkContentSha(a.id, pdf.contentSha256);
+    return await storeSubmission(a.id, pdf, originalFilename);
   } catch (e) {
     if (isAppError(e) && e.code === "duplicate") return null;
     throw e;
   }
-}
-
-function assertStudentUploadsOn(): void {
-  if (!studentUploadsEnabled()) throw new AppError("closed", UPLOADS_OFF_MESSAGE);
-}
-
-function assertOpenForStudents(a: Assignment): void {
-  assertStudentUploadsOn();
-  if (a.status !== "open") throw new AppError("closed", "This assignment is not accepting submissions right now.");
 }
 
 export function assertKeyApproved(a: Pick<Assignment, "id">): void {
@@ -131,30 +81,12 @@ export function assertKeyApproved(a: Pick<Assignment, "id">): void {
   }
 }
 
-/**
- * Rejects the answer key itself and exact duplicates. Returns the earlier submission when the same
- * browser re-sends the same upload (a retry after a dropped connection, or a double tap). Anyone else
- * sending the same bytes, a classmate with a shared PDF for instance, gets `duplicate` and never
- * another student's receipt.
- */
-function checkContentSha(
-  assignmentId: string,
-  sha: string,
-  upload: { source: Submission["source"]; clientUploadId: string | null },
-): Submission | null {
+/** Rejects the answer key itself and exact duplicates of a paper already in the assignment. */
+function checkContentSha(assignmentId: string, sha: string): void {
   if (requireKey(assignmentId).sourceSha256 === sha) {
     throw new AppError("is_answer_key", "This file is the answer key, not a student's paper.");
   }
-  const existing = findBySha(assignmentId, sha);
-  if (!existing) return null;
-  const sameUpload = upload.source === "student" && existing.source === "student" && upload.clientUploadId !== null
-    && existing.clientUploadId === upload.clientUploadId;
-  if (sameUpload) return existing;
-  throw new AppError("duplicate", DUPLICATE_MESSAGE);
-}
-
-function studentReplay(s: Submission): { receiptUrl: string; duplicate: boolean } {
-  return { receiptUrl: receiptUrl(s.receiptToken, ""), duplicate: true };
+  if (findBySha(assignmentId, sha)) throw new AppError("duplicate", DUPLICATE_MESSAGE);
 }
 
 /**
@@ -163,10 +95,8 @@ function studentReplay(s: Submission): { receiptUrl: string; duplicate: boolean 
  */
 async function storeSubmission(
   assignmentId: string,
-  source: Submission["source"],
-  pdf: StoredPdf,
+  pdf: { bytes: Uint8Array; pageCount: number; contentSha256: string },
   originalFilename: string,
-  assertStillAccepting: (a: Assignment) => void,
 ): Promise<Submission> {
   const id = newId();
   const pdfPath = submissionPdfRel(assignmentId, id);
@@ -175,34 +105,30 @@ async function storeSubmission(
     return tx(() => {
       const assignment = getAssignment(assignmentId);
       if (!assignment) throw new AppError("not_found", "This assignment no longer exists.");
-      assertStillAccepting(assignment);
+      assertKeyApproved(assignment);
       if (countSubmissions(assignmentId) >= assignment.maxSubmissions) {
-        throw new AppError("submission_limit", "This assignment has reached its submission limit. Ask your teacher.");
+        throw new AppError("submission_limit", "This assignment has reached its paper limit. Raise it on the Settings tab.");
       }
       const submission = insertSubmission({
         id,
         assignmentId,
-        source,
+        source: "teacher",
+        // The column is required and unique; nothing reads it since the app stopped serving receipts to students.
         receiptToken: newToken(),
         pdfPath,
         originalFilename,
         contentSha256: pdf.contentSha256,
-        clientUploadId: pdf.clientUploadId ?? null,
+        clientUploadId: null,
         byteSize: pdf.bytes.byteLength,
         pageCount: pdf.pageCount,
       });
-      enqueueGrade(id, assignmentId, source === "student" ? PRIORITY.student : PRIORITY.teacher);
+      enqueueGrade(id, assignmentId, PRIORITY.teacher);
       return submission;
     });
   } catch (e) {
     await removeDataFile(pdfPath);
     throw e;
   }
-}
-
-/** `${origin}/r/<token>`; an empty origin gives the relative link. */
-export function receiptUrl(token: string, origin: string): string {
-  return `${origin}/r/${token}`;
 }
 
 // ---------------------------------------------------------------------------------------------

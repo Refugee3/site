@@ -157,13 +157,11 @@ function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: Key
       )}
       <KeyEditor
         assignmentId={assignment.id}
-        assignmentStatus={assignment.status}
         items={items}
         teacherNotes={key.teacherNotes}
         version={key.updatedAt}
         approved={isKeyApproved(key, items.length)}
         gradedCount={view.gradedCount}
-        studentsCanUpload={view.studentsCanUpload}
         kind={assignment.kind}
       />
     </div>

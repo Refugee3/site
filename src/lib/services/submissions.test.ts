@@ -7,44 +7,36 @@ import { getDb } from "@/lib/db/connection";
 import { listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { updateKey } from "@/lib/db/repos/keys";
 import { listLessons } from "@/lib/db/repos/lessons";
-import { countSubmissions, getSubmission, getSubmissionByReceipt, listItems, updateSubmission } from "@/lib/db/repos/submissions";
+import { countSubmissions, getSubmission, listItems, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { sha256Hex } from "@/lib/ids";
 import { PRIORITY } from "@/lib/jobs/queue";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
 import { loadGuidance } from "@/lib/services/guidance";
-import { setStudentUploads } from "@/lib/services/settings";
 import {
-  deleteSubmission, gradeManually, ingestStudentUpload, ingestTeacherUpload, markReviewed, regradeStale, regradeSubmission,
+  deleteSubmission, gradeManually, ingestTeacherUpload, markReviewed, regradeStale, regradeSubmission,
   regradeWithGuidance, retryFailed, saveItemOverride, setOverallFeedback, setTotalOverride, storeTeacherPaper, updateIdentity,
 } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, Submission } from "@/lib/types";
 import {
-  enableStudentUploads, makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, TINY_JPEG, useTestDb,
+  makePdf, seedApprovedKey, seedAssignment, seedSubmission, seedTeacher, TINY_JPEG, useTestDb,
 } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
-const ORIGIN = "https://school.test";
-const UPLOAD_ID = "0123456789abcdef0123456789abcdef";
 let assignment: Assignment;
 let items: KeyItem[];
 
 beforeEach(() => {
   setClockForTests(() => T0);
   useTestDb();
-  enableStudentUploads();
-  assignment = seedAssignment(seedTeacher().id, { status: "open" });
+  assignment = seedAssignment(seedTeacher().id);
   items = seedApprovedKey(assignment.id, [{ label: "1" }, { label: "2", pointsCenti: 200 }]);
 });
 
 async function pdfFile(label: string, pages = 1): Promise<UploadedFile> {
   return { filename: `${label}.pdf`, bytes: await makePdf(pages, { label }) };
-}
-
-function byReceipt(receiptUrl: string): Submission {
-  return getSubmissionByReceipt(receiptUrl.slice(receiptUrl.lastIndexOf("/") + 1))!;
 }
 
 /** A paper read as "Maria Lopez", submitted `minute` minutes after T0 (the newest one is the board's current row). */
@@ -62,149 +54,79 @@ function storedFiles(a: Assignment): string[] {
 
 /** Uploads a paper and grades it with every item answered correctly (no review flags). */
 async function gradedPaper(label = "maria"): Promise<Submission> {
-  const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [await pdfFile(label)]);
+  const { submissionId } = await ingestTeacherUpload(assignment, [await pdfFile(label)]);
   await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
-  const s = byReceipt(receiptUrl);
+  const s = getSubmission(submissionId)!;
   expect(s.status).toBe("graded");
   return s;
 }
 
-describe("ingestStudentUpload", () => {
-  it("stores the PDF and queues a student-priority grading job", async () => {
-    const result = await ingestStudentUpload(assignment.shareCode, [await pdfFile("maria")]);
+describe("ingestTeacherUpload", () => {
+  it("needs an approved key", async () => {
+    const draft = seedAssignment(seedTeacher().id);
+    await expect(ingestTeacherUpload(draft, await pdfFile("scan"))).rejects.toMatchObject({ code: "key_not_ready" });
+    expect(storedFiles(draft)).toEqual([]);
+  });
 
-    expect(result).toEqual({ receiptUrl: expect.stringMatching(/^\/r\/[A-Za-z0-9_-]{43}$/), duplicate: false });
-    const s = byReceipt(result.receiptUrl);
-    expect(s).toMatchObject({ status: "queued", source: "student", pageCount: 1, originalFilename: "maria.pdf" });
-    expect(fs.existsSync(path.join(getConfig().dataDir, s.pdfPath))).toBe(true);
-    expect(jobRows(s.id)).toMatchObject([{ kind: "grade_submission", status: "queued", priority: PRIORITY.student }]);
+  it("stores the paper whatever the assignment's stored status, and queues a teacher-priority grading job", async () => {
+    for (const status of ["draft", "open", "closed"] as const) {
+      updateAssignmentRow(assignment.id, { status });
+      const result = await ingestTeacherUpload(assignment, await pdfFile(`scan-${status}`, 2));
+
+      expect(result).toEqual({ submissionId: expect.any(String) });
+      const s = getSubmission(result.submissionId)!;
+      expect(s).toMatchObject({ source: "teacher", pageCount: 2, status: "queued", originalFilename: `scan-${status}.pdf` });
+      expect(fs.existsSync(path.join(getConfig().dataDir, s.pdfPath))).toBe(true);
+      expect(jobRows(s.id)).toMatchObject([{ kind: "grade_submission", status: "queued", priority: PRIORITY.teacher }]);
+    }
   });
 
   it("merges a PDF and a photo into one paper", async () => {
     const parts = [await pdfFile("first", 2), { filename: "photo.jpg", bytes: TINY_JPEG }];
-    const s = byReceipt((await ingestStudentUpload(assignment.shareCode, parts)).receiptUrl);
+    const s = getSubmission((await ingestTeacherUpload(assignment, parts)).submissionId)!;
     expect(s).toMatchObject({ pageCount: 3, originalFilename: "first.pdf + 1 more" });
   });
 
-  it("refuses an assignment that is not open", async () => {
+  it("accepts photos as well as PDFs, but not unknown file types", async () => {
+    await expect(ingestTeacherUpload(assignment, { filename: "photo.jpg", bytes: TINY_JPEG }))
+      .resolves.toMatchObject({ submissionId: expect.any(String) });
+    await expect(ingestTeacherUpload(assignment, { filename: "notes.bin", bytes: new TextEncoder().encode("hello") }))
+      .rejects.toMatchObject({ code: "unsupported_type" });
+  });
+
+  it("rejects a copy of any earlier paper", async () => {
     const file = await pdfFile("maria");
-    updateAssignmentRow(assignment.id, { status: "closed" });
-    await expect(ingestStudentUpload(assignment.shareCode, [file])).rejects.toMatchObject({ code: "closed" });
-
-    const draft = seedAssignment(seedTeacher().id);
-    seedApprovedKey(draft.id, [{}]);
-    await expect(ingestStudentUpload(draft.shareCode, [file])).rejects.toMatchObject({ code: "closed" });
-    expect(countSubmissions(assignment.id) + countSubmissions(draft.id)).toBe(0);
-  });
-
-  it("rejects an unknown share code", async () => {
-    await expect(ingestStudentUpload("ZZZZZZ", [await pdfFile("maria")])).rejects.toMatchObject({ code: "not_found" });
-  });
-
-  it("refuses every upload while student uploads are turned off, before looking up the code", async () => {
-    setStudentUploads(false);
-    const closed = {
-      code: "closed", message: "Your teacher isn't accepting online submissions. Hand your paper to your teacher instead.",
-    };
-    await expect(ingestStudentUpload(assignment.shareCode, [await pdfFile("maria")])).rejects.toMatchObject(closed);
-    await expect(ingestStudentUpload("ZZZZZZ", [await pdfFile("maria")])).rejects.toMatchObject(closed);
-    expect(countSubmissions(assignment.id)).toBe(0);
-    expect(storedFiles(assignment)).toEqual([]);
-  });
-
-  it("returns the earlier receipt when the same browser sends the same upload again", async () => {
-    const parts = [await pdfFile("maria")];
-    const first = await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
-    const replay = await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
-
-    expect(replay).toEqual({ receiptUrl: first.receiptUrl, duplicate: true });
+    await ingestTeacherUpload(assignment, [file]);
+    await expect(ingestTeacherUpload(assignment, file)).rejects.toMatchObject({
+      code: "duplicate", message: "This exact file was already submitted for this assignment.",
+    });
     expect(countSubmissions(assignment.id)).toBe(1);
-    expect(byReceipt(first.receiptUrl).clientUploadId).toBe(UPLOAD_ID);
   });
 
-  it("never hands another upload of the same bytes the earlier student's receipt", async () => {
+  it("stores one paper when the same file is uploaded twice at once", async () => {
     const parts = [await pdfFile("maria")];
-    await ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID);
-    for (const otherId of ["another-upload-id-42", null]) {
-      await expect(ingestStudentUpload(assignment.shareCode, parts, otherId)).rejects.toMatchObject({ code: "duplicate" });
-    }
-    // An upload sent without an id cannot be replayed either.
-    const anonymous = [await pdfFile("ana")];
-    await ingestStudentUpload(assignment.shareCode, anonymous);
-    await expect(ingestStudentUpload(assignment.shareCode, anonymous)).rejects.toMatchObject({ code: "duplicate" });
-    expect(countSubmissions(assignment.id)).toBe(2);
-  });
+    const results = await Promise.allSettled([ingestTeacherUpload(assignment, parts), ingestTeacherUpload(assignment, parts)]);
 
-  it("returns one receipt for a double tap (two identical uploads at once)", async () => {
-    const parts = [await pdfFile("maria")];
-    const [a, b] = await Promise.all([
-      ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID),
-      ingestStudentUpload(assignment.shareCode, parts, UPLOAD_ID),
-    ]);
-
-    expect(a.receiptUrl).toBe(b.receiptUrl);
-    expect([a.duplicate, b.duplicate].sort()).toEqual([false, true]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "duplicate" } });
+    expect(countSubmissions(assignment.id)).toBe(1);
     expect(storedFiles(assignment)).toHaveLength(1);
   });
 
   it("refuses the answer key uploaded as a paper", async () => {
     const file = await pdfFile("key");
     updateKey(assignment.id, { sourceSha256: sha256Hex(file.bytes) });
-    await expect(ingestStudentUpload(assignment.shareCode, [file])).rejects.toMatchObject({ code: "is_answer_key" });
+    await expect(ingestTeacherUpload(assignment, [file])).rejects.toMatchObject({ code: "is_answer_key" });
   });
 
-  it("refuses a student upload identical to a teacher's upload", async () => {
-    const file = await pdfFile("scan");
-    await ingestTeacherUpload(assignment, file, ORIGIN);
-    await expect(ingestStudentUpload(assignment.shareCode, [file])).rejects.toMatchObject({ code: "duplicate" });
-  });
-
-  it("enforces the submission limit and removes the file it wrote", async () => {
-    const limited = seedAssignment(seedTeacher().id, { status: "open", maxSubmissions: 1 });
+  it("enforces the paper limit and removes the file it wrote", async () => {
+    const limited = seedAssignment(seedTeacher().id, { maxSubmissions: 1 });
     seedApprovedKey(limited.id, [{}]);
-    await ingestStudentUpload(limited.shareCode, [await pdfFile("first")]);
+    await ingestTeacherUpload(limited, [await pdfFile("first")]);
 
-    await expect(ingestStudentUpload(limited.shareCode, [await pdfFile("second")])).rejects.toMatchObject({ code: "submission_limit" });
+    await expect(ingestTeacherUpload(limited, [await pdfFile("second")])).rejects.toMatchObject({ code: "submission_limit" });
     expect(countSubmissions(limited.id)).toBe(1);
     expect(storedFiles(limited)).toHaveLength(1);
-  });
-});
-
-describe("ingestTeacherUpload", () => {
-  it("needs an approved key", async () => {
-    const draft = seedAssignment(seedTeacher().id);
-    await expect(ingestTeacherUpload(draft, await pdfFile("scan"), ORIGIN)).rejects.toMatchObject({ code: "key_not_ready" });
-  });
-
-  it("stores a scanned paper whatever the assignment status, with an absolute receipt link", async () => {
-    updateAssignmentRow(assignment.id, { status: "closed" });
-    const result = await ingestTeacherUpload(assignment, await pdfFile("scan", 2), ORIGIN);
-
-    const s = getSubmission(result.submissionId)!;
-    expect(result.receiptUrl).toBe(`${ORIGIN}/r/${s.receiptToken}`);
-    expect(s).toMatchObject({ source: "teacher", pageCount: 2, status: "queued" });
-    expect(jobRows(s.id)).toMatchObject([{ status: "queued", priority: PRIORITY.teacher }]);
-  });
-
-  it("accepts photos as well as PDFs, but not unknown file types", async () => {
-    await expect(ingestTeacherUpload(assignment, { filename: "photo.jpg", bytes: TINY_JPEG }, ORIGIN))
-      .resolves.toMatchObject({ submissionId: expect.any(String) });
-    await expect(ingestTeacherUpload(assignment, { filename: "notes.bin", bytes: new TextEncoder().encode("hello") }, ORIGIN))
-      .rejects.toMatchObject({ code: "unsupported_type" });
-  });
-
-  it("rejects a copy of any earlier paper", async () => {
-    const file = await pdfFile("maria");
-    await ingestStudentUpload(assignment.shareCode, [file]);
-    await expect(ingestTeacherUpload(assignment, file, ORIGIN)).rejects.toMatchObject({
-      code: "duplicate", message: "This exact file was already submitted for this assignment.",
-    });
-  });
-
-  it("works while student uploads are turned off", async () => {
-    setStudentUploads(false);
-    const result = await ingestTeacherUpload(assignment, await pdfFile("scan"), ORIGIN);
-    expect(getSubmission(result.submissionId)).toMatchObject({ source: "teacher", status: "queued" });
   });
 });
 
@@ -298,7 +220,7 @@ describe("overrides and feedback", () => {
   });
 
   it("accepts a total override above one item's 1000-point maximum", () => {
-    const big = seedAssignment(seedTeacher().id, { status: "open" });
+    const big = seedAssignment(seedTeacher().id);
     const [first] = seedApprovedKey(big.id, [{ pointsCenti: 80_000 }, { pointsCenti: 80_000 }]);
     const s = seedSubmission(big.id, { status: "graded" });
 
@@ -412,9 +334,8 @@ describe("review workflow", () => {
     let minute = 0;
     /** A graded paper the teacher named `name` (regrades keep it), submitted a minute after the previous one. */
     const named = async (name: string, label: string) => {
-      const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [await pdfFile(label)]);
+      const { submissionId: id } = await ingestTeacherUpload(assignment, [await pdfFile(label)]);
       await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
-      const { id } = byReceipt(receiptUrl);
       updateIdentity(getSubmission(id)!, { studentName: name, sectionId: null });
       getDb().prepare("UPDATE submissions SET created_at = ? WHERE id = ?").run(T0 + ++minute * 60_000, id);
       return getSubmission(id)!;
@@ -454,8 +375,8 @@ describe("review workflow", () => {
   });
 
   it("deleteSubmission removes the row, its queued job and its file", async () => {
-    const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [await pdfFile("maria")]);
-    const s = byReceipt(receiptUrl);
+    const { submissionId } = await ingestTeacherUpload(assignment, [await pdfFile("maria")]);
+    const s = getSubmission(submissionId)!;
 
     await deleteSubmission(s);
 

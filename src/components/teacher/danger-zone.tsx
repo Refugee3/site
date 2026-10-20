@@ -1,67 +1,20 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { deleteAssignmentAction, rotateShareCodeAction } from "@/actions/assignments";
+import { deleteAssignmentAction } from "@/actions/assignments";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { cx } from "@/components/ui/cx";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
 import { SubmitButton } from "@/components/ui/submit-button";
 import type { ActionResult } from "@/lib/types";
-import { useActionRunner } from "./use-action-runner";
 
 export interface DangerZoneProps {
   assignmentId: string;
   title: string;
-  /** Off: student codes are hidden everywhere, so there is no code to replace. */
-  studentsCanUpload: boolean;
 }
 
-/** Actions that break existing links or lose data: a new student code (while students can upload), and deleting the assignment. */
-export function DangerZone({ assignmentId, title, studentsCanUpload }: DangerZoneProps) {
-  return (
-    <div className="flex flex-col divide-y divide-line">
-      {studentsCanUpload && <RotateCode assignmentId={assignmentId} />}
-      <DeleteAssignment assignmentId={assignmentId} title={title} separated={studentsCanUpload} />
-    </div>
-  );
-}
-
-function RotateCode({ assignmentId }: { assignmentId: string }) {
-  const runner = useActionRunner();
-  const [rotated, setRotated] = useState(false);
-
-  function rotate() {
-    if (!window.confirm("Make a new student code? The current code and link stop working immediately.")) return;
-    setRotated(false);
-    runner.run(() => rotateShareCodeAction(assignmentId), () => setRotated(true));
-  }
-
-  return (
-    <section className="flex flex-col gap-2 pb-6">
-      <h3 className="font-semibold">New student code</h3>
-      <p className="text-sm text-muted">
-        Use this if the code was shared where it shouldn&apos;t be. The old code and link stop working at once; papers
-        already handed in and their receipt links are not affected.
-      </p>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="secondary" disabled={runner.pending} onClick={rotate}>
-          {runner.pending && <Spinner className="size-4" />}
-          Make a new code
-        </Button>
-        <p role="status" className="text-sm text-success-800">
-          {rotated && "New code created — it's shown at the top of the page."}
-        </p>
-      </div>
-      {runner.error && <Alert tone="danger">{runner.error}</Alert>}
-    </section>
-  );
-}
-
-/** `separated`: below another section, so it keeps its distance from the divider. */
-function DeleteAssignment({ assignmentId, title, separated }: { assignmentId: string; title: string; separated: boolean }) {
+/** Deleting the assignment, confirmed by typing its title. */
+export function DangerZone({ assignmentId, title }: DangerZoneProps) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(
     deleteAssignmentAction.bind(null, assignmentId),
     null,
@@ -72,11 +25,11 @@ function DeleteAssignment({ assignmentId, title, separated }: { assignmentId: st
   const matches = confirmTitle.trim() === title.trim();
 
   return (
-    <form action={formAction} className={cx("flex flex-col gap-3", separated && "pt-6")}>
+    <form action={formAction} className="flex flex-col gap-3">
       <h3 className="font-semibold text-danger-700">Delete this assignment</h3>
       <p className="text-sm text-muted">
-        Deletes the answer key, every paper, all grades and feedback, and the students&apos; receipt links. This can&apos;t
-        be undone. Export the grades first if you need them.
+        Deletes the answer key, every paper, and all grades and feedback. This can&apos;t be undone. Download the grades
+        (CSV) from the Results tab first if you need them.
       </p>
       {failure && !failure.fieldErrors && <Alert tone="danger">{failure.error}</Alert>}
       <Field

@@ -1,21 +1,19 @@
 import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { boardRefreshMs } from "@/components/teacher/board-helpers";
-import { OutcomeLegend, QuestionStatsTable } from "@/components/teacher/question-stats";
+import { MissedQuestionsCard, MOST_MISSED_TITLE, OutcomeLegend, QuestionStatsTable } from "@/components/teacher/question-stats";
 import { plural } from "@/components/teacher/text";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
-import { formatPercent } from "@/lib/format";
-import { MISS_HIGHLIGHT_MIN_PAPERS, MISS_HIGHLIGHT_MIN_TENTHS } from "@/lib/grading/item-stats";
+import { MISS_HIGHLIGHT_MIN_PAPERS } from "@/lib/grading/item-stats";
 import { getQuestionsView } from "@/lib/services/views";
 
 export default async function QuestionsPage(props: PageProps<"/teacher/assignments/[id]/questions">) {
   await connection();
   const { id } = await props.params;
   const { assignment } = await requireOwnedAssignment(id);
-  const { stats, active, open } = getQuestionsView(assignment);
-  const threshold = formatPercent(MISS_HIGHLIGHT_MIN_TENTHS);
+  const { stats, active } = getQuestionsView(assignment);
 
   return (
     <div className="flex flex-col gap-5">
@@ -29,26 +27,34 @@ export default async function QuestionsPage(props: PageProps<"/teacher/assignmen
           )}
         </div>
         <p className="max-w-3xl text-muted">
-          How the class did on each question, from each student&apos;s latest paper once it&apos;s graded (papers waiting
-          for your review count too). An answer counts as missed if it didn&apos;t get full credit for being right — wrong,
-          blank or unreadable, or partly right by the credit it lost — whatever the grading mode, and your point changes
-          count. Questions missed by {threshold} or more, once at least {MISS_HIGHLIGHT_MIN_PAPERS} papers are graded,
-          are highlighted.
+          How the class did on each question, from each student&apos;s latest graded paper (papers waiting for your check
+          count too). An answer counts as missed if it wasn&apos;t fully right — wrong, blank or unreadable, or partly right
+          by the credit it lost — and your point changes count. Questions more than half the class missed are highlighted
+          as &ldquo;{MOST_MISSED_TITLE.toLowerCase()}&rdquo; once at least {MISS_HIGHLIGHT_MIN_PAPERS} papers are graded.
         </p>
       </div>
 
       {stats.items.length === 0 ? (
-        <EmptyState title="No questions yet" body="Add the answer key first: the questions come from it." />
+        <EmptyState
+          title="No questions yet"
+          body="The questions come from the answer key. Add it and approve it first."
+          action={<LinkButton href={`/teacher/assignments/${assignment.id}/key`}>Add the answer key</LinkButton>}
+        />
       ) : stats.countedPapers === 0 ? (
-        <EmptyState title="No graded papers yet" body="The numbers appear here as papers are graded." />
+        <EmptyState
+          title="No graded papers yet"
+          body="Upload the students' work. The numbers for each question appear here as papers are graded."
+          action={<LinkButton href={`/teacher/assignments/${assignment.id}/upload`}>Upload students&apos; work</LinkButton>}
+        />
       ) : (
         <>
+          <MissedQuestionsCard assignmentId={assignment.id} stats={stats} activeItemId={null} onQuestionsTab />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-medium">
               {plural(stats.countedPapers, "graded paper")} ·{" "}
               {stats.highlighted.length === 0
-                ? `no question missed by ${threshold} or more`
-                : `${plural(stats.highlighted.length, "question")} missed by ${threshold} or more`}
+                ? "no question was missed by most of the class"
+                : `${plural(stats.highlighted.length, "question")} most of the class got wrong`}
             </p>
             <OutcomeLegend />
           </div>
@@ -56,7 +62,7 @@ export default async function QuestionsPage(props: PageProps<"/teacher/assignmen
         </>
       )}
 
-      <AutoRefresh intervalMs={boardRefreshMs({ active, open })} />
+      <AutoRefresh intervalMs={boardRefreshMs({ active })} />
     </div>
   );
 }

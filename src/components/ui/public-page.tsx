@@ -6,11 +6,11 @@ export const APP_NAME = "PDF Auto-Grader";
 
 export interface PublicPageProps {
   children: ReactNode;
-  /** "narrow" suits forms and phone-first student pages; "wide" suits longer reading. */
+  /** "narrow" suits forms; "wide" suits longer reading. */
   width?: "narrow" | "wide";
 }
 
-/** The shell of the signed-out pages (start page, login, signup, student upload and receipt). */
+/** The shell of the signed-out pages (login and signup). */
 export function PublicPage({ children, width = "narrow" }: PublicPageProps) {
   return (
     <>

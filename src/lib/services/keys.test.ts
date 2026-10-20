@@ -6,15 +6,14 @@ import { getConfig } from "@/lib/config";
 import type { DB } from "@/lib/db/connection";
 import { getAssignment } from "@/lib/db/repos/assignments";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
-import { getSubmission, getSubmissionByReceipt, updateSubmission } from "@/lib/db/repos/submissions";
+import { getSubmission, updateSubmission } from "@/lib/db/repos/submissions";
 import { makeGradingOutput } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
 import { ingestKeyPdf, retryKeyExtraction, saveKey } from "@/lib/services/keys";
-import { setStudentUploads } from "@/lib/services/settings";
-import { ingestStudentUpload } from "@/lib/services/submissions";
+import { ingestTeacherUpload } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, SaveKeyInput } from "@/lib/types";
-import { enableStudentUploads, makePdf, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
+import { makePdf, seedAssignment, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 
 let db: DB;
 let assignment: Assignment;
@@ -22,7 +21,6 @@ let assignment: Assignment;
 beforeEach(() => {
   setClockForTests(() => 1_700_000_000_000);
   db = useTestDb();
-  enableStudentUploads();
   assignment = seedAssignment(seedTeacher().id);
 });
 
@@ -127,16 +125,15 @@ describe("retryKeyExtraction", () => {
 
 describe("saveKey", () => {
   it("approves a manually built key at revision 1", () => {
-    const result = saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" })] }, { open: false });
+    const result = saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" })] });
 
     expect(result).toEqual({ revision: 1, staleCount: 0 });
     expect(getKey(assignment.id)).toMatchObject({ status: "ready", revision: 1, approvedRevision: 1, errorMessage: null });
     expect(listKeyItems(assignment.id)).toHaveLength(2);
   });
 
-  it("saves and approves without opening the assignment while student uploads are turned off", () => {
-    setStudentUploads(false);
-    const result = saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: true });
+  it("saves and approves without changing the assignment's stored status", () => {
+    const result = saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] });
 
     expect(result).toEqual({ revision: 1, staleCount: 0 });
     expect(getKey(assignment.id)).toMatchObject({ status: "ready", approvedRevision: 1 });
@@ -144,51 +141,49 @@ describe("saveKey", () => {
   });
 
   it("re-approves an unchanged key without a new revision, and rescores on new points", async () => {
-    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" })] }, { open: true });
-    expect(getAssignment(assignment.id)!.status).toBe("open");
-    const { receiptUrl } = await ingestStudentUpload(assignment.shareCode, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" })] });
+    const { submissionId: paperId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
     await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
-    const paperId = getSubmissionByReceipt(receiptUrl.slice("/r/".length))!.id;
     expect(getSubmission(paperId)!.scoreEarnedCenti).toBe(200);
 
     const items = listKeyItems(assignment.id);
     const result = saveKey(assignment, {
       teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf(items, (item) => ({ pointsCenti: item.label === "2" ? 300 : 100 })),
-    }, { open: false });
+    });
 
     expect(result).toEqual({ revision: 1, staleCount: 0 });
     expect(getSubmission(paperId)).toMatchObject({ scoreEarnedCenti: 400, scoreMaxCenti: 400 });
   });
 
   it("starts a new revision when an expected answer changes, making graded papers stale", () => {
-    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: false });
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] });
     const graded = seedSubmission(assignment.id, { status: "graded" });
     db.prepare("UPDATE submissions SET graded_key_revision = 1 WHERE id = ?").run(graded.id);
     seedSubmission(assignment.id, { status: "queued" });
 
     const result = saveKey(assignment, {
       teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf(listKeyItems(assignment.id), () => ({ expectedAnswer: "x = 5" })),
-    }, { open: false });
+    });
 
     expect(result).toEqual({ revision: 2, staleCount: 1 });
     expect(getKey(assignment.id)).toMatchObject({ revision: 2, approvedRevision: 2 });
   });
 
   it("needs the acknowledgement for AI-proposed answers, which then become the teacher's", () => {
-    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: false });
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] });
     const [item] = listKeyItems(assignment.id);
     db.prepare("UPDATE key_items SET answer_source = 'ai_proposed' WHERE id = ?").run(item.id);
 
-    expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf([item]) }, { open: false }))
+    expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf([item]) }))
       .toThrow(expect.objectContaining({ code: "validation", extra: { fieldErrors: { acknowledgeAiProposed: [expect.any(String)] } } }));
 
-    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: true, items: rowsOf([item]) }, { open: false });
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: true, items: rowsOf([item]) });
     expect(listKeyItems(assignment.id)[0].answerSource).toBe("teacher");
   });
 
   it("is refused while the key is being read", () => {
     updateKey(assignment.id, { status: "processing" });
-    expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }, { open: false }))
+    expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }))
       .toThrow(expect.objectContaining({ code: "invalid_state" }));
   });
 });

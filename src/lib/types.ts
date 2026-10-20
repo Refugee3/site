@@ -148,16 +148,21 @@ export interface ScanSplitProgress {
   papersGraded: number | null;
 }
 export interface DashboardView { assignments: Array<{ id: string; title: string; kind: AssignmentKind;
-  status: AssignmentStatus; shareCode: string; keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans;
-  released: boolean; createdAt: number;
+  keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans; createdAt: number;
   /** The current grading batch (see GradingProgress); null while nothing is queued or grading. */
-  progress: { done: number; total: number } | null }>;
-  studentsCanUpload: boolean }
-export interface AssignmentHeader { assignment: Assignment; shareUrl: string; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
-  totalPointsCenti: number; counts: StatusCounts; canOpen: boolean; studentsCanUpload: boolean }
+  progress: { done: number; total: number } | null }> }
+/** A question most of a class missed, on the dashboard's "Where students are struggling" (see getStrugglingQuestions). */
+export interface StrugglingQuestion { assignmentId: string; assignmentTitle: string; kind: AssignmentKind; itemId: string; label: string;
+  prompt: string;
+  /** The miss rate (see item-stats.ts), in tenths of a percent; above 500. */
+  missedTenths: number;
+  /** Students (current papers) who didn't get full credit, of `judged`. */
+  missedPapers: number; judged: number }
+export interface AssignmentHeader { assignment: Assignment; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
+  totalPointsCenti: number; counts: StatusCounts; scans: PendingScans }
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
 export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
-  source: "student" | "teacher"; scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
+  scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number;
   /** Only while the board is filtered to the papers that missed an item: how this paper did on it and what it wrote. */
   missed?: { outcome: ItemOutcome; answer: string } }
@@ -167,7 +172,9 @@ export interface BoardRow { submissionId: string; displayName: string; status: S
  */
 export type ItemOutcome = "correct" | "partly" | "wrong" | "blank" | "unreadable";
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
-  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean; open: boolean; studentsCanUpload: boolean;
+  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean;
+  /** The answer key is approved, so papers can be uploaded. */
+  keyApproved: boolean;
   /**
    * `?missed=<itemId>`: the board shows only the current graded papers that missed that item (anything short of full
    * accuracy credit), with the answers written most often among them. Null without the filter or for an unknown item.
@@ -176,15 +183,14 @@ export interface BoardView { groups: Array<{ key: string; label: string; rows: B
   /** Null while none of the assignment's papers is queued or being graded. */
   progress: GradingProgress | null }
 export interface KeyEditorView { key: AnswerKey; items: KeyItem[]; keyPdfUrl: string | null; gradedCount: number; locked: boolean;
-  studentsCanUpload: boolean;
   /** Only while the key is processing: when it went to processing (epoch ms) and the median of the last 20 readings (else 45 000). */
   extraction: { extractionStartedAt: number; typicalExtractionMs: number } | null }
 export interface ReviewItemView { item: KeyItem; result: SubmissionItem | null; score: ItemScore;
   /** `sent`: the grader is sent it now; otherwise `notSent` says why (as on the Lessons tab). */
   lesson: { id: string; reason: string; active: boolean; sent: boolean; notSent: LessonNotSentReason | null } | null }
 export interface ReviewView { submission: Submission; sections: Section[]; sectionLabel: string | null; items: ReviewItemView[];
-  score: ScoreResult; stale: boolean; pdfUrl: string; receiptUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
-  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; released: boolean; guidanceStale: boolean;
+  score: ScoreResult; stale: boolean; pdfUrl: string; prevId: string | null; nextId: string | null; nextNeedsReviewId: string | null;
+  earlierAttempts: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; guidanceStale: boolean;
   /** The engine that would grade this paper now; null without a usable key. */
   gradingEngine: GraderEngine | null;
   /** Only while the paper is queued: how many queued papers (of every assignment) the worker takes before it; 0 = next. */
@@ -193,15 +199,6 @@ export interface ReviewView { submission: Submission; sections: Section[]; secti
   gradingTiming: { gradingStartedAt: number; typicalPaperMs: number } | null }
 export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null; agentSessions: number; agentActiveSeconds: number } }
-export interface StudentUploadView { code: string; title: string; instructions: string; teacherName: string; status: AssignmentStatus;
-  accepting: boolean; maxUploadMb: number; maxPages: number; maxFiles: number }
-export type ReceiptPhase = "processing" | "checked" | "released" | "problem";
-export type ReceiptNotice = "no_name" | "wrong_assignment" | "blank" | "pages_missing";
-export interface ReceiptView { assignmentTitle: string; submittedAt: number; pageCount: number; phase: ReceiptPhase;
-  pdfUrl: string; detectedName: string | null; detectedSection: string | null; notices: ReceiptNotice[];
-  result: null | { earnedCenti: number; maxCenti: number; percentTenths: number | null; overallFeedback: string;
-    groups: Array<{ groupLabel: string; items: Array<{ label: string; earnedCenti: number; maxCenti: number; whatStudentDid: string; feedback: string }> }> };
-  canResubmit: boolean }
 
 // ---- v2: scans ----
 export const SCAN_STATUSES = ["splitting", "review", "creating", "done", "failed"] as const;
@@ -294,9 +291,7 @@ export interface TeacherSettingsView {
     setByName: string | null; unreadable: boolean; envKeySet: boolean };
   aiMode: "claude" | "fake";
   /** Settings → AI model: reads answer keys and grades papers, with either engine. */
-  aiModel: AiModel; studentsCanUpload: boolean;
-  /** Assignments (of every teacher) left open: they take student uploads again as soon as the switch is turned on. */
-  openAssignmentCount: number; gradingPreferences: string; worker: WorkerStatus | null;
+  aiModel: AiModel; gradingPreferences: string; worker: WorkerStatus | null;
   grader: { engine: GradingEngineChoice; /** null in AI_MODE=fake or without a usable key */ agent: HostedAgentStatusView | null } }
 /** `paperDeleted`: the paper the correction was made on was deleted (`paperHref` is then null); the lesson can be deleted. */
 export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: number; itemMaxCenti: number; sent: boolean;
@@ -307,7 +302,7 @@ export interface ScanSummary { id: string; status: ScanStatus; splitMode: ScanSp
   /** The AI's split looked clean, so its papers were created and queued for grading without the teacher. */
   autoGraded: boolean }
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
-  maxScanMb: number; maxScanPages: number; studentsCanUpload: boolean;
+  maxScanMb: number; maxScanPages: number;
   /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
   onePassAvailable: boolean }
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */

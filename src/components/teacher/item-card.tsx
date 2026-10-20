@@ -155,7 +155,7 @@ export function itemFormKey(itemId: string): string {
 }
 
 /**
- * Points override, the two notes the student reads ("what you did" and feedback), and why the teacher made
+ * Points override, the two notes for the student ("what you did" and feedback), and why the teacher made
  * the correction (the grader learns from it). All are saved together (the action stores them all); "Clear"
  * and the "Use the AI's …" buttons save at once, leaving the other fields, the reason included, as stored.
  * The unsaved/save logic is in override-form.ts.
@@ -231,7 +231,7 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
       <div className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <label htmlFor={ids.note} className="text-sm font-medium">
-            What you did (the student sees this)
+            What the student did (note)
           </label>
           {hasNoteOverride && aiNote !== "" && (
             <Button
@@ -267,7 +267,7 @@ function OverrideForm({ assignmentId, submissionId, entry }: { assignmentId: str
       <div className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <label htmlFor={ids.feedback} className="text-sm font-medium">
-            Feedback (the student sees this)
+            Feedback for the student
           </label>
           {hasFeedbackOverride && aiFeedback !== "" && (
             <Button

@@ -29,7 +29,7 @@ const DEFAULT_FILENAME = "upload.pdf";
 // Control characters, plus the bidi controls that can make a name display as something else.
 const INVISIBLE_CONTROLS = /[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
 
-// Decompression limits. Uploads come from anyone with a share code, and a few KB of compressed data can
+// Decompression limits. Uploads are files from anywhere (scanners, phones, email), and a few KB of compressed data can
 // expand to gigabytes on the main thread, so everything that is decoded while validating is capped first.
 /** Bytes of object and cross-reference streams pdf-lib may inflate while loading one PDF. */
 export const MAX_PDF_DECODED_BYTES = 64 * 1_048_576;

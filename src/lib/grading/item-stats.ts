@@ -12,10 +12,16 @@ export type { ItemOutcome };
 // A partly right answer counts as missed by the credit it lost (a minor error on a partial-credit item is 1/4 missed),
 // and an answer the AI could not judge earns nothing until the teacher overrides it, as in the grades.
 
+// "Questions most students got wrong": the highlight rule, in one place (the board's card, the Questions tab, the CSV
+// and the dashboard's "Where students are struggling" all use isHighlighted).
+
 /** An item is highlighted once at least this many current papers were judged on it… */
 export const MISS_HIGHLIGHT_MIN_PAPERS = 5;
-/** …and its miss rate is at least this many tenths of a percent (400 = 40%). */
-export const MISS_HIGHLIGHT_MIN_TENTHS = 400;
+/**
+ * …and a majority missed it: its miss rate is above this many tenths of a percent (500 = 50%). Since a paper loses at
+ * most all of an item's credit, a miss rate above 50% also means more than half of the papers missed it at least partly.
+ */
+export const MISS_HIGHLIGHT_ABOVE_TENTHS = 500;
 
 /** Papers that count: graded, or graded and waiting for the teacher's review. */
 const COUNTED_STATUSES: readonly SubmissionStatus[] = ["graded", "needs_review"];
@@ -51,7 +57,7 @@ export interface SectionItemStats extends ItemTally {
 
 export interface ItemStats extends ItemTally {
   item: Pick<KeyItem, "id" | "label" | "groupLabel" | "prompt" | "position" | "pointsCenti">;
-  /** At least MISS_HIGHLIGHT_MIN_PAPERS judged and missed by at least MISS_HIGHLIGHT_MIN_TENTHS. */
+  /** At least MISS_HIGHLIGHT_MIN_PAPERS judged and missed by more than MISS_HIGHLIGHT_ABOVE_TENTHS (a majority). */
   highlighted: boolean;
   /** The same tally per board section, in board order; empty unless the counted papers fall in two or more sections. */
   sections: SectionItemStats[];
@@ -114,7 +120,7 @@ export function computeItemStats(
 }
 
 export function isHighlighted(t: Pick<ItemTally, "judged" | "missedTenths">): boolean {
-  return t.judged >= MISS_HIGHLIGHT_MIN_PAPERS && t.missedTenths !== null && t.missedTenths >= MISS_HIGHLIGHT_MIN_TENTHS;
+  return t.judged >= MISS_HIGHLIGHT_MIN_PAPERS && t.missedTenths !== null && t.missedTenths > MISS_HIGHLIGHT_ABOVE_TENTHS;
 }
 
 export function isCountedStatus(status: SubmissionStatus): boolean {
