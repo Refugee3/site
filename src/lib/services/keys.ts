@@ -2,6 +2,7 @@ import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
+import { deleteKeyQuestions, skipPendingKeyQuestions } from "@/lib/db/repos/key-questions";
 import { listKeyItems, updateKey, upsertKeyItems } from "@/lib/db/repos/keys";
 import { listStaleIds } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
@@ -41,6 +42,7 @@ export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | Uploade
         processingStartedAt: now(),
         processingFinishedAt: null,
       });
+      deleteKeyQuestions(a.id); // the previous key's; this one's come with its reading
       queueExtraction(a.id);
       return { key, previousPdfPath: previous.sourcePdfPath };
     });
@@ -60,6 +62,7 @@ export function retryKeyExtraction(a: Assignment): void {
       throw new AppError("invalid_state", "There is no uploaded key PDF to read again. Upload one or build the key manually.");
     }
     updateKey(a.id, { status: "processing", errorMessage: null, processingStartedAt: now(), processingFinishedAt: null });
+    deleteKeyQuestions(a.id);
     queueExtraction(a.id);
   });
 }
@@ -106,6 +109,8 @@ export function saveKey(a: Assignment, input: SaveKeyInput): { revision: number;
       status: "ready",
       errorMessage: null,
     });
+    // Approved without answering them: the teacher checked the key themselves.
+    skipPendingKeyQuestions(a.id);
     rescoreAssignment(a.id);
     const staleCount = listStaleIds(a.id, revision).length;
     return { revision, staleCount };

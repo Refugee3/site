@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { connection } from "next/server";
-import { AutoRefresh } from "@/components/auto-refresh";
 import { AssignmentCard } from "@/components/teacher/assignment-card";
+import { DashboardLive } from "@/components/teacher/dashboard-live";
+import { NewFromKey } from "@/components/teacher/new-from-key";
 import { StrugglingQuestions } from "@/components/teacher/struggling-questions";
 import { cx } from "@/components/ui/cx";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -12,9 +13,6 @@ import { getDashboardView, getStrugglingQuestions } from "@/lib/services/views";
 import type { AssignmentKind } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Assignments" };
-
-/** While any paper is being graded, a scan split or a key read, so the cards' bars and next steps keep up. */
-const BUSY_POLL_MS = 4000;
 
 const KIND_FILTERS: Array<{ kind: AssignmentKind | null; label: string; href: string }> = [
   { kind: null, label: "All", href: "/teacher" },
@@ -37,10 +35,12 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
     <>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Assignments</h1>
-        <LinkButton href={kind === "quiz" ? "/teacher/assignments/new?kind=quiz" : "/teacher/assignments/new"}>
-          New homework or quiz
+        <LinkButton href={kind === "quiz" ? "/teacher/assignments/new?kind=quiz" : "/teacher/assignments/new"} variant="secondary">
+          New homework or quiz from a form
         </LinkButton>
       </div>
+
+      <NewFromKey defaultKind={kind ?? "homework"} />
 
       {view.assignments.length > 0 && (
         <StrugglingQuestions
@@ -81,8 +81,8 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
       {view.assignments.length === 0 ? (
         <EmptyState
           title="No assignments yet"
-          body="Start with a homework or quiz: 1. add its answer key, 2. upload your students' work, 3. review the results. The AI grades each paper against your key and flags anything it isn't sure about for you to check."
-          action={<LinkButton href="/teacher/assignments/new">Create your first homework or quiz</LinkButton>}
+          body="Drop an answer key above to start: the AI reads it and asks you anything it needs, then you drop your students' work and watch the results come in. Every paper is graded against your key, and anything the AI isn't sure about is flagged for you to check."
+          action={<LinkButton href="/teacher/assignments/new" variant="secondary">Or fill in a form first</LinkButton>}
         />
       ) : shown.length === 0 ? (
         <EmptyState
@@ -103,7 +103,8 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
         </ul>
       )}
 
-      <AutoRefresh intervalMs={busy ? BUSY_POLL_MS : null} />
+      {/* Live: the cards re-render as keys are read and papers graded (polls while busy if the live stream fails). */}
+      <DashboardLive busy={busy} />
     </>
   );
 }

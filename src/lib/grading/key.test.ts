@@ -15,7 +15,7 @@ function extractedItem(o: Partial<ExtractedItem> = {}): ExtractedItem {
 }
 
 function extraction(items: ExtractedItem[], o: Partial<KeyExtraction> = {}): KeyExtraction {
-  return { document_kind: "answer_key", items, stated_total_points: null, notes: "", ...o };
+  return { document_kind: "answer_key", items, stated_total_points: null, notes: "", questions_for_teacher: [], suggested_title: null, ...o };
 }
 
 const OPTIONS = { pageCount: 3, maxItems: 200 };

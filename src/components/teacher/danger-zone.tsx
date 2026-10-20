@@ -29,7 +29,7 @@ export function DangerZone({ assignmentId, title }: DangerZoneProps) {
       <h3 className="font-semibold text-danger-700">Delete this assignment</h3>
       <p className="text-sm text-muted">
         Deletes the answer key, every paper, and all grades and feedback. This can&apos;t be undone. Download the grades
-        (CSV) from the Results tab first if you need them.
+        (CSV) from the Workspace tab first if you need them.
       </p>
       {failure && !failure.fieldErrors && <Alert tone="danger">{failure.error}</Alert>}
       <Field

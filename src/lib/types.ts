@@ -12,6 +12,11 @@ export const ANSWER_TYPES = ["multiple_choice", "true_false", "numeric", "short_
 export type AnswerType = (typeof ANSWER_TYPES)[number];
 export const ANSWER_SOURCES = ["key", "ai_proposed", "teacher"] as const;
 export type AnswerSource = (typeof ANSWER_SOURCES)[number];
+/** What a clarifying question the AI asks the teacher about the key is about (see grading/key-questions.ts for how answers apply). */
+export const KEY_QUESTION_KINDS = ["missing_answer", "points", "partial_credit", "accept_equivalents", "ambiguous_item", "other"] as const;
+export type KeyQuestionKind = (typeof KEY_QUESTION_KINDS)[number];
+export const KEY_QUESTION_STATUSES = ["pending", "answered", "skipped"] as const;
+export type KeyQuestionStatus = (typeof KEY_QUESTION_STATUSES)[number];
 export const ATTEMPTS = ["complete", "partial", "none"] as const;
 export type Attempt = (typeof ATTEMPTS)[number];
 export const CORRECTNESS = ["correct", "minor_error", "partially_correct", "major_error", "incorrect", "no_answer", "cannot_judge"] as const;
@@ -51,6 +56,14 @@ export interface KeyItem { id: string; assignmentId: string; position: number; l
   answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string; pointsCenti: number;
   partialCredit: boolean; page: number | null; answerSource: AnswerSource; aiConfidence: Confidence | null; aiNote: string }
 export type NewKeyItem = Omit<KeyItem, "id" | "assignmentId" | "position">;
+/**
+ * A question the AI asked about the key while reading it (key_questions). `itemLabel` names the key item it is about, as the AI
+ * printed it; `answer` is the teacher's, once answered.
+ */
+export interface KeyQuestion { id: string; assignmentId: string; position: number; kind: KeyQuestionKind; itemLabel: string | null;
+  question: string; suggestedAnswer: string | null; choices: string[]; status: KeyQuestionStatus; answer: string | null;
+  answeredAt: number | null; createdAt: number; updatedAt: number }
+export type NewKeyQuestion = Pick<KeyQuestion, "kind" | "itemLabel" | "question" | "suggestedAnswer" | "choices">;
 export interface ItemJudgment { attempt: Attempt; correctness: Correctness; legibility: Legibility; confidence: Confidence;
   reviewReason: ItemReviewReason; studentAnswer: string; pages: number[]; whatStudentDid: string; feedback: string; teacherNote: string }
 export interface SubmissionItem { submissionId: string; itemId: string; judgment: ItemJudgment | null; overrideCenti: number | null;

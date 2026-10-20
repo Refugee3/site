@@ -140,6 +140,15 @@ function fakeKey(pageCount: number): KeyExtraction {
     ],
     stated_total_points: 10,
     notes: "Fake AI mode: these items are samples and were not read from the uploaded PDF.",
+    questions_for_teacher: [
+      { id: "q1", kind: "missing_answer", item_label: "4",
+        question: "Question 4 shows no drawing in the key. What should a full-credit plant cell drawing include?",
+        suggested_answer: "A plant cell with the cell wall, cell membrane, nucleus and chloroplasts labeled.", choices: [] },
+      { id: "q2", kind: "accept_equivalents", item_label: "3a",
+        question: "In question 3, should chemical formulas such as CO2 and O2 count the same as the gas names?",
+        suggested_answer: "Yes", choices: ["Yes", "No"] },
+    ],
+    suggested_title: "Plants and Photosynthesis",
   };
 }
 

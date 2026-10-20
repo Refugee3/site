@@ -417,6 +417,30 @@ CREATE INDEX scans_assignment ON scans(assignment_id, created_at);
 CREATE INDEX scans_sha ON scans(assignment_id, content_sha256);
 `,
   },
+  {
+    version: 10,
+    name: "key_questions",
+    sql: `
+-- Questions the AI asked about the answer key while reading it (KeyExtraction.questions_for_teacher), and the teacher's answers.
+-- Replaced with each reading of the key; answers are applied to the key in code (grading/key-questions.ts), without AI calls.
+CREATE TABLE key_questions (
+  id TEXT PRIMARY KEY,
+  assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('missing_answer','points','partial_credit','accept_equivalents','ambiguous_item','other')),
+  item_label TEXT CHECK (item_label IS NULL OR length(item_label) <= 40),
+  question TEXT NOT NULL CHECK (length(question) BETWEEN 1 AND 500),
+  suggested_answer TEXT CHECK (suggested_answer IS NULL OR length(suggested_answer) <= 2000),
+  choices_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','answered','skipped')),
+  answer TEXT CHECK (answer IS NULL OR length(answer) <= 2000),
+  answered_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX key_questions_assignment ON key_questions(assignment_id, position);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

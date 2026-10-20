@@ -5,7 +5,9 @@ import { useEffect, useRef, useState, useTransition, type ChangeEvent } from "re
 import { Alert } from "@/components/ui/alert";
 import { buttonClasses } from "@/components/ui/button-styles";
 import { Input } from "@/components/ui/input";
+import { cx } from "@/components/ui/cx";
 import { Spinner } from "@/components/ui/spinner";
+import { useFileDrop } from "@/components/ui/use-file-drop";
 import { useHydrated } from "@/components/ui/use-hydrated";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
@@ -61,9 +63,13 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount, onePassAvailable
 
   useLeaveGuard(uploading, "1 upload hasn't finished. Leaving this page cancels it. Leave anyway?");
 
-  async function upload(event: ChangeEvent<HTMLInputElement>) {
+  function onPick(event: ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(event.target.files ?? []);
     event.target.value = "";
+    void upload(picked);
+  }
+
+  async function upload(picked: File[]) {
     if (picked.length === 0) return;
     const query = splitQuery(mode, pagesText);
     if (query === null) {
@@ -102,6 +108,7 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount, onePassAvailable
   }
 
   const locked = disabled || busy;
+  const drop = useFileDrop((files) => void upload(files), locked || !hydrated);
   return (
     <div className="flex flex-col gap-4">
       <fieldset disabled={locked} className="flex min-w-0 flex-col gap-2">
@@ -153,16 +160,20 @@ export function ScanUpload({ uploadUrl, disabled, keyPageCount, onePassAvailable
       </fieldset>
 
       <label
+        {...drop.handlers}
         aria-disabled={locked || !hydrated || undefined}
         className={buttonClasses({
-          className: "cursor-pointer self-start focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
+          className: cx(
+            "cursor-pointer self-start focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand-600",
+            drop.dragging && "ring-4 ring-brand-100 outline-2 outline-brand-600",
+          ),
         })}
       >
-        <input type="file" multiple accept={UPLOAD_ACCEPT} disabled={locked || !hydrated} onChange={upload} className="sr-only" />
+        <input type="file" multiple accept={UPLOAD_ACCEPT} disabled={locked || !hydrated} onChange={onPick} className="sr-only" />
         {busy && <Spinner className="size-4" />}
-        Choose the scan
+        {drop.dragging ? "Drop to upload" : "Choose the scan"}
       </label>
-      <p className="text-sm text-muted">{UPLOAD_FORMATS}; several files are joined in the order you pick them.</p>
+      <p className="text-sm text-muted">{UPLOAD_FORMATS}; several files are joined in the order you pick them (or drop them on the button).</p>
 
       <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
         {progress !== null && (

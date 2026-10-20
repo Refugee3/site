@@ -345,7 +345,7 @@ function ReviewFooter({ assignmentId, view, unsaved }: Omit<ReviewPanelProps, "s
       )}
       {allDone && (
         <Alert tone="success" title="You've checked every flagged paper">
-          <p>The grades are ready. Download them as a CSV from the Results tab, or see which questions the class struggled with.</p>
+          <p>The grades are ready. Download them as a CSV from the Workspace tab, or see which questions the class struggled with.</p>
           <p className="mt-1 flex flex-wrap gap-x-4">
             <Link href={boardHref(assignmentId, "all")}>Back to the results</Link>
             <Link href={`/teacher/assignments/${assignmentId}/questions`}>See the questions</Link>

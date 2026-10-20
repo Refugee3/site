@@ -4,14 +4,16 @@ import type { GradingOutput } from "@/lib/ai/schemas";
 import { now } from "@/lib/clock";
 import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
-import { getAssignment, listSections } from "@/lib/db/repos/assignments";
+import { getAssignment, listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
+import { deleteKeyQuestions, replaceKeyQuestions } from "@/lib/db/repos/key-questions";
 import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
 import { getAiModel } from "@/lib/db/repos/settings";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
 import { isAppError } from "@/lib/errors";
 import { isKeyApproved, keyFingerprint, normalizeExtractedKey } from "@/lib/grading/key";
+import { isPlaceholderTitle, normalizeExtractedQuestions, normalizeSuggestedTitle } from "@/lib/grading/key-questions";
 import { buildRefusedResult, reconcileGrading } from "@/lib/grading/reconcile";
 import {
   keyPageCountHint, normalizeScanReadings, proposeLayout, SCAN_CHUNK_MAX_BYTES, SCAN_CHUNK_MAX_PAGES,
@@ -220,9 +222,16 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
       const detach = NOT_A_KEY.has(output.document_kind) ? current.sourcePdfPath : null;
       const source = detach ? { sourcePdfPath: null, sourceFilename: null, sourceSha256: null, sourcePageCount: null } : {};
       updateKey(job.targetId, { ...aiFields, ...source, status: "failed", errorMessage: normalized.fatal });
+      deleteKeyQuestions(job.targetId);
       return detach;
     }
     const items = replaceKeyItems(job.targetId, normalized.items);
+    // The AI's questions for the teacher come with this reading of the key; earlier readings' questions go.
+    replaceKeyQuestions(job.targetId, normalizeExtractedQuestions(output));
+    // An assignment started by dropping its key is named after it, unless the teacher has named it since.
+    const title = normalizeSuggestedTitle(output);
+    const named = getAssignment(job.targetId);
+    if (title !== null && named && isPlaceholderTitle(named.title)) updateAssignmentRow(job.targetId, { title });
     updateKey(job.targetId, {
       ...aiFields,
       status: "ready",

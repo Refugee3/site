@@ -221,7 +221,7 @@ export function KeyEditor(props: KeyEditorProps) {
 function savedText(staleCount: number): string {
   if (staleCount === 0) return "Saved. The key is approved.";
   const papers = plural(staleCount, "paper");
-  return `Saved. ${papers} ${staleCount === 1 ? "was" : "were"} graded with an earlier version of the key — regrade them from the Results tab.`;
+  return `Saved. ${papers} ${staleCount === 1 ? "was" : "were"} graded with an earlier version of the key — regrade them from the Workspace tab.`;
 }
 
 function saveStatus(s: { pending: boolean; dirty: boolean; approved: boolean; savedMessage: string | null }): string {

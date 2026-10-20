@@ -5,6 +5,7 @@ import * as z from "zod";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { parseInput } from "@/lib/http/validation";
+import { answerKeyQuestions, approveKeyAsIs } from "@/lib/services/key-questions";
 import { retryKeyExtraction, saveKey } from "@/lib/services/keys";
 import { ANSWER_TYPES, type ActionResult, type SaveKeyInput } from "@/lib/types";
 
@@ -42,6 +43,33 @@ export async function saveKeyAction(
 export async function retryKeyExtractionAction(assignmentId: string): Promise<ActionResult> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
   const result = await attempt(() => retryKeyExtraction(assignment));
+  if (result.ok) refresh();
+  return result;
+}
+
+const AnswersSchema = z.array(z.object({ id: z.string(), answer: z.string().nullable() }), "Send the answers as a list.")
+  .max(50, "Too many answers.");
+
+/** The workspace's "Save answers and continue": the AI's questions about the key, answered (or skipped) and applied to it. */
+export async function answerKeyQuestionsAction(
+  assignmentId: string,
+  answers: Array<{ id: string; answer: string | null }>,
+): Promise<ActionResult<{ answered: number; skipped: number; changedItems: number; notes: number }>> {
+  const { assignment } = await requireOwnedAssignment(assignmentId);
+  const result = await attemptWithData(() => answerKeyQuestions(assignment, parseInput(AnswersSchema, answers)));
+  if (result.ok) refresh();
+  return result;
+}
+
+const ApproveSchema = z.object({ acknowledgeAiProposed: z.boolean(), seenUpdatedAt: z.number() });
+
+/** The workspace's "Approve key": approves the key as stored, the version the teacher saw (see approveKeyAsIs). */
+export async function approveKeyAction(
+  assignmentId: string,
+  input: { acknowledgeAiProposed: boolean; seenUpdatedAt: number },
+): Promise<ActionResult<{ revision: number; staleCount: number }>> {
+  const { assignment } = await requireOwnedAssignment(assignmentId);
+  const result = await attemptWithData(() => approveKeyAsIs(assignment, parseInput(ApproveSchema, input)));
   if (result.ok) refresh();
   return result;
 }

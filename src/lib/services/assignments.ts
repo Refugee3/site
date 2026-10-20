@@ -6,11 +6,14 @@ import {
 } from "@/lib/db/repos/assignments";
 import { createEmptyKey } from "@/lib/db/repos/keys";
 import { AppError } from "@/lib/errors";
+import { placeholderTitle } from "@/lib/grading/key-questions";
 import { parseSectionsText, sectionsToText, type ParsedSection } from "@/lib/grading/sections";
 import { newId, newShareCode } from "@/lib/ids";
+import { ingestKeyPdf } from "@/lib/services/keys";
 import { rematchSections, rescoreAssignment } from "@/lib/services/submissions";
 import { removeAssignmentFiles } from "@/lib/storage/files";
-import { ASSIGNMENT_KINDS, GRADING_MODES, type Assignment, type AssignmentFormInput, type Section } from "@/lib/types";
+import type { UploadedFile } from "@/lib/storage/pdf";
+import { ASSIGNMENT_KINDS, GRADING_MODES, type Assignment, type AssignmentFormInput, type AssignmentKind, type Section } from "@/lib/types";
 
 const MAX_SECTIONS = 50;
 const SHARE_CODE_TRIES = 5;
@@ -66,6 +69,45 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
     replaceSections(assignment.id, sections);
     return assignment;
   });
+}
+
+/**
+ * Starts an assignment from its answer key alone (dropped on the dashboard): "Untitled homework" or "Untitled quiz" until the
+ * AI's reading of the key suggests a title, the new-assignment form's defaults and the sections of the teacher's latest
+ * assignment; then the key is stored and queued for reading. A key that can't be stored (not a readable file, too many pages)
+ * takes the new assignment with it, so a failed drop leaves nothing behind.
+ */
+export async function createAssignmentFromKey(teacherId: string, kind: AssignmentKind, files: UploadedFile[]): Promise<Assignment> {
+  const assignment = createAssignment(teacherId, {
+    title: placeholderTitle(kind),
+    kind,
+    instructions: "",
+    gradingMode: "completion",
+    accuracyWeight: 50,
+    sectionsText: defaultSectionsText(teacherId),
+    maxSubmissions: 500,
+    writeNotes: false,
+  });
+  try {
+    await ingestKeyPdf(assignment, files);
+  } catch (e) {
+    await deleteAssignment(assignment);
+    throw e;
+  }
+  return assignment;
+}
+
+export const TitleSchema = z.string("Give the assignment a title.").trim().min(1, "Give the assignment a title.")
+  .max(200, "Use at most 200 characters.");
+
+/** Renames the assignment (the workspace's inline title). */
+export function renameAssignment(a: Assignment, title: string): Assignment {
+  const parsed = TitleSchema.safeParse(title);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? "Give the assignment a title.";
+    throw new AppError("validation", message, { fieldErrors: { title: [message] } });
+  }
+  return updateAssignmentRow(a.id, { title: parsed.data });
 }
 
 /**

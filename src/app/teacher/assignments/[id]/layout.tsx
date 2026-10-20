@@ -3,11 +3,13 @@ import Link from "next/link";
 import { assignmentSteps } from "@/components/teacher/assignment-steps";
 import { AssignmentStepsGuide } from "@/components/teacher/assignment-steps-guide";
 import { AssignmentTabs } from "@/components/teacher/assignment-tabs";
+import { EditableTitle } from "@/components/teacher/editable-title";
 import { HiddenWhileReviewing } from "@/components/teacher/hidden-while-reviewing";
 import { plural } from "@/components/teacher/text";
 import { Badge } from "@/components/ui/badge";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { formatPoints, KIND_LABEL } from "@/lib/format";
+import { isPlaceholderTitle } from "@/lib/grading/key-questions";
 import { getAssignmentHeader } from "@/lib/services/views";
 
 type Props = LayoutProps<"/teacher/assignments/[id]">;
@@ -30,7 +32,12 @@ export default async function AssignmentLayout({ params, children }: Props) {
           ← All assignments
         </Link>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="min-w-0 break-words text-2xl font-semibold">{assignment.title}</h1>
+          <EditableTitle
+            assignmentId={assignment.id}
+            title={assignment.title}
+            placeholder={isPlaceholderTitle(assignment.title)}
+            note={isPlaceholderTitle(assignment.title) && header.keyStatus === "processing" ? "The AI names it once it has read the key." : null}
+          />
           <Badge tone={assignment.kind === "quiz" ? "info" : "neutral"}>{KIND_LABEL[assignment.kind]}</Badge>
         </div>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ANSWER_TYPES, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES, SCAN_PAGE_KINDS } from "@/lib/types";
+import { ANSWER_TYPES, CONFIDENCE, CORRECTNESS, DOCUMENT_MATCHES, KEY_QUESTION_KINDS, SCAN_PAGE_KINDS } from "@/lib/types";
 import { makeGradingOutput } from "@/lib/grading/test-utils";
 import {
   GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema, withEmptyNotes,
@@ -69,6 +69,39 @@ describe("enums survive the conversion", () => {
     expect(at(item, ["confidence", "enum"])).toEqual([...CONFIDENCE]);
     expect(at(outputFormat(KeyExtractionSchema).schema, ["properties", "document_kind", "enum"]))
       .toEqual(["answer_key", "blank_worksheet", "student_work", "unrelated"]);
+  });
+
+  it("in the key extraction schema's questions for the teacher", () => {
+    const root = outputFormat(KeyExtractionSchema).schema;
+    const question = at(root, ["properties", "questions_for_teacher", "items", "properties"]);
+    expect(Object.keys(question)).toEqual(["id", "kind", "item_label", "question", "suggested_answer", "choices"]);
+    expect(at(question, ["kind", "enum"])).toEqual([...KEY_QUESTION_KINDS]);
+    expect(at(question, ["kind", "enum"])).toEqual(["missing_answer", "points", "partial_credit", "accept_equivalents", "ambiguous_item", "other"]);
+    expect(at(question, ["item_label", "type"])).toEqual(["string", "null"]);
+    expect(at(question, ["suggested_answer", "type"])).toEqual(["string", "null"]);
+    expect(at(question, ["choices", "type"])).toBe("array");
+    expect(at(question, ["choices", "items", "type"])).toBe("string");
+    expect(at(root, ["properties", "suggested_title", "type"])).toEqual(["string", "null"]);
+    // Generation order: the items first, the questions about them and the title last.
+    expect(Object.keys(at(root, ["properties"]))).toEqual([
+      "document_kind", "items", "stated_total_points", "notes", "questions_for_teacher", "suggested_title",
+    ]);
+  });
+
+  it("requires the questions and title (null, never omitted)", () => {
+    const base = {
+      document_kind: "answer_key", items: [], stated_total_points: null, notes: "",
+    };
+    expect(KeyExtractionSchema.safeParse(base).success).toBe(false);
+    expect(KeyExtractionSchema.safeParse({ ...base, questions_for_teacher: [], suggested_title: null }).success).toBe(true);
+    expect(KeyExtractionSchema.safeParse({
+      ...base, suggested_title: "Quiz 3",
+      questions_for_teacher: [{ id: "q1", kind: "points", item_label: null, question: "Points?", suggested_answer: null, choices: [] }],
+    }).success).toBe(true);
+    expect(KeyExtractionSchema.safeParse({
+      ...base, suggested_title: null,
+      questions_for_teacher: [{ id: "q1", kind: "grade_level", item_label: null, question: "?", suggested_answer: null, choices: [] }],
+    }).success).toBe(false);
   });
 
   it("in the grading schema", () => {

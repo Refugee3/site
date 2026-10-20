@@ -75,6 +75,8 @@ const keyExtraction: KeyExtraction = {
   }],
   stated_total_points: null,
   notes: "",
+  questions_for_teacher: [],
+  suggested_title: null,
 };
 
 async function rejection(promiseOrFn: Promise<unknown> | (() => unknown)): Promise<AiError> {

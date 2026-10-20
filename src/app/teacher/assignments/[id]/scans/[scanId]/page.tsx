@@ -125,7 +125,7 @@ function Done({ assignmentId, view }: { assignmentId: string; view: ScanReviewVi
       {scan.autoGraded && (
         <Alert tone="info">
           The split looked clean, so grading started automatically.{" "}
-          <Link href={boardHref(assignmentId, "all")}>Follow it on the Results tab</Link>
+          <Link href={boardHref(assignmentId, "all")}>Follow it on the Workspace tab</Link>
         </Alert>
       )}
       <Alert tone="success">
@@ -203,7 +203,7 @@ function OnePassFailed({ view }: { view: ScanReviewView }) {
         {started && (
           <p>
             {plural(graded, "paper")} from pages 1–{onePass?.pagesDone ?? 0} {graded === 1 ? "was" : "were"} graded and{" "}
-            {graded === 1 ? "stays" : "stay"} on the Results tab.
+            {graded === 1 ? "stays" : "stay"} on the Workspace tab.
           </p>
         )}
       </Alert>
@@ -232,7 +232,7 @@ function OnePassDone({ assignmentId, view }: { assignmentId: string; view: ScanR
       <Alert tone="success">
         <p>
           Graded {plural(graded, "paper")} in one pass.{" "}
-          <Link href={boardHref(assignmentId, "all")}>See them on the Results tab</Link>
+          <Link href={boardHref(assignmentId, "all")}>See them on the Workspace tab</Link>
         </p>
         {duplicates > 0 && (
           <p>

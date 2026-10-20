@@ -19,7 +19,7 @@ export default async function UploadPapersPage(props: PageProps<"/teacher/assign
         <p className="text-muted">
           Upload each student&apos;s paper as a PDF, photo, Word or text file, or one scan of the whole stack. Each paper is
           graded against your answer key, and anything the AI isn&apos;t sure about is flagged for you to check on the
-          Results tab.
+          Workspace tab.
         </p>
       </div>
 

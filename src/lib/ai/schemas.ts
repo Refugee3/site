@@ -6,6 +6,7 @@ import {
   CORRECTNESS,
   DOCUMENT_MATCHES,
   ITEM_REVIEW_REASONS,
+  KEY_QUESTION_KINDS,
   LEGIBILITY,
   SCAN_PAGE_KINDS,
 } from "@/lib/types";
@@ -25,6 +26,12 @@ export const KeyExtractionSchema = z.object({
   })),
   stated_total_points: z.number().nullable(),
   notes: z.string(),
+  // A few short questions for the teacher, asked only when an answer would really change the key; answered without another AI call.
+  questions_for_teacher: z.array(z.object({
+    id: z.string(), kind: z.enum(KEY_QUESTION_KINDS), item_label: z.string().nullable(), question: z.string(),
+    suggested_answer: z.string().nullable(), choices: z.array(z.string()),
+  })),
+  suggested_title: z.string().nullable(),
 });
 export type KeyExtraction = z.infer<typeof KeyExtractionSchema>;
 

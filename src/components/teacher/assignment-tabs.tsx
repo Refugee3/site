@@ -35,8 +35,8 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
   const tabs = [
     {
       href: base,
-      label: "Results",
-      // The review page belongs to the Results tab.
+      label: "Workspace",
+      // The live workspace: the key, the students' work, grading and the results. The review page belongs to it.
       active: pathname === base || pathname.startsWith(`${base}/submissions/`),
       note: needsReviewCount > 0 ? `${needsReviewCount} to check` : null,
     },

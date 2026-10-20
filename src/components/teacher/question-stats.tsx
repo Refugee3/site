@@ -47,7 +47,7 @@ export interface MissedQuestionsCardProps {
 export const MOST_MISSED_TITLE = "Questions most students got wrong";
 
 /**
- * Top of the Results tab: the questions most of the class missed, most missed first, each linking to the papers that
+ * Top of the Workspace tab: the questions most of the class missed, most missed first, each linking to the papers that
  * missed it. A quiet line once enough papers are graded and none was; nothing before that.
  */
 export function MissedQuestionsCard({ assignmentId, stats, activeItemId, onQuestionsTab = false }: MissedQuestionsCardProps) {

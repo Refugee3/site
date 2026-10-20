@@ -72,6 +72,15 @@ export async function requireRouteTeacher(): Promise<Teacher> {
   return teacher;
 }
 
+/**
+ * For a long-lived response (the live event streams): a check, to call while it runs, that this request's session still
+ * belongs to `teacher` (not logged out, not expired). The request's cookies are read now, while they can be.
+ */
+export async function sessionStillValid(teacher: Teacher): Promise<() => boolean> {
+  const hash = sessionTokenHash((await cookies()).get(SESSION_COOKIE)?.value);
+  return () => hash !== null && findSessionTeacher(hash, now())?.id === teacher.id;
+}
+
 /** "Not yours" and "doesn't exist" are both 404, so ids reveal nothing. */
 export function ownedAssignmentOr404(id: string, teacher: Teacher): Assignment {
   const assignment = findOwnedAssignment(id, teacher);

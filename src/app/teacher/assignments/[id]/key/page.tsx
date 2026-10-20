@@ -101,7 +101,7 @@ function AddKey({ uploadUrl }: { uploadUrl: string }) {
           Upload the key as a PDF, photos, or a Word or text file: typed or handwritten, a filled-in worksheet, a list of
           answers or a rubric. The AI lists every question with its answer, and you check the list before any paper is graded.
         </p>
-        <KeyUpload uploadUrl={uploadUrl} disabled={false} />
+        <KeyUpload uploadUrl={uploadUrl} disabled={false} zoneTitle="Drop the answer key here" />
         <p className="text-sm text-muted">No file? You can type the key in yourself instead.</p>
         <LinkButton href="?manual=1" variant="secondary" className="self-start">
           Build the key manually

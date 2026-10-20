@@ -37,6 +37,8 @@ const keyExtraction: KeyExtraction = {
   }],
   stated_total_points: 2,
   notes: "",
+  questions_for_teacher: [],
+  suggested_title: null,
 };
 
 const scanPages = (n: number): ScanPages => ({

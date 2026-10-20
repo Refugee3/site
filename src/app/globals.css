@@ -56,6 +56,21 @@
   --color-danger-700: #a32a23;
   --color-danger-800: #7f211c;
 
+  /* A paper arriving in the workspace's "Just graded" feed. */
+  --animate-feed-in: feed-in 450ms ease-out;
+
+  @keyframes feed-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+      background-color: var(--color-brand-50);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
   /* Estimated progress bars: their stripes drift to show the position is a guess (see .progress-stripes). */
   --animate-progress-stripes: progress-stripes 1s linear infinite;
 

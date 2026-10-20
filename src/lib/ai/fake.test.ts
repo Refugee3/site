@@ -112,6 +112,20 @@ describe("fake grader", () => {
     expect(meta.servedModel).toBe("fake");
   });
 
+  it("asks two sample questions about items of the key and suggests a title", async () => {
+    const { output } = await grader.extractKey({ assignmentTitle: "Untitled quiz", teacherNotes: "", keyPdf: pdf("key"), pageCount: 1 });
+    expect(output.questions_for_teacher.map((q) => [q.id, q.kind, q.item_label])).toEqual([
+      ["q1", "missing_answer", "4"],
+      ["q2", "accept_equivalents", "3a"],
+    ]);
+    const labels = output.items.map((i) => i.label);
+    for (const q of output.questions_for_teacher) expect(labels).toContain(q.item_label);
+    // The missing answer's suggestion is the answer the fake proposed for that item.
+    expect(output.questions_for_teacher[0].suggested_answer).toBe(output.items[4].expected_answer);
+    expect(output.questions_for_teacher[1].choices).toEqual(["Yes", "No"]);
+    expect(output.suggested_title).toBe("Plants and Photosynthesis");
+  });
+
   it("rejects with a retryable abort when the signal fires", async () => {
     const aborted = AbortSignal.abort();
     await expect(grader.gradeSubmission(gradeInput(pdf("eve")), { signal: aborted }))

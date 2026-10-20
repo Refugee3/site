@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MIGRATIONS, migrate } from "@/lib/db/migrations";
 import { deleteAssignmentRow } from "@/lib/db/repos/assignments";
 import { claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
+import { listKeyQuestions, replaceKeyQuestions } from "@/lib/db/repos/key-questions";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { getAiModel, getGradingEngine } from "@/lib/db/repos/settings";
 import { getSubmission, listItems, setItemOverride } from "@/lib/db/repos/submissions";
@@ -24,7 +25,7 @@ describe("migrate", () => {
     migrate(db);
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(tableNames(db)).toEqual([
-      "answer_keys", "app_settings", "assignments", "jobs", "key_items", "lessons", "scans", "sections", "sessions",
+      "answer_keys", "app_settings", "assignments", "jobs", "key_items", "key_questions", "lessons", "scans", "sections", "sessions",
       "submission_items", "submissions", "teachers",
     ]);
     db.close();
@@ -602,5 +603,44 @@ describe("cascades", () => {
 
     expect(count(db, "sessions")).toBe(0);
     expect(count(db, "assignments")).toBe(0);
+  });
+
+  it("deleting an assignment removes the AI's questions about its key", () => {
+    const db = useTestDb();
+    const assignment = seedAssignment(seedTeacher().id);
+    replaceKeyQuestions(assignment.id, [{ kind: "points", itemLabel: null, question: "How many points?", suggestedAnswer: "1", choices: [] }]);
+    expect(listKeyQuestions(assignment.id)).toHaveLength(1);
+
+    deleteAssignmentRow(assignment.id);
+
+    expect(count(db, "key_questions")).toBe(0);
+  });
+});
+
+describe("migration 10 on a version-9 database", () => {
+  it("adds key_questions, keeping every row, and checks its kinds and statuses", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 9)) db.exec(migration.sql);
+      db.pragma("user_version = 9");
+    })();
+    db.prepare("INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1)").run();
+    db.prepare("INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1)").run();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(10);
+    expect(count(db, "assignments")).toBe(1);
+    const insert = db.prepare(`INSERT INTO key_questions (id, assignment_id, position, kind, question, status, created_at, updated_at)
+                               VALUES (?, 'a1', 0, ?, 'Q?', ?, 1, 1)`);
+    insert.run("q1", "missing_answer", "pending");
+    expect(() => insert.run("q2", "bogus", "pending")).toThrow(/CHECK/);
+    expect(() => insert.run("q3", "points", "maybe")).toThrow(/CHECK/);
+    expect(() => db.prepare(`INSERT INTO key_questions (id, assignment_id, position, kind, question, created_at, updated_at)
+                             VALUES ('q4', 'a1', 1, 'other', '', 1, 1)`).run()).toThrow(/CHECK/);
+    db.prepare("DELETE FROM assignments WHERE id = 'a1'").run();
+    expect(count(db, "key_questions")).toBe(0);
+    db.close();
   });
 });

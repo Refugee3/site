@@ -165,6 +165,15 @@ describe("system prompts", () => {
     expect(KEY_EXTRACTION_SYSTEM_PROMPT).not.toContain("mention the total in note");
   });
 
+  it("asks the key's reader for a few questions for the teacher and a suggested title, only when needed", () => {
+    expect(KEY_EXTRACTION_SYSTEM_PROMPT).toContain("Questions for the teacher\nquestions_for_teacher holds at most 6 short questions");
+    expect(KEY_EXTRACTION_SYSTEM_PROMPT).toContain("A clear, complete key needs none: then return [].");
+    for (const kind of ["missing_answer", "points", "partial_credit", "accept_equivalents", "ambiguous_item", "other"]) {
+      expect(KEY_EXTRACTION_SYSTEM_PROMPT).toContain(`- ${kind}: `);
+    }
+    expect(KEY_EXTRACTION_SYSTEM_PROMPT).toContain("suggested_title is a short title for this homework or quiz");
+  });
+
   it("never ask for reasoning text, which invites reasoning_extraction refusals", () => {
     for (const prompt of [KEY_EXTRACTION_SYSTEM_PROMPT, GRADING_SYSTEM_PROMPT, SCAN_SPLIT_SYSTEM_PROMPT, PACKET_GRADING_SYSTEM_PROMPT]) {
       expect(prompt).not.toMatch(/\breasoning\b|step[- ]by[- ]step|chain of thought/i);

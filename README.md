@@ -2,9 +2,9 @@
 
 A small self-hosted web app **for teachers** that grades handwritten student work against the teacher's answer key. Students never log in or use it: the teacher scans or photographs the papers and uploads them.
 
-Every homework or quiz follows three steps, shown at the top of its page with a tick once each is done:
+Every homework or quiz follows three steps, shown as the cards of its live **Workspace** (start one by dropping its answer key on the dashboard):
 
-1. **Add the answer key** (PDF, photos, Word or text file). Claude turns it into a structured list of questions, which the teacher checks, edits and approves.
+1. **Add the answer key** (PDF, photos, Word or text file). Claude turns it into a structured list of questions, asks the teacher about anything the key leaves open, and the teacher checks, edits and approves it.
 2. **Upload students' work**: one file per student, or **one scan of the whole stack** that Claude grades in one pass (or splits into papers for the teacher to check first). Claude **reads every page**, in any handwriting, and judges each question against the key; the grade is **computed in code** from those judgments: by completion (the default), accuracy, or a blend of both.
 3. **Review results**: papers **organized by class section and name**, with anything doubtful flagged "Needs your check", a per-question breakdown, and a CSV export. Optionally (per assignment), the AI also writes **feedback notes** on what each student did.
 
@@ -14,6 +14,8 @@ The dashboard's **Where students are struggling** lists every question that most
 
 ## What's new
 
+- **A live workspace, drag and drop everywhere.** Drop an answer key on the dashboard (**Homework** or **Quiz**) and a new assignment starts at once ("Untitled …" until the AI names it from the key; rename it any time with **Rename** next to the title). Its **Workspace** tab (formerly *Results*) is one vertical flow that updates by itself: **1. Answer key** — "Reading your answer key… 0:12", then **A few questions before grading**: when the key leaves something open (a missing answer, no point values, an unclear item, whether to accept equivalent forms), the AI asks at most about six short questions in the same reading (no extra AI call). Answer them (suggestions are filled in; choices are one tap) or skip them, **Save answers and continue**, check the summary and **Approve key**. Answers are applied in code: a missing answer becomes yours, "2 each" or "Q1-5: 1, Q6: 3" sets the points, everything else goes to your notes for grading. **2. Students' work** — one drop zone: several files are one paper per student; a single PDF more than 1.5× the key's length is taken for the whole class and graded in one pass (you see which, and can switch with one click, before it uploads). **3. Grading** — the progress bar and a feed of papers as each one is graded (name, section, score, "Needs your check"), then the results board and "Questions most students got wrong". Every upload button and zone (key, papers, scans) also takes dropped files.
+- **Live updates without reloading.** The workspace and the dashboard keep a Server-Sent Events connection (`/api/teacher/assignments/<id>/live`, `/api/teacher/live`; teacher-only, owner-only) over which the server pushes a small snapshot whenever something changed. The server only polls its own database (about once a second, nothing sent when nothing changed, a heartbeat every 15 s); it makes no AI calls. If the connection can't be kept, the pages fall back to refreshing every few seconds while work is in progress, as before.
 - **Teachers only.** The app no longer has anything for students: the start page sends you to your assignments (or to log in), and the student pages — the class-code box, `/s/CODE` upload pages, receipt links (`/r/…`) and their PDFs — are gone (old links now show "not found"). With them went the "Students can upload their own work" switch, share codes and links, opening and closing assignments, "release feedback", "Copy student link" and the CSV's "Receipt link" column. Teachers upload every paper, exactly as before (an approved answer key is all an upload needs). Nothing is deleted from the database: papers students handed in earlier, and their grades, stay on the Results tab.
 - **Simpler pages.** Each assignment shows its three steps — 1. Add the answer key → 2. Upload students' work → 3. Review results — with ticks and a link to the right tab. The tabs are **Results**, **Answer key**, **Upload work**, **Questions**, **Lessons** and **Settings**; a paper the AI isn't sure about "Needs your check"; every dashboard card says the next step in one line; and empty pages say what to do next.
 - **Where students are struggling** (dashboard): every question most of a class missed, across all your homework and quizzes, most missed first: the assignment, the question and its prompt, "{pct}% missed ({n} of {total} students)", a bar, and **See who missed it**, which opens that assignment's results filtered to the papers that missed it. The top 10 show, with **Show all**. Nothing is sent to the AI for it.
@@ -79,13 +81,13 @@ The server checks the settings, the data directory and the database when it star
 
 Only teachers use the app; students never need an account, a code or a link. Sign in, create a homework or quiz, and follow its three steps. Everything students wrote reaches the app through your uploads.
 
-Servers upgraded from a version where students could hand in work themselves keep all of that data — the papers, their grades and your corrections show on each assignment's Results tab as before — but the student pages and links no longer exist, and the old setting is ignored.
+Servers upgraded from a version where students could hand in work themselves keep all of that data — the papers, their grades and your corrections show on each assignment's Workspace tab as before — but the student pages and links no longer exist, and the old setting is ignored.
 
 ## Where students are struggling
 
 The dashboard's first section lists every question that **most of a class got wrong**, across all of your homework and quizzes, most missed first. A question counts once at least **5 papers** are graded (each student's latest paper; papers waiting for your check count too) and its miss rate is **above 50%**. An answer is missed when it isn't fully right — wrong, blank or unreadable, or partly right by the credit it lost — whatever the grading mode, and your point changes count. Each row shows the assignment, "Question 3", the question's prompt, "{pct}% missed ({n} of {total} students)" and **See who missed it**, which opens that assignment's results showing only the papers that missed it and what those students wrote most often. The 10 most missed show first; **Show all** lists the rest.
 
-The same rule highlights "Questions most students got wrong" on each assignment's Results and Questions tabs, and fills the "Most students got it wrong" column of the question-stats CSV. It is worked out from the stored grades, with no AI calls.
+The same rule highlights "Questions most students got wrong" on each assignment's Workspace and Questions tabs, and fills the "Most students got it wrong" column of the question-stats CSV. It is worked out from the stored grades, with no AI calls.
 
 ## How the grader learns
 
@@ -94,7 +96,7 @@ It is not retrained. When you correct the AI on a paper — the points, the feed
 - Each assignment's **Lessons** tab lists its lessons, says which ones the grader is sent (and why others aren't), and lets you edit the reason, turn a lesson off, or copy its reason into your grading preferences. A lesson stays with your correction on its paper, so turning it off is how you stop the grader using it (it stays off when you edit that correction later).
 - Deleting a paper keeps the lessons from your corrections on it, with that student's answer and your notes: the Lessons tab marks them "Its paper was deleted", and you can delete them there.
 - A lesson shows the answer as the AI read it, so say in the reason when you corrected a misreading ("The student wrote x = -3; the minus is faint."). A correction of an answer the AI saw as blank or couldn't read is sent only once it has a reason, and a ruling without a reason that contradicts the answer key sends the paper to you instead of overriding the key. Points that no judgment gives exactly (3 of 5 on an all-or-nothing question) are passed on too, and matching answers on later papers come to you to set the points.
-- Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the Results tab or the Lessons tab. Papers you already corrected or checked are left alone (you can still regrade one from its page); your overrides and edits are always kept.
+- Papers graded before your latest lessons or preferences can be regraded in one click: **"Regrade N papers with your latest corrections"** on the Workspace tab or the Lessons tab. Papers you already corrected or checked are left alone (you can still regrade one from its page); your overrides and edits are always kept.
 
 ## Choosing the AI model
 
@@ -159,6 +161,8 @@ server {
     }
 }
 ```
+
+The live pages use Server-Sent Events: responses are sent with `X-Accel-Buffering: no` and `Cache-Control: no-transform`, so nginx and compression don't hold them back, and a heartbeat every 15 s keeps them under `proxy_read_timeout`. Each stream ends after 10 minutes and the browser reconnects by itself.
 
 Only set `ALLOWED_ORIGINS` if your proxy rewrites the `Host` header.
 
