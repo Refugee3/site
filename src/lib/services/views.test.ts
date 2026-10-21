@@ -19,6 +19,7 @@ import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, FAKE_META, scriptedGrader } from "@/lib/jobs/test-utils";
 import { createWorker } from "@/lib/jobs/worker";
 import { ingestKeyPdf } from "@/lib/services/keys";
+import { DEFAULT_OLLAMA_SETTINGS } from "@/lib/ollama-settings";
 import { everyNLayout } from "@/lib/scan-layout";
 import { removeApiKey, saveApiKey, setAiModel } from "@/lib/services/settings";
 import {
@@ -209,6 +210,13 @@ describe("teacher views", () => {
         agentSessions: 0, agentActiveSeconds: 0,
       },
     });
+  });
+
+  it("prices a model run on this computer through Ollama at $0, also in an assignment's totals", () => {
+    const usage = { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    expect(estimateCostUsd(usage, "ollama:qwen2.5vl:7b", "1h")).toBe(0);
+    expect(estimateLedgerCostUsd("ollama:gemma3:12b", { calls: 3, ...usage }, "1h")).toBe(0);
+    expect(estimateCostUsd(usage, "qwen2.5vl:7b", "1h")).toBeNull();
   });
 
   it("estimates cost for the known models only, each at its own price", () => {
@@ -487,7 +495,7 @@ describe("getTeacherSettingsView", () => {
     expect(getTeacherSettingsView(teacher)).toEqual({
       apiKey: { source: "none", masked: null, check: null, setAt: null, setByName: null, unreadable: false, envKeySet: false },
       aiMode: "fake", aiModel: "claude-sonnet-5-5",
-      gradingPreferences: "Ignore spelling.", worker: null, grader: { engine: "direct", agent: null },
+      gradingPreferences: "Ignore spelling.", worker: null, grader: { engine: "direct", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS },
     });
   });
 
@@ -498,16 +506,16 @@ describe("getTeacherSettingsView", () => {
 
   it("shows the grading engine, and the hosted agent's setup for the key in use in claude mode only", async () => {
     await saveApiKey(teacher, KEY, async () => "ok");
-    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS });
     setGradingEngine("agent");
-    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS });
     setGradingEngine("direct");
-    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS });
 
     vi.stubEnv("AI_MODE", "claude");
     resetConfigForTests();
     expect(getTeacherSettingsView(teacher).grader).toEqual({
-      engine: "direct", agent: { state: "not_set_up", error: null, checkedAt: null },
+      engine: "direct", agent: { state: "not_set_up", error: null, checkedAt: null }, ollama: DEFAULT_OLLAMA_SETTINGS,
     });
     clock += 1000;
     saveHostedAgentError("Anthropic rejected the API key. Replace it above.");
@@ -519,9 +527,9 @@ describe("getTeacherSettingsView", () => {
   it("shows no hosted agent in claude mode without a usable key", () => {
     vi.stubEnv("AI_MODE", "claude");
     resetConfigForTests();
-    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null });
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "direct", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS });
     setGradingEngine("agent");
-    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null });
+    expect(getTeacherSettingsView(teacher).grader).toEqual({ engine: "agent", agent: null, ollama: DEFAULT_OLLAMA_SETTINGS });
   });
 
   it("falls back to the server's ANTHROPIC_API_KEY", () => {

@@ -60,7 +60,7 @@ export function decideFailure(
     return { action: "requeue", runAfter: o.now, maxTokens: o.maxTokensCeiling, refundAttempt: true, note };
   }
   if (err.o.pauseWorker) {
-    return { action: "pause", resumeAt: o.now + PAUSE_MS, reason: pauseReason(err.code), code: err.code };
+    return { action: "pause", resumeAt: o.now + PAUSE_MS, reason: err.o.pauseReason ?? pauseReason(err.code), code: err.code };
   }
   if (THROTTLE_CODES.has(err.code)) {
     // Not the paper's fault and not a used attempt, also on the last one: ten papers at once on a low-tier account must

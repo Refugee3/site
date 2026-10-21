@@ -4,11 +4,12 @@ import { DEFAULT_AI_MODEL, isAiModel } from "@/lib/ai-models";
 import { now } from "@/lib/clock";
 import { one, run } from "@/lib/db/sql";
 import { truncateChars } from "@/lib/grading/text";
+import type { OllamaSettings } from "@/lib/ollama-settings";
 import type { AiModel, GradingEngineChoice, HostedAgentRole } from "@/lib/types";
 
 export interface AppSettings { apiKeyCiphertext: string | null; apiKeyMasked: string | null;
   apiKeyCheck: "verified" | "unverified" | null; apiKeySetBy: string | null; apiKeySetAt: number | null; updatedAt: number;
-  gradingEngine: GradingEngineChoice | null; aiModel: AiModel }
+  gradingEngine: GradingEngineChoice | null; aiModel: AiModel; ollama: OllamaSettings }
 
 /** A hosted-agent object in the key's Anthropic workspace, with the hash of the definition it was last given. */
 type StoredEnvironment = { id: string; hash: string };
@@ -43,6 +44,9 @@ interface AppSettingsRow {
   agent_error: string | null;
   agent_checked_at: number | null;
   ai_model: string;
+  ollama_base_url: string;
+  ollama_model: string;
+  ollama_num_ctx: number;
 }
 
 const MAX_AGENT_ERROR_CHARS = 500;
@@ -72,6 +76,8 @@ export function getAppSettings(): AppSettings {
     gradingEngine: row.grading_engine,
     // The column's CHECK allows only the known models; anything else (never expected) reads as the default.
     aiModel: isAiModel(row.ai_model) ? row.ai_model : DEFAULT_AI_MODEL,
+    // Migration 11 gives every row the defaults (DEFAULT_OLLAMA_SETTINGS); the columns' CHECKs keep them in range.
+    ollama: { baseUrl: row.ollama_base_url, model: row.ollama_model, numCtx: row.ollama_num_ctx },
   };
 }
 
@@ -123,6 +129,18 @@ export function setAiModel(model: AiModel): void {
 /** The model that reads answer keys and grades papers (migration 5 defaults it to Sonnet 5.5). */
 export function getAiModel(): AiModel {
   return getAppSettings().aiModel;
+}
+
+/** Settings → Grader → On this computer (Ollama). Validated by the caller (OllamaSettingsSchema). */
+export function setOllamaSettings(o: OllamaSettings): void {
+  run(
+    "UPDATE app_settings SET ollama_base_url = @base_url, ollama_model = @model, ollama_num_ctx = @num_ctx, updated_at = @at WHERE id = 1",
+    { base_url: o.baseUrl, model: o.model, num_ctx: o.numCtx, at: now() },
+  );
+}
+
+export function getOllamaSettings(): OllamaSettings {
+  return getAppSettings().ollama;
 }
 
 /** A stored JSON column read with `schema`; null when unset, and null (with a warning) when it doesn't parse. */

@@ -119,8 +119,9 @@ export function ReviewPanel({ assignmentId, view, serverNow }: ReviewPanelProps)
 function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow">) {
   const s = view.submission;
   const section = view.sectionLabel ?? (s.aiSectionRaw ? `“${s.aiSectionRaw}” (not matched)` : "No section");
-  const byHostedAgent = s.aiEngine === "agent" && (s.status === "graded" || s.status === "needs_review")
-    && !s.flags.includes("ai_refused");
+  const graded = (s.status === "graded" || s.status === "needs_review") && !s.flags.includes("ai_refused");
+  const byHostedAgent = s.aiEngine === "agent" && graded;
+  const onThisComputer = s.aiEngine === "ollama" && graded;
   return (
     <div className="flex flex-col gap-2">
       <Link href={boardHref(assignmentId, "all")} className="self-start text-sm">
@@ -136,6 +137,7 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
       <p className="text-sm text-muted">
         Uploaded <LocalTime ms={s.createdAt} /> · {plural(s.pageCount, "page")}
         {byHostedAgent && " · Graded by the hosted agent"}
+        {onThisComputer && " · Graded on this computer (Ollama)"}
       </p>
       {view.earlierAttempts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
@@ -175,6 +177,7 @@ function GradingNotice({ view, serverNow }: { view: ReviewView; serverNow: numbe
       </p>
       {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
       {view.gradingEngine === "agent" && <p>The hosted agent takes a few minutes per paper.</p>}
+      {view.gradingEngine === "ollama" && <p>The model on this computer (Ollama) grades one paper at a time; it may take a few minutes per paper.</p>}
       <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
     </div>
   );

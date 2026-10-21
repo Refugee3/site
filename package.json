@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
+    "@napi-rs/canvas": "^1.0.13",
     "better-sqlite3": "^13.0.3",
     "mammoth": "^1.13.0",
     "next": "16.3.8",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "^4.6.5"

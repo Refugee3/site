@@ -69,7 +69,9 @@ interface SubmissionRow {
   completion_centi: number | null;
   accuracy_centi: number | null;
   ai_model: string | null;
-  ai_engine: GraderEngine | null;
+  /** Before v11; still written for the engines its CHECK allows, never read (grader_engine replaces it). */
+  ai_engine: Exclude<GraderEngine, "ollama"> | null;
+  grader_engine: GraderEngine | null;
   usage_json: string | null;
   ai_output_json: string | null;
   error_code: string | null;
@@ -146,7 +148,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     completionCenti: row.completion_centi,
     accuracyCenti: row.accuracy_centi,
     aiModel: row.ai_model,
-    aiEngine: row.ai_engine,
+    aiEngine: row.grader_engine,
     usage: row.usage_json === null ? null : (JSON.parse(row.usage_json) as AiUsage),
     errorCode: row.error_code,
     errorMessage: row.error_message,
@@ -343,7 +345,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          name_key = @name_key, name_sort_key = @name_sort_key, section_id = @section_id, section_key = @section_key,
          section_source = @section_source, document_match = @document_match, flags_json = @flags_json, status = @status,
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
-         ai_model = @ai_model, ai_engine = @ai_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
+         ai_model = @ai_model, ai_engine = @ai_engine, grader_engine = @grader_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
          graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp, graded_at = @at, updated_at = @at,
          status_note = NULL, error_code = NULL, error_message = NULL, reviewed_at = NULL
@@ -370,7 +372,8 @@ export function saveGradingResult(w: GradingWrite): boolean {
         integrity_note: f.integrityNote,
         unmatched_work: f.unmatchedWork,
         ai_model: f.aiModel,
-        ai_engine: f.aiEngine ?? null,
+        ai_engine: f.aiEngine === "ollama" ? null : (f.aiEngine ?? null),
+        grader_engine: f.aiEngine ?? null,
         usage_json: usageToJson(f.usage),
         ai_output_json: f.aiOutputJson,
         overall_feedback: f.overallFeedback,

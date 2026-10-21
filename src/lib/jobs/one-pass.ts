@@ -56,6 +56,10 @@ const MIN_CHUNK_BYTES = 8 * 1_048_576;
 export const AGENT_FALLBACK_NOTE = "The hosted agent can't grade in one pass, so the AI splits this scan first; each paper is then graded on its own.";
 const AGENT_CANT_RESUME = "The hosted agent can't grade in one pass. Choose Direct API under Settings → Grader, then try again; "
   + "the papers graded so far stay.";
+export const OLLAMA_FALLBACK_NOTE = "The model on this computer (Ollama) can't grade in one pass, so it splits this scan first; each paper is "
+  + "then graded on its own.";
+const OLLAMA_CANT_RESUME = "The model on this computer (Ollama) can't grade in one pass. Choose Direct API under Settings → Grader, "
+  + "then try again; the papers graded so far stay.";
 
 interface Run {
   job: Job;
@@ -86,9 +90,11 @@ export async function handleOnePassScan(
   const run: Run = { job, scanId: scan.id, generation: scan.splitGeneration, assignmentId: scan.assignmentId };
   const gradeChunk = grader.gradePacketChunk;
   if (!gradeChunk) {
-    // The hosted agent was chosen after the upload: split first, as it would have been at upload, unless papers were graded.
-    if (hasOnePassProgress(scan.onePass)) return failScan(run, AGENT_CANT_RESUME);
-    if (!updateSplittingScan(run.scanId, run.generation, { splitMode: "auto", onePass: null, statusNote: AGENT_FALLBACK_NOTE })) return DONE;
+    // The hosted agent or Ollama was chosen after the upload: split first, as at upload, unless papers were graded.
+    const local = grader.engine === "ollama";
+    if (hasOnePassProgress(scan.onePass)) return failScan(run, local ? OLLAMA_CANT_RESUME : AGENT_CANT_RESUME);
+    const statusNote = local ? OLLAMA_FALLBACK_NOTE : AGENT_FALLBACK_NOTE;
+    if (!updateSplittingScan(run.scanId, run.generation, { splitMode: "auto", onePass: null, statusNote })) return DONE;
     return splitFirst(job, grader, signal);
   }
 

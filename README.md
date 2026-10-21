@@ -14,6 +14,7 @@ The dashboard's **Where students are struggling** lists every question that most
 
 ## What's new
 
+- **Grade on your own computer, without an API key:** choose **On this computer (Ollama)** under **Settings → Grader** and a free vision model runs on the computer through [Ollama](https://ollama.com): nothing is sent to Anthropic and nothing costs anything per paper. It is slower and less accurate on messy handwriting than Claude; switching back is one click. On Windows, **double-click `Start Grader.bat`** to install, build, start and open the app. See [Run it on your own Windows PC (no API)](#run-it-on-your-own-windows-pc-no-api).
 - **A live workspace, drag and drop everywhere.** Drop an answer key on the dashboard (**Homework** or **Quiz**) and a new assignment starts at once ("Untitled …" until the AI names it from the key; rename it any time with **Rename** next to the title). Its **Workspace** tab (formerly *Results*) is one vertical flow that updates by itself: **1. Answer key** — "Reading your answer key… 0:12", then **A few questions before grading**: when the key leaves something open (a missing answer, no point values, an unclear item, whether to accept equivalent forms), the AI asks at most about six short questions in the same reading (no extra AI call). Answer them (suggestions are filled in; choices are one tap) or skip them, **Save answers and continue**, check the summary and **Approve key**. Answers are applied in code: a missing answer becomes yours, "2 each" or "Q1-5: 1, Q6: 3" sets the points, everything else goes to your notes for grading. **2. Students' work** — one drop zone: several files are one paper per student; a single PDF more than 1.5× the key's length is taken for the whole class and graded in one pass (you see which, and can switch with one click, before it uploads). **3. Grading** — the progress bar and a feed of papers as each one is graded (name, section, score, "Needs your check"), then the results board and "Questions most students got wrong". Every upload button and zone (key, papers, scans) also takes dropped files.
 - **Live updates without reloading.** The workspace and the dashboard keep a Server-Sent Events connection (`/api/teacher/assignments/<id>/live`, `/api/teacher/live`; teacher-only, owner-only) over which the server pushes a small snapshot whenever something changed. The server only polls its own database (about once a second, nothing sent when nothing changed, a heartbeat every 15 s); it makes no AI calls. If the connection can't be kept, the pages fall back to refreshing every few seconds while work is in progress, as before.
 - **Teachers only.** The app no longer has anything for students: the start page sends you to your assignments (or to log in), and the student pages — the class-code box, `/s/CODE` upload pages, receipt links (`/r/…`) and their PDFs — are gone (old links now show "not found"). With them went the "Students can upload their own work" switch, share codes and links, opening and closing assignments, "release feedback", "Copy student link" and the CSV's "Receipt link" column. Teachers upload every paper, exactly as before (an approved answer key is all an upload needs). Nothing is deleted from the database: papers students handed in earlier, and their grades, stay on the Results tab.
@@ -25,7 +26,7 @@ The dashboard's **Where students are struggling** lists every question that most
 - **Any file format:** every upload (answer key, per-student papers and whole-stack scans) accepts **PDFs, photos, Word (.docx) and text files (.txt, .md, .csv)**, and several files are joined into one paper in the order picked. Everything is turned into a PDF on the server before grading. JPEG and PNG become pages as they are; other images (iPhone HEIC, WebP, GIF, TIFF, AVIF…) are converted to JPEG in the browser first, so a browser that can't open a format says so. Word and text files become plain text pages (formatting and pictures in a Word file are dropped, so upload a PDF when layout or drawings matter). Old `.doc`, `.pages` and other formats are refused with "Save it as PDF or .docx first".
 - **Choose the AI model** under **Settings → AI model**: **Claude Sonnet 5.5** (the default, about half the cost, good for most homework) or **Claude Opus 5.5** (the most capable, for messy handwriting or tricky answers). Servers upgraded from an earlier version start on Sonnet 5.5 too. `ANTHROPIC_MODEL` is no longer used: if your `.env.local` still sets it, the server ignores it and logs a warning at startup, so delete the line.
 - **Grading with an Anthropic-hosted agent (optional, off by default):** Claude reads each paper in its own workspace on Anthropic's servers and can zoom in on hard-to-read handwriting. It's slower and more expensive than the direct API, which is the default (also on upgraded servers, unless a teacher chose the hosted agent); switch under **Settings → Grader**.
-- **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. By default a scan is **graded in one pass** (the cheapest way): the AI reads each page once, finds whose paper it is and grades it in the same step, and papers whose start or end it isn't sure about are flagged ("Check the paper's pages") for your review. You can instead have the AI **split first, then grade** (or split it every N pages yourself) and check the split before anything is graded — unless the AI's split looks clean (every paper has one name, the usual number of pages, and every page was read confidently): then grading starts on its own and the scan's page says so. The hosted agent can't grade in one pass, so with it a scan is always split first.
+- **Upload the homework yourself:** one PDF per student, or one scan of the whole class's stack. By default a scan is **graded in one pass** (the cheapest way): the AI reads each page once, finds whose paper it is and grades it in the same step, and papers whose start or end it isn't sure about are flagged ("Check the paper's pages") for your review. You can instead have the AI **split first, then grade** (or split it every N pages yourself) and check the split before anything is graded — unless the AI's split looks clean (every paper has one name, the usual number of pages, and every page was read confidently): then grading starts on its own and the scan's page says so. The hosted agent and Ollama can't grade in one pass, so with them a scan is always split first.
 - **The grader learns from your corrections:** each correction (with your reason) becomes a lesson that later gradings of the assignment follow, together with your grading preferences.
 - **The Anthropic API key can be set in the app** (Settings), stored encrypted; `ANTHROPIC_API_KEY` is now optional.
 - **One-click regrade** of the papers graded before your latest corrections.
@@ -69,6 +70,10 @@ All settings are listed, with defaults, in [`.env.example`](.env.example). The m
 | `ONE_PASS_CHUNK_PAGES` | `18` | Grading a whole-class scan in one pass: the most scanned pages per AI call, 1–40. Calls hold whole papers when the key tells their length (16 pages for 4-page papers). |
 | `AGENT_BUDGET_GRADE_USD` | `2.00` | Hosted agent: spending cap per paper, in US dollars at list prices. |
 | `AGENT_KEEP_SESSIONS` | `0` | `1` keeps hosted-agent sessions and uploads for debugging. Never with real student work. |
+| `OLLAMA_CONCURRENCY` | `1` | Ollama on this computer: papers (and other AI jobs) run at once while it grades, 1–8. `GRADING_CONCURRENCY` applies to the Claude engines. |
+| `OLLAMA_IMAGE_MAX_EDGE` | `1600` | Ollama: pixels of each page image's longer side, 512–4096. |
+| `OLLAMA_PAGES_PER_CALL` | `4` | Ollama: most page images per call, 1–8; longer papers, keys and scan batches are read in batches of pages. |
+| `OLLAMA_TIMEOUT_MS` | `1200000` | Ollama: time limit of one call (20 minutes); a call that takes longer is retried later. |
 
 The server checks the settings, the data directory and the database when it starts; if anything is wrong it logs the problem and exits with code 1 instead of serving errors.
 
@@ -117,6 +122,42 @@ The **Anthropic-hosted agent** (Claude Managed Agents) is optional and off by de
 - **Speed.** Expect a few minutes per paper, slower than the direct API. Several papers are graded at once (`GRADING_CONCURRENCY`); each session stops after `AGENT_SESSION_TIMEOUT_MS` (20 minutes by default) and is retried later.
 - **Privacy.** Papers and answer keys are processed on Anthropic's servers. Each upload and each agent session is deleted from Anthropic as soon as its task finishes, successful or not; uploads also expire on their own after an hour, and sessions left behind by a crash are removed automatically by a later grading run. The workspace has no internet access and no web tools. **Claude Managed Agents is not eligible for Zero Data Retention (ZDR) or HIPAA BAA coverage**; if your school requires ZDR, use the direct API under a ZDR agreement. `AGENT_KEEP_SESSIONS=1` keeps sessions and uploads so you can inspect them in the Anthropic Console (the server log prints each session's Console path); never use it with real student work.
 - **Switching engines.** **Settings → Grader** switches between the two. The switch applies from the next paper; papers already being graded finish as they started. Stay on the direct API if Managed Agents isn't available to your organization (it's in beta) or you need ZDR; anything already set up for the hosted agent stays in your workspace, unused.
+
+## Run it on your own Windows PC (no API)
+
+The whole app can run on one Windows PC, like Ollama: double-click to start it, it opens in your browser at `http://localhost:3000`, and the papers are read on that computer by a free AI model. No Anthropic account or API key is needed, and student work never leaves the computer.
+
+1. **Install Node.js LTS** from <https://nodejs.org> (version 22.13 or newer; the big green button). Accept the defaults.
+2. **Install Ollama for Windows** from <https://ollama.com/download>. It runs in the background (look for the llama icon by the clock).
+3. **Download a vision model** once. Open *Command Prompt* or *PowerShell* and run:
+
+   ```
+   ollama pull qwen2.5vl:7b
+   ```
+
+   That is about 6 GB and suits a graphics card (GPU) with about **8 GB** of memory. Alternatives, by GPU memory:
+
+   | GPU memory | Model | Notes |
+   |---|---|---|
+   | ~8 GB | `qwen2.5vl:7b` | Recommended starting point. |
+   | ~12 GB | `gemma3:12b` | Another good reader of page images. |
+   | ~24 GB | `qwen2.5vl:32b` | Most accurate of these, much slower without a big GPU. |
+
+   **Without a GPU** (CPU only) it works, but expect **several minutes per page** and keep the class small; a laptop may get hot and slow.
+4. **Double-click `Start Grader.bat`** (in the app's folder). The first time it installs the app's packages and builds it (a few minutes, needs internet); later starts take seconds. It creates `.env.local` with `AI_MODE=claude` and no API key, starts the app, waits until it answers and opens <http://localhost:3000>. Keep the window open while you grade; **Ctrl+C** (or closing the window) stops it. On a Mac, double-click `start-grader.command`; on Linux, run `./start-grader.sh`.
+5. **Sign up** the first teacher account, then open **Settings → Grader** and choose **On this computer (Ollama)**. The address is normally `http://localhost:11434`; pick the model you downloaded from the list (models that can read images come first) and press **Test connection**. It says whether Ollama answers, which models are downloaded, and what to do if something is missing ("Run: ollama pull …"). Press **Save** after changing the address, model or context size.
+
+That's it: add an answer key and upload papers as usual. The "No API key" warning doesn't show while Ollama grades.
+
+**Honest notes**
+
+- **Speed:** a local model reads one paper at a time (`OLLAMA_CONCURRENCY`, default 1, because one GPU does the work anyway). With a recent GPU expect **tens of seconds per page** (it depends on the model, the GPU and the handwriting); on a CPU, minutes. Claude is much faster and grades many papers at once.
+- **Accuracy:** small local models misread messy handwriting more often, follow the answer key less carefully and flag less reliably than Claude. Check more papers by hand, especially the first few of each assignment. Typed or neat work does best.
+- **What is different from Claude:** each PDF page is turned into an image on the server (`OLLAMA_IMAGE_MAX_EDGE`, 1600 px on the longer side) and sent with the same instructions and answer key the Claude engines use; the original key PDF is not sent with each paper (the approved key is). A paper is read at most `OLLAMA_PAGES_PER_CALL` pages (default 4) per call; longer papers are graded in batches of pages and the answers merged (for each question, the batch where the student answered it). A whole-class scan is always **split first, then graded** one paper at a time (one-pass grading needs Claude). If the model's answer isn't valid, it is told what is wrong and asked once more.
+- **When something is wrong**, grading pauses with the fix on every page: "Ollama isn't running at … — start Ollama", or "The model … isn't downloaded in Ollama. Run: ollama pull …", or a model too big for the computer's memory. Fix it and press **Test connection**; grading continues at once (otherwise within 5 minutes).
+- **Context size** (Settings, default 16384 tokens) is how much the model reads at once. Raise it (and use more GPU memory) if long papers fail with "ran out of room"; or lower `OLLAMA_PAGES_PER_CALL`.
+- **Cost:** $0. Each assignment's Settings tab still counts the tokens, at $0.
+- **Switching back to Claude is one click:** choose **Direct API** under Settings → Grader and add an API key. Papers already graded keep their grades; regrade any you want Claude to read again.
 
 ## Run exactly one instance
 
@@ -184,7 +225,7 @@ An upload is held in memory while it is checked: plan for about **3× the larges
 
 ## Privacy
 
-Student work — the PDFs and photos, including names written on them — and the answer key are sent to the Anthropic API for grading. Make sure that is acceptable under your school's policies before using real student work. With the hosted agent, see [Grading with the Anthropic-hosted agent](#grading-with-the-anthropic-hosted-agent): each paper's upload and session are deleted after grading, and Managed Agents isn't eligible for Zero Data Retention. Nothing is shared with other services, and pages are marked `noindex`.
+Student work — the PDFs and photos, including names written on them — and the answer key are sent to the Anthropic API for grading (with the Claude engines; with **On this computer (Ollama)** they stay on the computer running Ollama). Make sure that is acceptable under your school's policies before using real student work. With the hosted agent, see [Grading with the Anthropic-hosted agent](#grading-with-the-anthropic-hosted-agent): each paper's upload and session are deleted after grading, and Managed Agents isn't eligible for Zero Data Retention. Nothing is shared with other services, and pages are marked `noindex`.
 
 ## Cost
 

@@ -1,3 +1,5 @@
+import type { OllamaSettings } from "@/lib/ollama-settings";
+
 export const ASSIGNMENT_STATUSES = ["draft", "open", "closed"] as const;
 export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
 export const ASSIGNMENT_KINDS = ["homework", "quiz"] as const;
@@ -102,9 +104,10 @@ export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boo
 export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number;
   /**
    * Grading can't run because there is no key at all, or Anthropic rejected the key in use; `agent`: paused because the
-   * hosted agent isn't available with the key in use.
+   * hosted agent isn't available with the key in use; `ollama`: paused because Ollama on this computer can't be used (not
+   * running, model not downloaded…), fixed in Settings → Grader or by starting Ollama.
    */
-  keyIssue: "missing" | "rejected" | "agent" | null;
+  keyIssue: "missing" | "rejected" | "agent" | "ollama" | null;
   /** GRADING_CONCURRENCY: the most jobs the worker runs at once. */
   concurrency: number;
   /** How many it runs at once now: halved after a rate limit or overload, then back up by one per job that finishes. */
@@ -305,7 +308,9 @@ export interface TeacherSettingsView {
   aiMode: "claude" | "fake";
   /** Settings → AI model: reads answer keys and grades papers, with either engine. */
   aiModel: AiModel; gradingPreferences: string; worker: WorkerStatus | null;
-  grader: { engine: GradingEngineChoice; /** null in AI_MODE=fake or without a usable key */ agent: HostedAgentStatusView | null } }
+  grader: { engine: GradingEngineChoice; /** null in AI_MODE=fake or without a usable key */ agent: HostedAgentStatusView | null;
+    /** Settings → Grader → On this computer (Ollama): the saved address, model and context size. */
+    ollama: OllamaSettings } }
 /** `paperDeleted`: the paper the correction was made on was deleted (`paperHref` is then null); the lesson can be deleted. */
 export interface LessonView { lesson: Lesson; itemLabel: string; itemPosition: number; itemMaxCenti: number; sent: boolean;
   notSent: LessonNotSentReason | null; paperHref: string | null; paperDeleted: boolean }
@@ -316,7 +321,7 @@ export interface ScanSummary { id: string; status: ScanStatus; splitMode: ScanSp
   autoGraded: boolean }
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
   maxScanMb: number; maxScanPages: number;
-  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
+  /** False while the hosted agent or Ollama grades: a scan uploaded to be graded in one pass is then split first. */
   onePassAvailable: boolean }
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage" | "onePass">;
@@ -329,9 +334,13 @@ export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" |
 
 // ---- v3: grading engines and the hosted agent ----
 /** Which engine produced an AI call or a stored grading. */
-export type GraderEngine = "direct" | "agent" | "fake";
-/** The teacher's choice in Settings → Grader; the practice grader is chosen by AI_MODE, not here. */
-export type GradingEngineChoice = "agent" | "direct";
+export type GraderEngine = "direct" | "agent" | "fake" | "ollama";
+/**
+ * The teacher's choice in Settings → Grader; the practice grader is chosen by AI_MODE, not here. "ollama": a vision model
+ * running on this computer through Ollama (no API key).
+ */
+export type GradingEngineChoice = "agent" | "direct" | "ollama";
+export const GRADING_ENGINE_CHOICES = ["direct", "agent", "ollama"] as const satisfies readonly GradingEngineChoice[];
 export type HostedAgentRole = "extract" | "grade" | "scan";
 /** What Settings shows about the hosted agent for the API key in use. */
 export interface HostedAgentStatusView {

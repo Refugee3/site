@@ -111,6 +111,13 @@ describe("decideFailure", () => {
     });
   });
 
+  it("row 2: pauses with the engine's own fix when the error carries one (Ollama: start it, or pull the model)", () => {
+    const reason = "The model qwen2.5vl:7b isn't downloaded in Ollama. Run: ollama pull qwen2.5vl:7b";
+    expect(decideFailure(makeJob(), aiError("model_not_found", { pauseWorker: true, pauseReason: reason }), LIMITS)).toEqual({
+      action: "pause", resumeAt: NOW + 300_000, reason, code: "model_not_found",
+    });
+  });
+
   it("row 2: pauses the worker on a billing problem (no credits) instead of failing the paper", () => {
     expect(decideFailure(makeJob(), aiError("billing", { pauseWorker: true }), LIMITS)).toEqual({
       action: "pause", resumeAt: NOW + 300_000, reason: "Billing problem — check the plan and credits in the Anthropic Console", code: "billing",

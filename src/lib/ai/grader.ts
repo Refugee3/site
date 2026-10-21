@@ -90,15 +90,16 @@ export interface CallOptions {
 
 /** The domain interface every consumer of the AI layer uses; every method rejects with AiError. */
 export interface Grader {
+  /** "fake" only for the practice grader (AI_MODE=fake); every real engine (Claude, or Ollama on this computer) is "claude". */
   readonly mode: "claude" | "fake";
   /** Which engine this grader is (stored with each grading). */
-  readonly engine: "direct" | "agent" | "fake";
+  readonly engine: "direct" | "agent" | "fake" | "ollama";
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
   gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
   readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;
   /**
    * Finds the papers in one chunk of a scan and grades each (`output` always has the note fields; "" when notes are off).
-   * Absent on an engine that can't (the hosted agent): a scan is then split first and each paper graded on its own.
+   * Absent on an engine that can't (the hosted agent, Ollama): a scan is then split first and each paper graded on its own.
    */
   gradePacketChunk?(i: PacketChunkInput, o?: CallOptions): Promise<{ output: PacketOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
 }

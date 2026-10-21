@@ -12,7 +12,7 @@ import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { isKeySavedMessage, keySavedMessage, removeKeyQuestion } from "@/lib/api-key-messages";
-import type { ActionResult, TeacherSettingsView, WorkerStatus } from "@/lib/types";
+import type { ActionResult, GradingEngineChoice, TeacherSettingsView, WorkerStatus } from "@/lib/types";
 import { useActionRunner } from "./use-action-runner";
 
 export interface ApiKeyFormProps {
@@ -21,13 +21,15 @@ export interface ApiKeyFormProps {
   /** The model chosen under AI model, which the key is checked against when it is saved. */
   model: string;
   keyIssue: WorkerStatus["keyIssue"];
+  /** With Ollama chosen under Grader, no key is needed. */
+  engine?: GradingEngineChoice;
 }
 
 /**
  * The app's Anthropic API key: which key grading uses, and a form to save a new one. The key is only ever
  * typed here: the input is uncontrolled, so React clears it after each submit, and nothing sends it back.
  */
-export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps) {
+export function ApiKeyForm({ apiKey, aiMode, model, keyIssue, engine }: ApiKeyFormProps) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(saveApiKeyAction, null);
   const remove = useActionRunner();
   // Which of the two actions answered last, so only its outcome shows.
@@ -56,7 +58,7 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
         again in full. Create one in the Anthropic Console under API keys.
       </p>
 
-      <KeyStatus apiKey={apiKey} aiMode={aiMode} model={model} keyIssue={keyIssue} />
+      <KeyStatus apiKey={apiKey} aiMode={aiMode} model={model} keyIssue={keyIssue} engine={engine} />
 
       <form action={formAction} onSubmit={() => setRemoved(false)} className="flex flex-col gap-3">
         {formError && <Alert tone="danger">{formError}</Alert>}
@@ -97,7 +99,7 @@ export function ApiKeyForm({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps)
 }
 
 /** Which key grading uses right now; the first problem found wins. */
-function KeyStatus({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps) {
+function KeyStatus({ apiKey, aiMode, model, keyIssue, engine }: ApiKeyFormProps) {
   if (aiMode === "fake") {
     return (
       <>
@@ -142,6 +144,13 @@ function KeyStatus({ apiKey, aiMode, model, keyIssue }: ApiKeyFormProps) {
     case "env":
       return <p className="text-sm">In use: the server&apos;s ANTHROPIC_API_KEY setting. A key saved here takes its place.</p>;
     case "none":
+      if (engine === "ollama") {
+        return (
+          <Alert tone="info" title="No API key needed right now">
+            Papers are graded on this computer with Ollama (Grader below). Add a key only if you switch back to Claude.
+          </Alert>
+        );
+      }
       return (
         <Alert tone="warning" title="No API key yet">
           Papers wait in the queue until you add one.

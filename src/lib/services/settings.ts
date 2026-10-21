@@ -1,12 +1,16 @@
 import { checkApiKey, resetGrader, setUpHostedAgentNow, startHostedAgentSetup, type KeyCheck } from "@/lib/ai";
 import { maskApiKey, normalizeApiKeyInput } from "@/lib/ai/api-key";
+import { testOllamaConnection } from "@/lib/ai/ollama/connection";
 import {
-  clearStoredApiKey, getAiModel, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine, setStoredApiKey,
+  clearStoredApiKey, getAiModel, getGradingEngine, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine,
+  setOllamaSettings, setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
 import { charLength } from "@/lib/grading/text";
+import { parseInput } from "@/lib/http/validation";
 import { resumeWorker } from "@/lib/jobs/queue";
+import { type OllamaConnectionResult, type OllamaSettings, OllamaSettingsSchema } from "@/lib/ollama-settings";
 import { encryptSecret } from "@/lib/secrets";
 import type { AiModel, GradingEngineChoice, Teacher } from "@/lib/types";
 
@@ -80,6 +84,29 @@ export function setAiModel(model: AiModel): void {
   // A pause because the old model wasn't available to the key ends.
   resumeWorker();
   startHostedAgentSetup();
+}
+
+/**
+ * Settings → Grader → On this computer (Ollama): the address, model and context size, validated here. Applies from the next
+ * job (the grader is rebuilt), and a pause Ollama caused ends: the fix may be this very change.
+ */
+export function saveOllamaSettings(input: unknown): OllamaSettings {
+  const settings = parseInput(OllamaSettingsSchema, input);
+  setOllamaSettings(settings);
+  resetGrader();
+  resumeWorker();
+  return settings;
+}
+
+/**
+ * "Test connection" with the address and model typed in Settings (saved or not). When Ollama answers and grades now, a pause
+ * it caused (not running, model missing) ends at once instead of after its 5 minutes.
+ */
+export async function checkOllamaConnection(input: unknown, test = testOllamaConnection): Promise<OllamaConnectionResult> {
+  const settings = parseInput(OllamaSettingsSchema.pick({ baseUrl: true, model: true }), input);
+  const result = await test(settings);
+  if (result.ok && result.fix === null && getGradingEngine() === "ollama") resumeWorker();
+  return result;
 }
 
 /** "Set up now" / "Set up again": on success also resumeWorker() (a pause for agent_unavailable ends). */

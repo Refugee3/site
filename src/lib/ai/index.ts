@@ -2,7 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import { type AppConfig, getConfig } from "@/lib/config";
 import {
-  getAiModel, getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError, saveHostedAgentReady,
+  getAiModel, getGradingEngine, getHostedAgentState, getOllamaSettings, markStoredApiKeyVerified, saveHostedAgentError,
+  saveHostedAgentReady,
 } from "@/lib/db/repos/settings";
 import type { GraderEngine, HostedAgentStatusView } from "@/lib/types";
 import type { AgentEngineConfig } from "./agent/definitions";
@@ -17,6 +18,8 @@ import {
 } from "./claude";
 import { createFakeGrader } from "./fake";
 import type { Grader } from "./grader";
+import { createOllamaClient } from "./ollama/client";
+import { createOllamaGrader } from "./ollama/grader";
 
 export type { KeyCheck } from "./claude";
 
@@ -31,8 +34,9 @@ interface GraderSlot {
 const slots = globalThis as unknown as Record<symbol, GraderSlot | undefined>;
 
 /**
- * The configured grader, or null in claude mode without any API key (the worker then pauses). Memoized
- * until resetGrader(), which saving or removing the key, or choosing the engine or the model, in Settings calls.
+ * The configured grader, or null in claude mode without any API key while a Claude engine is chosen (the worker then
+ * pauses); Ollama on this computer needs no key. Memoized until resetGrader(), which saving or removing the key, or
+ * choosing the engine, the model or Ollama's settings, in Settings calls.
  */
 export function getGrader(): Grader | null {
   slots[SLOT] ??= { grader: graderFromConfig() };
@@ -55,9 +59,13 @@ export function checkApiKey(key: string): Promise<KeyCheck> {
   return createSdkKeyChecker(getAiModel())(key);
 }
 
-/** "fake" in AI_MODE=fake, null without a usable key, else the Settings choice. Never builds a grader or calls Anthropic. */
+/**
+ * "fake" in AI_MODE=fake, "ollama" when Ollama on this computer is chosen (no key needed), null without a usable key, else
+ * the Settings choice. Never builds a grader or calls Anthropic or Ollama.
+ */
 export function currentGraderEngine(): GraderEngine | null {
   if (getConfig().aiMode === "fake") return "fake";
+  if (getGradingEngine() === "ollama") return "ollama";
   const resolved = resolveApiKey();
   if (resolved === null) return null;
   if (getGradingEngine() === "direct") return "direct";
@@ -106,6 +114,7 @@ export function getHostedAgentStatus(): HostedAgentStatusView | null {
 function graderFromConfig(): Grader | null {
   const cfg = getConfig();
   if (cfg.aiMode === "fake") return createFakeGrader();
+  if (getGradingEngine() === "ollama") return ollamaGrader(cfg);
   const resolved = resolveApiKey();
   if (resolved === null) return null;
   if (getGradingEngine() === "direct") {
@@ -120,6 +129,23 @@ function graderFromConfig(): Grader | null {
     // A saved key that couldn't be confirmed when it was saved is confirmed by the first task that succeeds with it.
     onFirstSuccess: resolved.source === "app" ? () => markStoredApiKeyVerified(resolved.ciphertext) : undefined,
     currentModel: getAiModel,
+  });
+}
+
+/** Ollama on this computer, with the address, model and context size saved in Settings → Grader. */
+function ollamaGrader(cfg: AppConfig): Grader {
+  const settings = getOllamaSettings();
+  return createOllamaGrader({
+    client: createOllamaClient({ baseUrl: settings.baseUrl }),
+    cfg: {
+      model: settings.model,
+      numCtx: settings.numCtx,
+      imageMaxEdge: cfg.ollamaImageMaxEdge,
+      pagesPerCall: cfg.ollamaPagesPerCall,
+      timeoutMs: cfg.ollamaTimeoutMs,
+      maxPages: Math.max(cfg.maxPages, cfg.maxScanPages),
+      concurrency: cfg.ollamaConcurrency,
+    },
   });
 }
 

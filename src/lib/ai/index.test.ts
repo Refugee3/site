@@ -1,10 +1,12 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
 import {
-  clearStoredApiKey, getAppSettings, getHostedAgentState, setAiModel, setGradingEngine, setStoredApiKey,
+  clearStoredApiKey, getAppSettings, getHostedAgentState, setAiModel, setGradingEngine, setOllamaSettings, setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { encryptSecret } from "@/lib/secrets";
-import { seedTeacher, useTestDb } from "@/test/helpers";
+import { makePdf, seedTeacher, useTestDb } from "@/test/helpers";
 import { apiKeyFingerprint } from "./api-key";
 import type { MessageRunner } from "./claude";
 import { createFakeGrader } from "./fake";
@@ -171,6 +173,77 @@ describe("the grading engine", () => {
     setGradingEngine("agent");
     expect(currentGraderEngine()).toBe("agent");
     expect((globalThis as unknown as Record<symbol, unknown>)[Symbol.for("pag.grader")]).toBeUndefined();
+  });
+});
+
+describe("Ollama on this computer", () => {
+  it("grades without any API key once chosen, and is told as \"ollama\"", () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    expect(getGrader()).toBeNull();
+    setGradingEngine("ollama");
+    expect(currentGraderEngine()).toBe("ollama");
+    resetGrader();
+    const grader = getGrader();
+    expect(grader).toMatchObject({ mode: "claude", engine: "ollama" });
+    // It can't grade a whole-class scan in one pass: such a scan is split first.
+    expect(grader?.gradePacketChunk).toBeUndefined();
+
+    // A key saved meanwhile changes nothing while Ollama is chosen; choosing a Claude engine again uses it.
+    saveKey(KEY_A);
+    resetGrader();
+    expect(getGrader()?.engine).toBe("ollama");
+    setGradingEngine("direct");
+    resetGrader();
+    expect(getGrader()?.engine).toBe("direct");
+  });
+
+  it("is the practice grader in fake mode", () => {
+    useTestDb();
+    setGradingEngine("ollama");
+    expect(getGrader()).toMatchObject({ mode: "fake", engine: "fake" });
+    expect(currentGraderEngine()).toBe("fake");
+  });
+
+  it("talks to the address and model saved in Settings, sending the rendered pages", async () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    const requests: Array<{ url?: string; body: { model: string; options: unknown; messages: Array<{ images?: string[] }> } }> = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk.toString()));
+      req.on("end", () => {
+        requests.push({ url: req.url, body: JSON.parse(body) });
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+          model: "gemma3:12b", done: true, done_reason: "stop", prompt_eval_count: 900, eval_count: 100,
+          message: { role: "assistant", content: JSON.stringify({
+            document_kind: "answer_key", items: [], stated_total_points: null, notes: "", questions_for_teacher: [], suggested_title: null,
+          }) },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      setGradingEngine("ollama");
+      setOllamaSettings({ baseUrl, model: "gemma3:12b", numCtx: 8192 });
+      const { output, meta } = await getGrader()!.extractKey({
+        assignmentTitle: "Quiz", teacherNotes: "", keyPdf: await makePdf(2), pageCount: 2,
+      });
+      expect(output.document_kind).toBe("answer_key");
+      expect(meta).toMatchObject({ servedModel: "ollama:gemma3:12b", usage: { inputTokens: 900, outputTokens: 100 } });
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url).toBe("/api/chat");
+      expect(requests[0].body).toMatchObject({ model: "gemma3:12b", options: { num_ctx: 8192, temperature: 0 } });
+      const images = requests[0].body.messages[1].images ?? [];
+      expect(images).toHaveLength(2);
+      // PNGs, 1600 px on the long side (OLLAMA_IMAGE_MAX_EDGE's default).
+      const png = Buffer.from(images[0], "base64");
+      expect(png.subarray(1, 4).toString("latin1")).toBe("PNG");
+      expect(png.readUInt32BE(20)).toBe(1600);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

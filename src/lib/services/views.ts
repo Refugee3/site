@@ -25,6 +25,7 @@ import { computeScore, percentTenths } from "@/lib/grading/scoring";
 import { sectionsToText } from "@/lib/grading/sections";
 import { keyPageCountHint } from "@/lib/grading/split";
 import { getWorkerStatus } from "@/lib/jobs/queue";
+import { OLLAMA_MODEL_PREFIX } from "@/lib/ollama-settings";
 import { decryptSecret } from "@/lib/secrets";
 import { isGuidanceStale, loadGuidance } from "@/lib/services/guidance";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
@@ -398,7 +399,7 @@ export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
     aiModel: settings.aiModel,
     gradingPreferences: getGradingPreferences(t.id),
     worker: getWorkerStatus(),
-    grader: { engine: getGradingEngine(), agent: getHostedAgentStatus() },
+    grader: { engine: getGradingEngine(), agent: getHostedAgentStatus(), ollama: settings.ollama },
   };
 }
 
@@ -493,6 +494,8 @@ const PRICES_PER_MTOK = new Map<string, ModelPrice>([
 
 /** Estimated cost of the usage, or null for a model without a known price. */
 export function estimateCostUsd(u: AiUsage, model: string, ttl: "5m" | "1h"): number | null {
+  // A model running on this computer through Ollama costs nothing per call.
+  if (model.startsWith(OLLAMA_MODEL_PREFIX)) return 0;
   const price = PRICES_PER_MTOK.get(model);
   if (!price) return null;
   const dollarsPerMillion = u.inputTokens * price.input + u.outputTokens * price.output

@@ -7,7 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
+import type { OllamaConnectionResult, OllamaSettings } from "@/lib/ollama-settings";
 import type { GradingEngineChoice, HostedAgentStatusView } from "@/lib/types";
+import { OllamaSettingsForm } from "./ollama-settings-form";
 import { useActionRunner } from "./use-action-runner";
 
 export interface GraderCardProps {
@@ -15,6 +17,9 @@ export interface GraderCardProps {
   aiMode: "claude" | "fake";
   /** The hosted agent's setup for the key in use; null in AI_MODE=fake or without a usable key. */
   agent: HostedAgentStatusView | null;
+  /** The saved Ollama settings, and what the server found at that address when the page loaded (null: it didn't look). */
+  ollama: OllamaSettings;
+  ollamaCheck: OllamaConnectionResult | null;
 }
 
 interface EngineOption {
@@ -39,10 +44,17 @@ const ENGINE_OPTIONS: EngineOption[] = [
       + "can enlarge, crop or rotate a page. Slower (a few minutes per paper) and more expensive: it takes more AI turns per "
       + "paper, plus $0.08 per hour of agent time.",
   },
+  {
+    value: "ollama",
+    label: "On this computer (Ollama)",
+    badge: { text: "No API key", tone: "neutral" },
+    hint: "Free and private; slower and less accurate on messy handwriting. A vision model runs on this computer with Ollama, so "
+      + "papers never leave it. A graphics card (GPU) makes it much faster. Switching back to Claude is one click.",
+  },
 ];
 
 /** Settings → Grader: which engine sends papers, answer keys and scans to Claude, and whether the hosted agent is set up. */
-export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
+export function GraderCard({ engine, aiMode, agent, ollama, ollamaCheck }: GraderCardProps) {
   const runner = useActionRunner();
   // The choice moves at once; it settles on the stored value when the action and refresh finish (or fail).
   const [shownEngine, setShownEngine] = useOptimistic(engine);
@@ -59,8 +71,9 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted">
-        How papers, answer keys and scans are sent to Claude. Direct API is the default; the hosted agent is optional. Both
-        use the API key and the AI model above and are billed to the same Anthropic account.
+        Who reads papers, answer keys and scans. Direct API is the default; the hosted agent is optional. Both use the API key
+        and the AI model above and are billed to the same Anthropic account. Ollama runs a free model on this computer instead,
+        without an API key.
       </p>
       <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-2">
         <legend className="sr-only">Grading engine</legend>
@@ -93,7 +106,16 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
       </p>
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
 
-      {shownEngine === "agent" ? (
+      {shownEngine === "ollama" ? (
+        <>
+          {aiMode === "fake" && (
+            <p className="text-sm text-muted">
+              Practice mode (AI_MODE=fake): the practice grader runs instead. Ollama is used once the server runs with AI_MODE=claude.
+            </p>
+          )}
+          <OllamaSettingsForm settings={ollama} initialCheck={ollamaCheck} />
+        </>
+      ) : shownEngine === "agent" ? (
         <HostedAgentStatus aiMode={aiMode} agent={agent} />
       ) : (
         <p className="text-sm text-muted">
@@ -103,7 +125,7 @@ export function GraderCard({ engine, aiMode, agent }: GraderCardProps) {
       )}
 
       <p className="text-xs text-muted">
-        Papers are processed on Anthropic&apos;s servers with either engine. The hosted agent deletes each paper&apos;s upload and
+        Papers are processed on Anthropic&apos;s servers with either Claude engine, and only on this computer with Ollama. The hosted agent deletes each paper&apos;s upload and
         agent session from Anthropic as soon as the paper is done. Claude Managed Agents isn&apos;t eligible for Zero Data
         Retention (ZDR); if your school requires ZDR, choose Direct API under a ZDR agreement.
       </p>

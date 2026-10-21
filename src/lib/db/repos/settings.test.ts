@@ -5,6 +5,7 @@ import {
   clearStoredApiKey, getAiModel, getAppSettings, getGradingEngine, getHostedAgentState, markStoredApiKeyVerified, saveHostedAgentError,
   saveHostedAgentReady, setAiModel, setGradingEngine, setStoredApiKey,
 } from "@/lib/db/repos/settings";
+import { DEFAULT_OLLAMA_SETTINGS } from "@/lib/ollama-settings";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 
 const T0 = 1_700_000_000_000;
@@ -22,6 +23,7 @@ describe("app settings", () => {
     expect(getAppSettings()).toEqual({
       apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
       apiKeySetAt: null, updatedAt: 0, gradingEngine: null, aiModel: "claude-sonnet-5-5",
+      ollama: DEFAULT_OLLAMA_SETTINGS,
     });
   });
 
@@ -33,6 +35,7 @@ describe("app settings", () => {
     expect(getAppSettings()).toEqual({
       apiKeyCiphertext: STORED.ciphertext, apiKeyMasked: STORED.masked, apiKeyCheck: "verified",
       apiKeySetBy: teacher.id, apiKeySetAt: T0, updatedAt: T0, gradingEngine: null, aiModel: "claude-sonnet-5-5",
+      ollama: DEFAULT_OLLAMA_SETTINGS,
     });
 
     setClockForTests(() => T0 + 5);
@@ -46,6 +49,7 @@ describe("app settings", () => {
     expect(getAppSettings()).toEqual({
       apiKeyCiphertext: null, apiKeyMasked: null, apiKeyCheck: null, apiKeySetBy: null,
       apiKeySetAt: null, updatedAt: T0 + 9, gradingEngine: null, aiModel: "claude-sonnet-5-5",
+      ollama: DEFAULT_OLLAMA_SETTINGS,
     });
   });
 

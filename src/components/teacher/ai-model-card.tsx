@@ -6,11 +6,13 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { AI_MODEL_NAME } from "@/lib/ai-models";
-import type { AiModel } from "@/lib/types";
+import type { AiModel, GradingEngineChoice } from "@/lib/types";
 import { useActionRunner } from "./use-action-runner";
 
 export interface AiModelCardProps {
   model: AiModel;
+  /** With Ollama chosen under Grader, this choice waits until a Claude engine is chosen again. */
+  engine?: GradingEngineChoice;
 }
 
 const MODEL_OPTIONS: Array<{ value: AiModel; recommended: boolean; hint: string }> = [
@@ -23,7 +25,7 @@ const MODEL_OPTIONS: Array<{ value: AiModel; recommended: boolean; hint: string 
 ];
 
 /** Settings → AI model: which Claude model reads answer keys and grades papers, with either engine. */
-export function AiModelCard({ model }: AiModelCardProps) {
+export function AiModelCard({ model, engine }: AiModelCardProps) {
   const runner = useActionRunner();
   // The choice moves at once; it settles on the stored value when the action and refresh finish (or fail).
   const [shownModel, setShownModel] = useOptimistic(model);
@@ -73,6 +75,11 @@ export function AiModelCard({ model }: AiModelCardProps) {
       </p>
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
       <p className="text-xs text-muted">Splitting whole-class scans always uses Sonnet 5.5.</p>
+      {engine === "ollama" && (
+        <p className="text-sm text-muted">
+          Not used while papers are graded on this computer (Grader below): the Ollama model chosen there grades instead.
+        </p>
+      )}
     </div>
   );
 }

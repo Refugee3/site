@@ -4,9 +4,15 @@ import type { GradingEngineChoice } from "@/lib/types";
 
 /** setGradingEngineAction's message once the choice is saved. */
 export function engineSavedMessage(engine: GradingEngineChoice): string {
-  return engine === "agent"
-    ? "Saved. The hosted agent grades from the next paper on; papers already being graded finish as they started."
-    : "Saved. The direct API grades from the next paper on; papers already being graded finish as they started.";
+  switch (engine) {
+    case "agent":
+      return "Saved. The hosted agent grades from the next paper on; papers already being graded finish as they started.";
+    case "direct":
+      return "Saved. The direct API grades from the next paper on; papers already being graded finish as they started.";
+    case "ollama":
+      return "Saved. The model on this computer (Ollama) grades from the next paper on; papers already being graded finish as "
+        + "they started.";
+  }
 }
 
 /** setUpHostedAgentAction's message when setup succeeded. */

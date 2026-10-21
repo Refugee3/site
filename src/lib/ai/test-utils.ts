@@ -15,7 +15,8 @@ export function testConfig(overrides: Partial<AppConfig & { model: AiModel }> = 
     maxTokensCeiling: 128_000, concurrency: 10, scanSplitParallel: 4, onePassChunkPages: 18, jobMaxAttempts: 4, teacherSignupCode: null, cookieSecure: false,
     maxUploadBytes: 20 * 1_048_576, maxPages: 40, maxUploadFiles: 20, maxKeyItems: 200, appSecret: null,
     maxScanBytes: 100 * 1_048_576, maxScanPages: 200, agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
-    agentSessionTimeoutMs: 1_200_000, agentKeepSessions: false, startupWarnings: [], ...overrides,
+    agentSessionTimeoutMs: 1_200_000, agentKeepSessions: false, ollamaConcurrency: 1, ollamaImageMaxEdge: 1600, ollamaPagesPerCall: 4,
+    ollamaTimeoutMs: 1_200_000, startupWarnings: [], ...overrides,
   };
 }
 

@@ -9,6 +9,9 @@ describe("engineSavedMessage", () => {
     expect(engineSavedMessage("direct")).toBe(
       "Saved. The direct API grades from the next paper on; papers already being graded finish as they started.",
     );
+    expect(engineSavedMessage("ollama")).toBe(
+      "Saved. The model on this computer (Ollama) grades from the next paper on; papers already being graded finish as they started.",
+    );
   });
 
   it("says when the hosted agent is set up", () => {

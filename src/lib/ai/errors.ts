@@ -31,6 +31,8 @@ export interface AiErrorOptions {
   retryAfterMs?: number | null;
   /** The whole worker should stop claiming jobs (bad key, unknown model, no credits): every job would fail the same way. */
   pauseWorker?: boolean;
+  /** With pauseWorker: what the teacher is told instead of the code's usual reason (an engine-specific fix, such as Ollama's). */
+  pauseReason?: string;
   refusalCategory?: string | null;
   /**
    * Set when a response arrived (and was billed) but could not be used: a refusal, a cut-off or invalid answer.

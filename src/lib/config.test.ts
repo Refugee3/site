@@ -7,7 +7,7 @@ const CONFIG_VARS = [
   "AI_FALLBACKS", "AI_CACHE_TTL", "AI_TIMEOUT_MS", "GRADING_CONCURRENCY", "JOB_MAX_ATTEMPTS", "TEACHER_SIGNUP_CODE",
   "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES", "AGENT_BUDGET_EXTRACT_USD",
   "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS", "SCAN_SPLIT_PARALLEL",
-  "ONE_PASS_CHUNK_PAGES",
+  "ONE_PASS_CHUNK_PAGES", "OLLAMA_CONCURRENCY", "OLLAMA_IMAGE_MAX_EDGE", "OLLAMA_PAGES_PER_CALL", "OLLAMA_TIMEOUT_MS",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -49,6 +49,10 @@ describe("getConfig", () => {
       agentBudgetCents: { extract: 300, grade: 200, scan: 150 },
       agentSessionTimeoutMs: 1_200_000,
       agentKeepSessions: false,
+      ollamaConcurrency: 1,
+      ollamaImageMaxEdge: 1600,
+      ollamaPagesPerCall: 4,
+      ollamaTimeoutMs: 1_200_000,
       startupWarnings: [],
     });
   });
@@ -79,6 +83,10 @@ describe("getConfig", () => {
       AGENT_BUDGET_SCAN_USD: "0.75",
       AGENT_SESSION_TIMEOUT_MS: "600000",
       AGENT_KEEP_SESSIONS: "1",
+      OLLAMA_CONCURRENCY: "2",
+      OLLAMA_IMAGE_MAX_EDGE: "1024",
+      OLLAMA_PAGES_PER_CALL: "8",
+      OLLAMA_TIMEOUT_MS: "300000",
     });
     expect(cfg).toMatchObject({
       nodeEnv: "production",
@@ -103,7 +111,23 @@ describe("getConfig", () => {
       agentBudgetCents: { extract: 500, grade: 250, scan: 75 },
       agentSessionTimeoutMs: 600_000,
       agentKeepSessions: true,
+      ollamaConcurrency: 2,
+      ollamaImageMaxEdge: 1024,
+      ollamaPagesPerCall: 8,
+      ollamaTimeoutMs: 300_000,
     });
+  });
+
+  it.each([
+    ["OLLAMA_CONCURRENCY", "0"],
+    ["OLLAMA_CONCURRENCY", "9"],
+    ["OLLAMA_IMAGE_MAX_EDGE", "100"],
+    ["OLLAMA_IMAGE_MAX_EDGE", "5000"],
+    ["OLLAMA_PAGES_PER_CALL", "0"],
+    ["OLLAMA_PAGES_PER_CALL", "9"],
+    ["OLLAMA_TIMEOUT_MS", "1000"],
+  ])("refuses %s=%s", (name, value) => {
+    expect(() => configWith({ [name]: value })).toThrow(name);
   });
 
   it("ignores a retired ANTHROPIC_MODEL, whatever its value, with one startup warning that points to Settings", () => {

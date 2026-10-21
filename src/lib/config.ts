@@ -43,6 +43,14 @@ export interface AppConfig {
   agentSessionTimeoutMs: number;
   /** AGENT_KEEP_SESSIONS=1: keep sessions and their uploads for debugging instead of deleting them. */
   agentKeepSessions: boolean;
+  /** Ollama engine: the most jobs the worker runs at once while it grades (one local GPU serializes work anyway). */
+  ollamaConcurrency: number;
+  /** Ollama engine: each PDF page is rendered to a PNG whose longer side is this many pixels. */
+  ollamaImageMaxEdge: number;
+  /** Ollama engine: the most page images per call; longer papers and keys are read in batches of this many pages. */
+  ollamaPagesPerCall: number;
+  /** Ollama engine: wall-clock limit of one call to Ollama (queued calls wait in this process first, not against it). */
+  ollamaTimeoutMs: number;
   /** Logged once when the server starts: settings it ignores (ANTHROPIC_MODEL). */
   startupWarnings: string[];
 }
@@ -117,6 +125,10 @@ const EnvSchema = z.object({
   AGENT_BUDGET_SCAN_USD: usdVar("1.50"),
   AGENT_SESSION_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
   AGENT_KEEP_SESSIONS: z.enum(["0", "1"]).default("0"),
+  OLLAMA_CONCURRENCY: intVar(1, 8, 1),
+  OLLAMA_IMAGE_MAX_EDGE: intVar(512, 4096, 1600),
+  OLLAMA_PAGES_PER_CALL: intVar(1, 8, 4),
+  OLLAMA_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
 });
 
 type EnvVar = keyof typeof EnvSchema.shape;
@@ -169,6 +181,10 @@ function parseConfig(): AppConfig {
     agentBudgetCents: { extract: env.AGENT_BUDGET_EXTRACT_USD, grade: env.AGENT_BUDGET_GRADE_USD, scan: env.AGENT_BUDGET_SCAN_USD },
     agentSessionTimeoutMs: env.AGENT_SESSION_TIMEOUT_MS,
     agentKeepSessions: env.AGENT_KEEP_SESSIONS === "1",
+    ollamaConcurrency: env.OLLAMA_CONCURRENCY,
+    ollamaImageMaxEdge: env.OLLAMA_IMAGE_MAX_EDGE,
+    ollamaPagesPerCall: env.OLLAMA_PAGES_PER_CALL,
+    ollamaTimeoutMs: env.OLLAMA_TIMEOUT_MS,
     startupWarnings: env.ANTHROPIC_MODEL === undefined ? [] : [ANTHROPIC_MODEL_RETIRED],
     ...CONSTANTS,
   };

@@ -20,7 +20,7 @@ import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY, resumeWorker } from "@/lib/jobs/queue";
 import { answeringGrader, deferred, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
-import { createWorker, startWorker } from "@/lib/jobs/worker";
+import { concurrencyFor, createWorker, startWorker } from "@/lib/jobs/worker";
 import { updateAssignment } from "@/lib/services/assignments";
 import { ingestKeyPdf, saveKey } from "@/lib/services/keys";
 import { ingestTeacherUpload, regradeSubmission, updateIdentity } from "@/lib/services/submissions";
@@ -1167,5 +1167,84 @@ describe("worker lifecycle", () => {
 
     expect(jobRows(id)).toMatchObject([{ status: "queued", attempts: 1, last_error: "aborted: aborted" }]);
     expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Retrying after a temporary AI error" });
+  });
+});
+
+describe("grading on this computer (Ollama)", () => {
+  function hangingOllama(engine: Grader["engine"] = "ollama") {
+    const calls: Array<() => void> = [];
+    const grader = scriptedGrader({
+      engine,
+      gradeSubmission: (input, options) => new Promise((resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new AiError("aborted", "aborted", { retryable: true })));
+        calls.push(() => resolve(instantFake.gradeSubmission(input, options)));
+      }),
+    });
+    return { grader, calls };
+  }
+
+  it("concurrencyFor: OLLAMA_CONCURRENCY while Ollama grades, GRADING_CONCURRENCY otherwise", () => {
+    const cfg = { concurrency: 10, ollamaConcurrency: 1 };
+    expect(concurrencyFor(scriptedGrader({ engine: "ollama" }), cfg)).toBe(1);
+    expect(concurrencyFor(scriptedGrader({ engine: "direct" }), cfg)).toBe(10);
+    expect(concurrencyFor(null, cfg)).toBe(10);
+  });
+
+  it("runs one paper at a time with the Ollama grader, and more again once a Claude engine is chosen", async () => {
+    const ids = [await uploadPaper("a"), await uploadPaper("b"), await uploadPaper("c")];
+    const local = hangingOllama();
+    let current: Grader = local.grader;
+    const worker = createWorker({ grader: () => current, concurrency: (g) => concurrencyFor(g, { concurrency: 3, ollamaConcurrency: 1 }), pollMs: 1000 });
+
+    worker.start();
+    await vi.waitFor(() => expect(local.calls).toHaveLength(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(local.calls).toHaveLength(1);
+    expect(worker.status()).toMatchObject({ concurrency: 1, effectiveConcurrency: 1, running: 1, queued: 2 });
+
+    // Switching to a Claude engine applies at the next claim: the two papers left start together.
+    const claude = hangingOllama("direct");
+    current = claude.grader;
+    local.calls[0]();
+    await vi.waitFor(() => expect(claude.calls).toHaveLength(2));
+    expect(worker.status()).toMatchObject({ concurrency: 3 });
+    for (const release of claude.calls.splice(0)) release();
+    await vi.waitFor(() => expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true));
+    await worker.stop();
+  });
+
+  it("pauses with Ollama's own fix when Ollama isn't running, and points to Settings", async () => {
+    const id = await uploadPaper();
+    const reason = "Ollama isn't running at http://localhost:11434 — start Ollama";
+    const grader = scriptedGrader({
+      engine: "ollama",
+      gradeSubmission: () => Promise.reject(new AiError("connection", reason, { retryable: true, pauseWorker: true, pauseReason: reason })),
+    });
+    const worker = createWorker({ grader, concurrency: 1, pollMs: 1000 });
+
+    expect(await worker.runOnce()).toBe(true);
+    expect(worker.status()).toMatchObject({ state: "stopped", keyIssue: "ollama" });
+    expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: `Paused: ${reason}` });
+    expect(jobRows(id)).toMatchObject([{ status: "queued", paused: 1, attempts: 0 }]);
+    expect(await worker.runOnce()).toBe(false);
+  });
+
+  it("stores the Ollama engine and the local model with the grading, at no cost", async () => {
+    const id = await uploadPaper();
+    const grader = scriptedGrader({
+      engine: "ollama",
+      async gradeSubmission(input) {
+        const refs = itemRefs(input.items.length);
+        return {
+          output: makeGradingOutput(refs), refs, keyPdfIncluded: false,
+          meta: { ...FAKE_META, requestedModel: "ollama:qwen2.5vl:7b", servedModel: "ollama:qwen2.5vl:7b",
+            usage: { inputTokens: 5000, outputTokens: 700, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+        };
+      },
+    });
+    await drainQueue(grader);
+    expect(getSubmission(id)).toMatchObject({ status: "graded", aiEngine: "ollama", aiModel: "ollama:qwen2.5vl:7b" });
+    expect(db.prepare("SELECT ai_engine, grader_engine FROM submissions WHERE id = ?").get(id)).toEqual({ ai_engine: null, grader_engine: "ollama" });
+    expect(getAssignmentUsage(assignment.id)["ollama:qwen2.5vl:7b"]).toMatchObject({ calls: 1, inputTokens: 5000, outputTokens: 700 });
   });
 });

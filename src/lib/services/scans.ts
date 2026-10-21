@@ -17,7 +17,7 @@ import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, CutTooLargeError, extractPageSets, uploadName, type UploadedFile } from "@/lib/storage/pdf";
-import type { Assignment, Scan, ScanLayout, ScanSplitMode, ScanStatus } from "@/lib/types";
+import type { Assignment, GradingEngineChoice, Scan, ScanLayout, ScanSplitMode, ScanStatus } from "@/lib/types";
 
 // One scan of a whole class's papers: split (by the AI, or every N pages), checked by the teacher, then
 // cut into one teacher submission per paper.
@@ -35,9 +35,14 @@ const STATUS_REFUSAL: Record<ScanStatus, string> = {
 };
 
 /**
- * Whether a scan can be graded in one pass now: with the direct API and the practice grader, not with the hosted agent (a
- * scan uploaded for one pass is then split first, as with "auto").
+ * Whether a scan can be graded in one pass now: with the direct API and the practice grader, not with the hosted agent or
+ * Ollama on this computer (a scan uploaded for one pass is then split first, as with "auto").
  */
+/** How a grader that can't grade in one pass is named in messages. */
+export function engineName(engine: GradingEngineChoice): string {
+  return engine === "ollama" ? "The model on this computer (Ollama)" : "The hosted agent";
+}
+
 export function onePassAvailable(): boolean {
   return getConfig().aiMode === "fake" || getGradingEngine() === "direct";
 }
@@ -166,7 +171,7 @@ export function retryScanWithAi(scan: Scan, o: { mode?: "auto" | "one_pass" } = 
 /** Runs inside retryScanWithAi's transaction. Keeps the progress (and an AI answer not stored yet), so nothing is paid twice. */
 function resumeOnePass(current: Scan): Scan {
   if (!onePassAvailable()) {
-    throw new AppError("invalid_state", "The hosted agent can't grade in one pass. Choose Direct API under Settings → Grader first, "
+    throw new AppError("invalid_state", `${engineName(getGradingEngine())} can't grade in one pass. Choose Direct API under Settings → Grader first, `
       + "or have the AI split the scan.");
   }
   const updated = updateScan(current.id, {

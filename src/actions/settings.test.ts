@@ -6,7 +6,7 @@ import { requireTeacher } from "@/lib/auth/dal";
 import { getAiModel, getAppSettings, setGradingEngine } from "@/lib/db/repos/settings";
 import type { AiModel } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
-import { setAiModelAction } from "./settings";
+import { saveOllamaSettingsAction, setAiModelAction, setGradingEngineAction, testOllamaConnectionAction } from "./settings";
 
 // Server actions read the session cookie through next/headers and refresh the page through next/cache, both of which
 // need a live request: the signed-in teacher and refresh() are supplied here, and everything else runs for real.
@@ -59,5 +59,51 @@ describe("setAiModelAction", () => {
     vi.mocked(requireTeacher).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
     await expect(setAiModelAction("claude-opus-5-5")).rejects.toThrow("NEXT_REDIRECT");
     expect(getAiModel()).toBe("claude-sonnet-5-5");
+  });
+});
+
+describe("setGradingEngineAction", () => {
+  it("accepts Ollama on this computer and refuses anything else", async () => {
+    expect(await setGradingEngineAction("ollama")).toEqual({
+      ok: true,
+      message: "Saved. The model on this computer (Ollama) grades from the next paper on; papers already being graded finish as they started.",
+    });
+    expect(getAppSettings().gradingEngine).toBe("ollama");
+    expect(await setGradingEngineAction("local" as never)).toEqual({ ok: false, error: "Choose one of the graders." });
+    expect(getAppSettings().gradingEngine).toBe("ollama");
+  });
+});
+
+describe("saveOllamaSettingsAction", () => {
+  function form(fields: Record<string, string>) {
+    const fd = new FormData();
+    for (const [name, value] of Object.entries(fields)) fd.set(name, value);
+    return fd;
+  }
+
+  it("saves the form and refreshes the page", async () => {
+    expect(await saveOllamaSettingsAction(null, form({ baseUrl: "http://localhost:11434", model: "qwen2.5vl:32b", numCtx: "24576" })))
+      .toEqual({ ok: true, message: "Saved. Papers graded from now on use qwen2.5vl:32b on this computer." });
+    expect(getAppSettings().ollama).toEqual({ baseUrl: "http://localhost:11434", model: "qwen2.5vl:32b", numCtx: 24_576 });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns field errors and saves nothing", async () => {
+    const result = await saveOllamaSettingsAction(null, form({ baseUrl: "", model: "qwen2.5vl:7b", numCtx: "16384" }));
+    expect(result).toMatchObject({ ok: false, fieldErrors: { baseUrl: [expect.any(String)] } });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("testOllamaConnectionAction", () => {
+  it("says what is wrong with the address before trying it", async () => {
+    expect(await testOllamaConnectionAction({ baseUrl: "localhost", model: "qwen2.5vl:7b" })).toEqual({
+      ok: false, error: "Enter the address Ollama listens on, such as http://localhost:11434.",
+    });
+  });
+
+  it("requires a signed-in teacher", async () => {
+    vi.mocked(requireTeacher).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
+    await expect(testOllamaConnectionAction({ baseUrl: "http://localhost:11434", model: "x" })).rejects.toThrow("NEXT_REDIRECT");
   });
 });

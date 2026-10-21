@@ -2,7 +2,7 @@ import { getGrader } from "@/lib/ai";
 import type { AiErrorCode } from "@/lib/ai/errors";
 import type { Grader } from "@/lib/ai/grader";
 import { now } from "@/lib/clock";
-import { getConfig } from "@/lib/config";
+import { type AppConfig, getConfig } from "@/lib/config";
 import { getDb, tx } from "@/lib/db/connection";
 import { clearGradingBatchIfDrained } from "@/lib/db/repos/assignments";
 import {
@@ -63,15 +63,27 @@ const ORPHAN_RETRY_MS = 30_000;
  * runs at once (at least 1). Each job that then finishes cleanly raises it by one again, up to `concurrency`. Only jobs
  * launched since the last cut count, so ten calls rejected together halve it once, not ten times, and jobs that started
  * before the cut don't undo it.
+ *
+ * `concurrency` may depend on the grader: Ollama on this computer runs OLLAMA_CONCURRENCY jobs at once (default 1), since one
+ * local GPU serializes the work anyway (see concurrencyFor). It is read at every claim, so switching engines applies at once.
  */
-export function createWorker(o: { grader: Grader | null | (() => Grader | null); concurrency: number; pollMs: number }): Worker {
+export function createWorker(o: {
+  grader: Grader | null | (() => Grader | null);
+  concurrency: number | ((grader: Grader | null) => number);
+  pollMs: number;
+}): Worker {
   const given = o.grader;
   const currentGrader = typeof given === "function" ? given : () => given;
-  const maxConcurrency = Math.max(1, Math.floor(o.concurrency));
+  const givenConcurrency = o.concurrency;
+  const concurrencyOf = typeof givenConcurrency === "function" ? givenConcurrency : () => givenConcurrency;
+  /** The most jobs the worker may run at once with this grader. */
+  const maxFor = (grader: Grader | null) => Math.max(1, Math.floor(concurrencyOf(grader)));
+
   // Each running job with the controller that aborts its AI call (on the job timeout, or when the worker stops), and the
   // concurrency window it was launched in.
   const inFlight = new Map<Promise<void>, { abort: AbortController; jobId: number; window: number }>();
-  let effectiveConcurrency = maxConcurrency;
+  /** The adaptive limit after a rate limit; null while not throttled (the grader's own maximum applies). */
+  let throttledConcurrency: number | null = null;
   /** Bumped at every cut of the concurrency. */
   let window = 0;
   /** No new claims before this time (ms): set by a rate limit or overload. */
@@ -96,6 +108,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
   function keyIssue(grader: Grader | null): WorkerStatus["keyIssue"] {
     if (grader === null) return "missing";
     if (!isPaused()) return null;
+    if (grader.engine === "ollama") return "ollama";
     return pauseCode === "auth" ? "rejected" : pauseCode === "agent_unavailable" ? "agent" : null;
   }
 
@@ -110,14 +123,22 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     holdUntil = Math.max(holdUntil, retryAt);
     if (launchedIn !== window) return; // launched before the last cut, which already accounted for it
     window++;
-    effectiveConcurrency = Math.max(1, Math.floor(effectiveConcurrency / 2));
-    console.warn(`[worker] job ${job.id} (${job.kind}) was rate-limited; running at most ${effectiveConcurrency} jobs at once, `
+    throttledConcurrency = Math.max(1, Math.floor(limitFor(currentGraderOrNull()) / 2));
+    console.warn(`[worker] job ${job.id} (${job.kind}) was rate-limited; running at most ${throttledConcurrency} jobs at once, `
       + `starting nothing new until ${new Date(holdUntil).toISOString()}`);
   }
 
   /** A job that ran to its end without being throttled: one more job may run at once, up to the configured maximum. */
   function succeeded(launchedIn: number): void {
-    if (launchedIn === window && effectiveConcurrency < maxConcurrency) effectiveConcurrency++;
+    if (launchedIn !== window || throttledConcurrency === null) return;
+    throttledConcurrency++;
+    if (throttledConcurrency >= maxFor(currentGraderOrNull())) throttledConcurrency = null;
+  }
+
+  /** How many jobs may run at once now: the adaptive limit, capped by the current grader's own maximum. */
+  function limitFor(grader: Grader | null): number {
+    const max = maxFor(grader);
+    return throttledConcurrency === null ? max : Math.min(throttledConcurrency, max);
   }
 
   /**
@@ -257,7 +278,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
     try {
       const grader = currentGrader();
       if (grader === null) return;
-      while (inFlight.size < effectiveConcurrency) {
+      while (inFlight.size < limitFor(grader)) {
         const job = claim();
         if (!job) break;
         void launch(job, grader);
@@ -300,8 +321,8 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
         // getGrader() only returns null in claude mode without an API key.
         aiMode: grader?.mode ?? "claude",
         keyIssue: keyIssue(grader),
-        concurrency: maxConcurrency,
-        effectiveConcurrency,
+        concurrency: maxFor(grader),
+        effectiveConcurrency: limitFor(grader),
         throttledUntil: now() < holdUntil ? holdUntil : null,
         ...queueStats(),
       };
@@ -322,7 +343,7 @@ export function createWorker(o: { grader: Grader | null | (() => Grader | null);
       pauseCode = null;
       // A new key comes with its own rate limits.
       holdUntil = 0;
-      effectiveConcurrency = maxConcurrency;
+      throttledConcurrency = null;
       window++;
       releasePausedJobs(now());
       scheduleTick();
@@ -339,6 +360,11 @@ const POLL_MS = 1000;
 const HOUR_MS = 3_600_000;
 const FINISHED_JOB_RETENTION_MS = 30 * 24 * HOUR_MS;
 
+/** GRADING_CONCURRENCY, or OLLAMA_CONCURRENCY (default 1) while Ollama on this computer grades. */
+export function concurrencyFor(grader: Grader | null, cfg: Pick<AppConfig, "concurrency" | "ollamaConcurrency">): number {
+  return grader?.engine === "ollama" ? cfg.ollamaConcurrency : cfg.concurrency;
+}
+
 /**
  * Called from instrumentation's register(): validates the environment, opens (and migrates) the
  * database, recovers work orphaned by the previous process and starts the worker. Idempotent.
@@ -352,7 +378,7 @@ export async function startWorker(): Promise<void> {
   for (const warning of cfg.startupWarnings) console.warn(`[startup] ${warning}`);
   getDb();
   // Taking the slot before the first await makes a concurrent second call return early.
-  const worker = withMaintenance(createWorker({ grader: getGrader, concurrency: cfg.concurrency, pollMs: POLL_MS }));
+  const worker = withMaintenance(createWorker({ grader: getGrader, concurrency: (g) => concurrencyFor(g, cfg), pollMs: POLL_MS }));
   slots[WORKER_SLOT] = worker;
   try {
     await ensureDataDirs();

@@ -15,6 +15,9 @@ function tableNames(db: Database.Database): string[] {
     .map((row) => row.name);
 }
 
+/** The Ollama columns migration 11 adds to app_settings, with their defaults. */
+const OLLAMA_DEFAULTS = { ollama_base_url: "http://localhost:11434", ollama_model: "qwen2.5vl:7b", ollama_num_ctx: 16384 };
+
 function count(db: DB, table: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
@@ -125,7 +128,7 @@ describe("migration 3 on a version-2 database", () => {
       api_key_set_by: null, api_key_set_at: null, updated_at: 0,
       grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
-      ai_model: "claude-sonnet-5-5",
+      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS,
     }]);
     expect(db.prepare("SELECT grading_preferences FROM teachers").get()).toEqual({ grading_preferences: "" });
     expect(() => db.prepare("UPDATE teachers SET grading_preferences = ?").run("x".repeat(4001))).toThrow(/constraint/i);
@@ -209,10 +212,10 @@ describe("migration 4 on a version-3 database", () => {
       api_key_set_by: "t1", api_key_set_at: 7, updated_at: 7,
       grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
-      ai_model: "claude-sonnet-5-5",
+      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS,
     }]);
     // Migration 6 adds the timing columns: queued_at starts as the upload time.
-    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, ai_engine: null, grading_started_at: null, queued_at: 1 });
+    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, ai_engine: null, grader_engine: null, grading_started_at: null, queued_at: 1 });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
@@ -308,9 +311,10 @@ describe("migration 5 on a version-4 database", () => {
     migrate(db);
 
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
-    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5" });
+    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS });
     // The papers keep the model and engine they were graded with (migration 6 only adds its timing columns).
-    expect(db.prepare("SELECT * FROM submissions").get()).toEqual({ ...submission, grading_started_at: null, queued_at: 1 });
+    expect(db.prepare("SELECT * FROM submissions").get())
+      .toEqual({ ...submission, grading_started_at: null, queued_at: 1, grader_engine: submission.ai_engine });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
@@ -630,7 +634,7 @@ describe("migration 10 on a version-9 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(10);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(count(db, "assignments")).toBe(1);
     const insert = db.prepare(`INSERT INTO key_questions (id, assignment_id, position, kind, question, status, created_at, updated_at)
                                VALUES (?, 'a1', 0, ?, 'Q?', ?, 1, 1)`);
@@ -641,6 +645,74 @@ describe("migration 10 on a version-9 database", () => {
                              VALUES ('q4', 'a1', 1, 'other', '', 1, 1)`).run()).toThrow(/CHECK/);
     db.prepare("DELETE FROM assignments WHERE id = 'a1'").run();
     expect(count(db, "key_questions")).toBe(0);
+    db.close();
+  });
+});
+
+describe("migration 11 on a version-10 database", () => {
+  function versionTenDatabase(engine: "agent" | "direct" | null): DB {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 10)) db.exec(migration.sql);
+      db.pragma("user_version = 10");
+    })();
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, ai_model, ai_engine, graded_key_revision, created_at, updated_at, queued_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 'claude-opus-5-5', 'direct', 1, 1, 1, 1);
+      UPDATE app_settings SET api_key_ciphertext = 'v1.iv.tag.ct', api_key_masked = 'sk-ant-…a1b2', api_key_check = 'verified',
+        api_key_set_by = 't1', api_key_set_at = 7, updated_at = 7, ai_model = 'claude-opus-5-5' WHERE id = 1;
+    `);
+    db.prepare("UPDATE app_settings SET grading_engine = ? WHERE id = 1").run(engine);
+    return db;
+  }
+
+  it.each(["agent", "direct", null] as const)("keeps every setting (engine %j) and adds Ollama's with their defaults", (engine) => {
+    const db = versionTenDatabase(engine);
+    const settings = db.prepare("SELECT * FROM app_settings").get() as Record<string, unknown>;
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{ ...settings, ...OLLAMA_DEFAULTS }]);
+    expect(db.prepare("SELECT ai_engine, grader_engine FROM submissions").get()).toEqual({ ai_engine: "direct", grader_engine: "direct" });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+
+  it("keeps the saved key's teacher reference: deleting the teacher still clears it", () => {
+    const db = versionTenDatabase("direct");
+    migrate(db);
+    db.prepare("DELETE FROM assignments").run();
+    db.prepare("DELETE FROM teachers WHERE id = 't1'").run();
+    expect(db.prepare("SELECT api_key_set_by FROM app_settings").get()).toEqual({ api_key_set_by: null });
+    db.close();
+  });
+
+  it("accepts the Ollama engine and settings, and checks them", () => {
+    const db = versionTenDatabase(null);
+    migrate(db);
+    db.prepare("UPDATE app_settings SET grading_engine = 'ollama', ollama_base_url = 'http://10.0.0.5:11434', ollama_model = 'gemma3:12b', "
+      + "ollama_num_ctx = 32768").run();
+    db.prepare("UPDATE submissions SET grader_engine = 'ollama', ai_engine = NULL").run();
+    expect(db.prepare("SELECT grading_engine, ollama_model, ollama_num_ctx FROM app_settings").get())
+      .toEqual({ grading_engine: "ollama", ollama_model: "gemma3:12b", ollama_num_ctx: 32768 });
+    for (const sql of [
+      "UPDATE app_settings SET grading_engine = 'local'",
+      "UPDATE app_settings SET ollama_num_ctx = 1024",
+      "UPDATE app_settings SET ollama_num_ctx = 1000000",
+      "UPDATE app_settings SET ollama_model = ''",
+      `UPDATE app_settings SET ollama_base_url = '${"h".repeat(201)}'`,
+      "UPDATE app_settings SET ollama_base_url = NULL",
+      "UPDATE submissions SET grader_engine = 'x'",
+      "UPDATE submissions SET ai_engine = 'ollama'",
+    ]) {
+      expect(() => db.prepare(sql).run(), sql).toThrow(/constraint/i);
+    }
     db.close();
   });
 });

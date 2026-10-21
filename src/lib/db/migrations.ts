@@ -441,6 +441,54 @@ CREATE TABLE key_questions (
 CREATE INDEX key_questions_assignment ON key_questions(assignment_id, position);
 `,
   },
+  {
+    version: 11,
+    name: "ollama_engine",
+    sql: `
+-- Settings → Grader → "On this computer (Ollama)": grading_engine gains 'ollama', plus where Ollama listens, which model it
+-- runs and its context size. Rebuild, as in v3 (SQLite cannot alter a CHECK). Safe with foreign_keys=ON inside migrate()'s
+-- transaction because no table references app_settings, so DROP TABLE runs no foreign-key actions.
+CREATE TABLE app_settings_v11 (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  students_can_upload INTEGER NOT NULL DEFAULT 0 CHECK (students_can_upload IN (0,1)),
+  api_key_ciphertext TEXT,
+  api_key_masked TEXT CHECK (api_key_masked IS NULL OR length(api_key_masked) <= 40),
+  api_key_check TEXT CHECK (api_key_check IN ('verified','unverified')),
+  api_key_set_by TEXT REFERENCES teachers(id) ON DELETE SET NULL,
+  api_key_set_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  grading_engine TEXT CHECK (grading_engine IN ('agent','direct','ollama')),
+  agent_install_id TEXT CHECK (agent_install_id IS NULL OR length(agent_install_id) = 12),
+  agent_key_fp TEXT CHECK (agent_key_fp IS NULL OR length(agent_key_fp) = 32),
+  agent_environment_json TEXT,
+  agent_agents_json TEXT,
+  agent_status TEXT NOT NULL DEFAULT 'none' CHECK (agent_status IN ('none','ready','error')),
+  agent_error TEXT CHECK (agent_error IS NULL OR length(agent_error) <= 500),
+  agent_checked_at INTEGER,
+  ai_model TEXT NOT NULL DEFAULT 'claude-sonnet-5-5' CHECK (ai_model IN ('claude-sonnet-5-5','claude-opus-5-5')),
+  ollama_base_url TEXT NOT NULL DEFAULT 'http://localhost:11434' CHECK (length(ollama_base_url) BETWEEN 1 AND 200),
+  ollama_model TEXT NOT NULL DEFAULT 'qwen2.5vl:7b' CHECK (length(ollama_model) BETWEEN 1 AND 100),
+  ollama_num_ctx INTEGER NOT NULL DEFAULT 16384 CHECK (ollama_num_ctx BETWEEN 4096 AND 131072),
+  CHECK ((api_key_ciphertext IS NULL) = (api_key_masked IS NULL)),
+  CHECK ((api_key_ciphertext IS NULL) = (api_key_check IS NULL))
+) STRICT;
+INSERT INTO app_settings_v11 (id, students_can_upload, api_key_ciphertext, api_key_masked, api_key_check, api_key_set_by,
+                              api_key_set_at, updated_at, grading_engine, agent_install_id, agent_key_fp, agent_environment_json,
+                              agent_agents_json, agent_status, agent_error, agent_checked_at, ai_model)
+  SELECT id, students_can_upload, api_key_ciphertext, api_key_masked, api_key_check, api_key_set_by,
+         api_key_set_at, updated_at, grading_engine, agent_install_id, agent_key_fp, agent_environment_json,
+         agent_agents_json, agent_status, agent_error, agent_checked_at, ai_model
+  FROM app_settings;
+DROP TABLE app_settings;
+ALTER TABLE app_settings_v11 RENAME TO app_settings;
+
+-- Which engine produced the stored grading, now including 'ollama'. submissions.ai_engine's CHECK can't take it without
+-- rebuilding submissions, which other tables reference with ON DELETE CASCADE, so the engine moves to grader_engine;
+-- ai_engine is still written for the engines it allows (NULL for 'ollama') and no longer read.
+ALTER TABLE submissions ADD COLUMN grader_engine TEXT CHECK (grader_engine IN ('direct','agent','fake','ollama'));
+UPDATE submissions SET grader_engine = ai_engine;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

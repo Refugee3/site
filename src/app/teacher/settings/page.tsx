@@ -6,6 +6,7 @@ import { ApiKeyForm } from "@/components/teacher/api-key-form";
 import { GraderCard } from "@/components/teacher/grader-card";
 import { PreferencesForm } from "@/components/teacher/preferences-form";
 import { Card } from "@/components/ui/card";
+import { testOllamaConnection } from "@/lib/ai/ollama/connection";
 import { requireTeacher } from "@/lib/auth/dal";
 import { getTeacherSettingsView } from "@/lib/services/views";
 
@@ -15,23 +16,37 @@ export const metadata: Metadata = { title: "Settings" };
 const SETUP_POLL_MS = 2000;
 const SETUP_POLL_MAX_MS = 120_000;
 
-/** Server-wide settings (the API key, the AI model, the grader) and the teacher's own grading preferences. */
+/** Server-wide settings (the API key, the AI model, the grader, Ollama) and the teacher's own grading preferences. */
 export default async function TeacherSettingsPage() {
   await connection();
   const teacher = await requireTeacher();
   const view = getTeacherSettingsView(teacher);
+  // With Ollama chosen, the page looks at the saved address (≤ 5 s) so the model list is filled in.
+  const ollamaCheck = view.grader.engine === "ollama" ? await testOllamaConnection(view.grader.ollama) : null;
 
   return (
     <div className="flex w-full max-w-3xl flex-col gap-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
       <Card title="Anthropic API key">
-        <ApiKeyForm apiKey={view.apiKey} aiMode={view.aiMode} model={view.aiModel} keyIssue={view.worker?.keyIssue ?? null} />
+        <ApiKeyForm
+          apiKey={view.apiKey}
+          aiMode={view.aiMode}
+          model={view.aiModel}
+          keyIssue={view.worker?.keyIssue ?? null}
+          engine={view.grader.engine}
+        />
       </Card>
       <Card title="AI model">
-        <AiModelCard model={view.aiModel} />
+        <AiModelCard model={view.aiModel} engine={view.grader.engine} />
       </Card>
       <Card title="Grader">
-        <GraderCard engine={view.grader.engine} aiMode={view.aiMode} agent={view.grader.agent} />
+        <GraderCard
+          engine={view.grader.engine}
+          aiMode={view.aiMode}
+          agent={view.grader.agent}
+          ollama={view.grader.ollama}
+          ollamaCheck={ollamaCheck}
+        />
       </Card>
       <Card title="Grading preferences">
         <PreferencesForm preferences={view.gradingPreferences} />

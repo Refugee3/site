@@ -11,8 +11,10 @@ import { getAiModel, getAppSettings, setGradingEngine as storeGradingEngine, set
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { attemptWithData } from "@/lib/http/action-result";
 import { decryptSecret, encryptSecret } from "@/lib/secrets";
+import { DEFAULT_OLLAMA_SETTINGS } from "@/lib/ollama-settings";
 import {
-  removeApiKey, saveApiKey, saveGradingPreferences, setAiModel, setGradingEngine, setUpHostedAgentAgain, type KeyChecker,
+  checkOllamaConnection, removeApiKey, saveApiKey, saveGradingPreferences, saveOllamaSettings, setAiModel, setGradingEngine,
+  setUpHostedAgentAgain, type KeyChecker,
 } from "@/lib/services/settings";
 import type { Teacher } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
@@ -193,6 +195,67 @@ describe("setGradingEngine", () => {
     setGraderForTests(forced);
     setGradingEngine("direct");
     expect(getGrader()).not.toBe(forced);
+  });
+});
+
+describe("Ollama on this computer", () => {
+  it("choosing it needs no key, sets up nothing at Anthropic, and resumes the worker", () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    expect(getGrader()).toBeNull();
+    const resume = registerWorker();
+
+    setGradingEngine("ollama");
+
+    expect(getAppSettings().gradingEngine).toBe("ollama");
+    expect(getGrader()).toMatchObject({ mode: "claude", engine: "ollama" });
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(hostedAgentSetup).not.toHaveBeenCalled();
+  });
+
+  it("saves the validated address, model and context size, and switches grading over to them", () => {
+    const resume = registerWorker();
+    const before = getGrader();
+    expect(saveOllamaSettings({ baseUrl: " http://127.0.0.1:11434/ ", model: " gemma3:12b ", numCtx: "32768" }))
+      .toEqual({ baseUrl: "http://127.0.0.1:11434", model: "gemma3:12b", numCtx: 32_768 });
+    expect(getAppSettings().ollama).toEqual({ baseUrl: "http://127.0.0.1:11434", model: "gemma3:12b", numCtx: 32_768 });
+    expect(getGrader()).not.toBe(before);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses bad settings field by field and saves nothing", async () => {
+    const result = await attemptWithData(() => saveOllamaSettings({ baseUrl: "localhost:11434", model: "qwen 2.5", numCtx: "100" }));
+    expect(result).toMatchObject({
+      ok: false,
+      fieldErrors: {
+        baseUrl: ["Enter the address Ollama listens on, such as http://localhost:11434."],
+        model: [expect.stringContaining("Enter a model name")],
+        numCtx: ["Enter a context size from 4096 to 131072."],
+      },
+    });
+    expect(getAppSettings().ollama).toEqual(DEFAULT_OLLAMA_SETTINGS);
+  });
+
+  it("tests the typed address; a working Ollama ends a pause only while it grades", async () => {
+    const resume = registerWorker();
+    const reachable = vi.fn(async () => ({ ok: true as const, version: "0.40.7", models: [], modelInstalled: true, fix: null }));
+    const input = { baseUrl: "http://localhost:11434", model: "qwen2.5vl:7b" };
+
+    expect(await checkOllamaConnection(input, reachable)).toMatchObject({ ok: true });
+    expect(reachable).toHaveBeenCalledWith(input);
+    expect(resume).not.toHaveBeenCalled();
+
+    storeGradingEngine("ollama");
+    await checkOllamaConnection(input, reachable);
+    expect(resume).toHaveBeenCalledTimes(1);
+
+    const missingModel = vi.fn(async () => ({
+      ok: true as const, version: "0.40.7", models: [], modelInstalled: false, fix: "Run: ollama pull qwen2.5vl:7b",
+    }));
+    await checkOllamaConnection(input, missingModel);
+    expect(resume).toHaveBeenCalledTimes(1);
+
+    await expect(checkOllamaConnection({ ...input, baseUrl: "nope" }, reachable)).rejects.toMatchObject({ code: "validation" });
   });
 });
 
