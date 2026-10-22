@@ -11,25 +11,32 @@ import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { SubmitButton } from "@/components/ui/submit-button";
 import {
-  DEFAULT_OLLAMA_MODEL, MAX_OLLAMA_NUM_CTX, MIN_OLLAMA_NUM_CTX, type OllamaConnectionResult, type OllamaModelInfo, type OllamaSettings,
-  pullCommand, RECOMMENDED_OLLAMA_MODELS,
+  DEFAULT_OLLAMA_MODEL, imageEdgeHint, MAX_OLLAMA_IMAGE_MAX_EDGE, MAX_OLLAMA_NUM_CTX, MAX_PAPERS_AT_A_TIME, MIN_OLLAMA_IMAGE_MAX_EDGE,
+  MIN_OLLAMA_NUM_CTX, MIN_PAPERS_AT_A_TIME, ollamaImageEdge, type OllamaConnectionResult, type OllamaModelInfo, type OllamaSettings,
+  PAPERS_AT_A_TIME_HINT, pullCommand, RECOMMENDED_OLLAMA_MODELS,
 } from "@/lib/ollama-settings";
-import type { ActionResult } from "@/lib/types";
+import type { ActionResult, OllamaSpeedView } from "@/lib/types";
+import { recentLocalTimeText } from "./grading-time";
 import { useActionRunner } from "./use-action-runner";
 
 export interface OllamaSettingsFormProps {
   settings: OllamaSettings;
   /** What the server found at the saved address when the page loaded (null when it didn't look). */
   initialCheck: OllamaConnectionResult | null;
+  /** Page image size and papers at a time, and how long recent papers took. */
+  speed: OllamaSpeedView;
 }
+
+const PAPERS_CHOICES = Array.from({ length: MAX_PAPERS_AT_A_TIME - MIN_PAPERS_AT_A_TIME + 1 }, (_, i) => MIN_PAPERS_AT_A_TIME + i);
 
 const OTHER = "__other__";
 
 /**
  * Settings → Grader → On this computer (Ollama): where Ollama listens, which downloaded model grades (vision models first), the
- * context size, and "Test connection", which checks the address typed here before it is saved.
+ * context size, the page image size and papers at a time (speed), and "Test connection", which checks the address typed here
+ * before it is saved.
  */
-export function OllamaSettingsForm({ settings, initialCheck }: OllamaSettingsFormProps) {
+export function OllamaSettingsForm({ settings, initialCheck, speed }: OllamaSettingsFormProps) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(saveOllamaSettingsAction, null);
   const tester = useActionRunner();
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
@@ -135,6 +142,37 @@ export function OllamaSettingsForm({ settings, initialCheck }: OllamaSettingsFor
           className="max-w-40"
         />
       </Field>
+
+      <Field label="Page image size (pixels)" htmlFor="ollama-image-edge" hint={imageEdgeHint(model, speed.envImageMaxEdge)}
+        error={fieldErrors?.imageMaxEdge}>
+        <Input
+          id="ollama-image-edge"
+          name="imageMaxEdge"
+          type="number"
+          inputMode="numeric"
+          min={MIN_OLLAMA_IMAGE_MAX_EDGE}
+          max={MAX_OLLAMA_IMAGE_MAX_EDGE}
+          step={64}
+          defaultValue={speed.imageMaxEdge ?? ""}
+          placeholder={`Automatic (${ollamaImageEdge(model, { setting: null, env: speed.envImageMaxEdge })})`}
+          className="max-w-48"
+        />
+      </Field>
+
+      <Field label="Papers at a time" htmlFor="ollama-papers-at-a-time" hint={PAPERS_AT_A_TIME_HINT} error={fieldErrors?.papersAtATime}>
+        <Select
+          id="ollama-papers-at-a-time"
+          name="papersAtATime"
+          defaultValue={String(speed.papersAtATime ?? Math.min(MAX_PAPERS_AT_A_TIME, Math.max(MIN_PAPERS_AT_A_TIME, speed.envConcurrency)))}
+          className="max-w-40"
+        >
+          {PAPERS_CHOICES.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </Select>
+      </Field>
+
+      {speed.recent && <p className="text-sm text-muted">{recentLocalTimeText(speed.recent)}</p>}
 
       <div className="flex flex-wrap items-center gap-3">
         <SubmitButton pendingText="Saving…">Save</SubmitButton>

@@ -139,7 +139,10 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
     })
     : buildRefusedResult({ items: ctx.items, current: latest, hasSections: sections.length > 0, category: outcome.category });
   const ai = outcome.kind === "graded"
-    ? { aiModel: outcome.meta.servedModel, usage: outcome.meta.usage, aiOutputJson: JSON.stringify(outcome.output) }
+    ? {
+      aiModel: outcome.meta.servedModel, usage: outcome.meta.usage, aiOutputJson: JSON.stringify(outcome.output),
+      readMs: outcome.meta.steps?.readMs ?? null, judgeMs: outcome.meta.steps?.judgeMs ?? null,
+    }
     : { aiModel: outcome.billed?.servedModel ?? getAiModel(), usage: outcome.billed?.usage ?? null, aiOutputJson: null };
 
   const saved = saveGradingResult({

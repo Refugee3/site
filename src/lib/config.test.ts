@@ -50,7 +50,8 @@ describe("getConfig", () => {
       agentSessionTimeoutMs: 1_200_000,
       agentKeepSessions: false,
       ollamaConcurrency: 1,
-      ollamaImageMaxEdge: 1600,
+      // Unset: chosen by model family (ollamaImageEdge).
+      ollamaImageMaxEdge: null,
       ollamaPagesPerCall: 4,
       ollamaTimeoutMs: 1_200_000,
       startupWarnings: [],

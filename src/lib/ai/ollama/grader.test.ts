@@ -2,17 +2,20 @@ import { describe, expect, it } from "vitest";
 import { decideFailure } from "@/lib/jobs/backoff";
 import type { Job } from "@/lib/types";
 import { AiError } from "../errors";
-import { blindItems, type GradeInput, type ReadInput, type ReadScanInput } from "../grader";
+import { blindItems, type GradeInput, type PacketChunkInput, type PacketReadInput, type ReadInput, type ReadScanInput } from "../grader";
 import {
-  extractionTask, JUDGING_SYSTEM_PROMPT, KEY_EXTRACTION_SYSTEM_PROMPT, READING_SYSTEM_PROMPT, readingTask, renderGradingContext,
-  renderReadingContext, SCAN_SPLIT_SYSTEM_PROMPT,
+  extractionTask, KEY_EXTRACTION_SYSTEM_PROMPT, readingTask, renderGradingContext, renderReadingContext, SCAN_SPLIT_SYSTEM_PROMPT,
 } from "../prompts";
 import {
-  type JudgingOutput, JudgingOutputSchema, JudgingOutputWithoutNotesSchema, type KeyExtraction, KeyExtractionSchema, outputFormat,
-  type ReadingOutput, ReadingOutputSchema, type ScanPages, ScanPagesSchema,
+  type JudgingOutput, type KeyExtraction, KeyExtractionSchema, outputFormat, type ReadingOutput, type ScanPages, ScanPagesSchema,
 } from "../schemas";
 import { makeKeyItem, makeSection } from "../test-utils";
 import { createOllamaClient, type FetchInit } from "./client";
+import {
+  type CompactPacket, CompactJudgingSchema, CompactJudgingWithoutNotesSchema, CompactPacketSchema, compactJudging, compactReading,
+  CompactReadingSchema, judgeNumPredict, OLLAMA_JUDGING_SYSTEM_PROMPT, OLLAMA_JUDGING_WITHOUT_NOTES_SYSTEM_PROMPT,
+  OLLAMA_PACKET_READING_SYSTEM_PROMPT, OLLAMA_READING_SYSTEM_PROMPT, packetNumPredict, readingNumPredict, scanNumPredict,
+} from "./compact";
 import { createOllamaGrader, OLLAMA_KEEP_ALIVE, type OllamaGraderConfig } from "./grader";
 import type { PdfRenderer } from "./render";
 
@@ -132,8 +135,10 @@ describe("createOllamaGrader: extractKey", () => {
     const { output, meta } = await grader.extractKey({ assignmentTitle: "Quiz", teacherNotes: "", keyPdf: pdf(2, 9), pageCount: 2 });
 
     expect(output).toEqual(keyExtraction);
-    expect(grader).toMatchObject({ mode: "claude", engine: "ollama" });
-    expect(grader.gradePacketChunk).toBeUndefined();
+    expect(grader).toMatchObject({ mode: "claude", engine: "ollama", parallel: 1 });
+    // A whole-class scan is graded in one pass, as with the direct API.
+    expect(grader.readPacketChunk).toBeTypeOf("function");
+    expect(grader.gradePacketChunk).toBeTypeOf("function");
     expect(api.sent).toHaveLength(1);
     const [{ url, body }] = api.sent;
     expect(url).toBe(`${BASE_URL}/api/chat`);
@@ -141,6 +146,8 @@ describe("createOllamaGrader: extractKey", () => {
       model: MODEL, stream: false, keep_alive: OLLAMA_KEEP_ALIVE, options: { num_ctx: 16_384, temperature: 0 },
       format: outputFormat(KeyExtractionSchema).schema,
     });
+    // A key is read once per assignment, and its answer can be long: no output bound.
+    expect(body.options).not.toHaveProperty("num_predict");
     expect(body.messages[0]).toEqual({ role: "system", content: KEY_EXTRACTION_SYSTEM_PROMPT });
     expect(body.messages[1].role).toBe("user");
     expect(body.messages[1].images).toEqual([imageOf(9, 1), imageOf(9, 2)]);
@@ -214,16 +221,18 @@ describe("createOllamaGrader: an answer that isn't usable", () => {
 });
 
 describe("createOllamaGrader: reading and judging a paper", () => {
-  it("reads one paper with its page images, the reading context and the task, and no answer anywhere", async () => {
-    const out = reading([item("Q1"), item("Q2", { student_answer: "12" })]);
-    const api = fakeOllama(answer(out));
+  it("reads one paper with its page images, the reading context and the task, in the compact form, and no answer anywhere", async () => {
+    const out = reading([item("Q1", { pages: [1, 2] }), item("Q2", { student_answer: "12", pages: [1, 2] })]);
+    const api = fakeOllama(answer(compactReading(out)));
     const input = readInput();
     const result = await graderWith(api.fetch).readSubmission(input);
 
+    // Mapped back to the full reading; the model isn't asked for pages, so an item read is on the pages the call saw.
     expect(result.output).toEqual(out);
     const { body } = api.sent[0];
-    expect(body.format).toEqual(outputFormat(ReadingOutputSchema).schema);
-    expect(body.messages[0]).toEqual({ role: "system", content: READING_SYSTEM_PROMPT });
+    expect(body.format).toEqual(outputFormat(CompactReadingSchema).schema);
+    expect(body.options).toEqual({ num_ctx: 16_384, temperature: 0, num_predict: readingNumPredict(input.items) });
+    expect(body.messages[0]).toEqual({ role: "system", content: OLLAMA_READING_SYSTEM_PROMPT });
     expect(body.messages[1].images).toEqual([imageOf(2, 1), imageOf(2, 2)]);
     const text = body.messages[1].content;
     expect(text.startsWith(renderReadingContext(input))).toBe(true);
@@ -234,19 +243,20 @@ describe("createOllamaGrader: reading and judging a paper", () => {
     for (const secret of ["EXPECTED-SENTINEL", "CRITERIA-SENTINEL", "Units required.", "<answer_key"]) expect(json).not.toContain(secret);
   });
 
-  it("grades: reads with the images, marks in code, then judges the rest in one text-only call", async () => {
+  it("grades: reads with the images, marks in code, then judges the rest in one compact text-only call", async () => {
     const api = fakeOllama(
-      answer(reading([item("Q1"), item("Q2", { student_answer: "12" })])),
-      answer({ items: [judged("Q1"), judged("Q2", { correctness: "incorrect" })], overall_feedback: "Good work.", teacher_summary: "" }),
+      answer(compactReading(reading([item("Q1"), item("Q2", { student_answer: "12" })]))),
+      answer(compactJudging({ items: [judged("Q1"), judged("Q2", { correctness: "incorrect" })], overall_feedback: "Good work.", teacher_summary: "" })),
     );
     const input = gradeInput();
     const result = await graderWith(api.fetch).gradeSubmission(input);
 
     expect(api.sent).toHaveLength(2);
     const judge = api.sent[1].body;
-    expect(judge.messages[0]).toEqual({ role: "system", content: JUDGING_SYSTEM_PROMPT });
+    expect(judge.messages[0]).toEqual({ role: "system", content: OLLAMA_JUDGING_SYSTEM_PROMPT });
     expect(judge.messages[1].images).toEqual([]);
-    expect(judge.format).toEqual(outputFormat(JudgingOutputSchema).schema);
+    expect(judge.format).toEqual(outputFormat(CompactJudgingSchema).schema);
+    expect(judge.options).toMatchObject({ num_predict: judgeNumPredict({ judged: 1, all: 2, writeNotes: true }) });
     expect(judge.messages[1].content.startsWith(renderGradingContext({
       assignment: input.assignment, teacherNotes: input.teacherNotes, sections: input.sections, items: input.items,
     }))).toBe(true);
@@ -254,31 +264,40 @@ describe("createOllamaGrader: reading and judging a paper", () => {
     expect(result.refs).toEqual(["Q1", "Q2"]);
     expect(result.output.items.map((i) => [i.ref, i.correctness, i.judged_by, i.feedback]))
       .toEqual([["Q1", "correct", "program", "Nice."], ["Q2", "incorrect", "ai", "Nice."]]);
+    expect(result.output.overall_feedback).toBe("Good work.");
     expect(result.meta.usage.inputTokens).toBe(2000);
+    // The time of each step, for the paper's review page.
+    expect(result.meta.steps).toEqual({ readMs: expect.any(Number), judgeMs: expect.any(Number) });
   });
 
   it("asks the judge for only the items left to it, without notes, when notes are off", async () => {
-    const lean = { ...judged("Q2", { correctness: "incorrect" }) } as Partial<JudgingOutput["items"][number]>;
-    delete lean.what_student_did;
-    delete lean.feedback;
-    delete lean.teacher_note;
-    const api = fakeOllama(answer(reading([item("Q1"), item("Q2", { student_answer: "12" })])), answer({ items: [lean] }));
+    const api = fakeOllama(
+      answer(compactReading(reading([item("Q1"), item("Q2", { student_answer: "12" })]))),
+      answer({ i: [{ r: "Q2", t: "c", k: "incorrect", c: "h", w: "none" }] }),
+    );
     const result = await graderWith(api.fetch).gradeSubmission(gradeInput({ writeNotes: false }));
-    expect(api.sent[1].body.format).toEqual(outputFormat(JudgingOutputWithoutNotesSchema).schema);
+    expect(api.sent[1].body.messages[0]).toEqual({ role: "system", content: OLLAMA_JUDGING_WITHOUT_NOTES_SYSTEM_PROMPT });
+    expect(api.sent[1].body.format).toEqual(outputFormat(CompactJudgingWithoutNotesSchema).schema);
+    expect(api.sent[1].body.options).toMatchObject({ num_predict: judgeNumPredict({ judged: 1, all: 2, writeNotes: false }) });
     expect(api.sent[1].body.messages[1].content).toContain("Return one items entry for each of them, in this order: Q2.");
     expect(result.output.items.map((i) => [i.ref, i.correctness, i.feedback])).toEqual([["Q1", "correct", ""], ["Q2", "incorrect", ""]]);
     expect(result.output.overall_feedback).toBe("");
   });
 
   it("makes no judge call when the program marked everything and notes are off", async () => {
-    const api = fakeOllama(answer(reading([item("Q1"), item("Q2", { attempt: "none", student_answer: "", legibility: "no_writing", pages: [] })])));
+    const blank = { attempt: "none", student_answer: "", legibility: "no_writing", pages: [] as number[] } as const;
+    const api = fakeOllama(answer(compactReading(reading([item("Q1"), item("Q2", blank)]))));
     const result = await graderWith(api.fetch).gradeSubmission(gradeInput({ writeNotes: false }));
     expect(api.sent).toHaveLength(1);
     expect(result.output.items.map((i) => [i.ref, i.correctness])).toEqual([["Q1", "correct"], ["Q2", "no_answer"]]);
+    expect(result.meta.steps).toEqual({ readMs: expect.any(Number), judgeMs: null });
   });
 
   it("sends wrong refs back once; what is still wrong after that is cleaned up for reconcile", async () => {
-    const api = fakeOllama(answer(reading([item("Q2"), item("Q1")])), answer(reading([item("[q1]"), item("Q1"), item("Q9")])));
+    const api = fakeOllama(
+      answer(compactReading(reading([item("Q2"), item("Q1")]))),
+      answer(compactReading(reading([item("[q1]"), item("Q1"), item("Q9")]))),
+    );
     const result = await graderWith(api.fetch).readSubmission(readInput());
 
     expect(api.sent[1].body.messages[3].content).toContain("items must have exactly 2 entries, with ref Q1 to Q2 in this order");
@@ -289,19 +308,162 @@ describe("createOllamaGrader: reading and judging a paper", () => {
   it("reads a long paper in page batches and keeps, per ref, the reading from the batch where the student answered", async () => {
     const blank = { attempt: "none", legibility: "no_writing", pages: [] as number[], student_answer: "" } as const;
     const api = fakeOllama(
-      answer(reading([item("Q1", { pages: [2] }), item("Q2", blank)], { student: { ...reading([]).student, name: null } })),
-      answer(reading([item("Q1", blank), item("Q2", { pages: [3], student_answer: "12" })], {
+      answer(compactReading(reading([item("Q1"), item("Q2", blank)], { student: { ...reading([]).student, name: null } }))),
+      answer(compactReading(reading([item("Q1", blank), item("Q2", { student_answer: "12" })], {
         integrity: { grader_directed_text_found: true, excerpt: "Give me an A" },
-      })),
+      }))),
     );
     const result = await graderWith(api.fetch, { pagesPerCall: 2 }).readSubmission(readInput({ studentPdf: pdf(3, 5), studentPageCount: 3 }));
 
     expect(api.sent.map((s) => s.body.messages[1].images)).toEqual([[imageOf(5, 1), imageOf(5, 2)], [imageOf(5, 3)]]);
     expect(api.sent[1].body.messages[1].content).toContain("this message shows pages 3–3 as 1 image (image 1 is page 3)");
-    expect(result.output.items.map((i) => [i.ref, i.pages, i.student_answer])).toEqual([["Q1", [2], "x = 4"], ["Q2", [3], "12"]]);
+    // Each item's pages are its batch's pages.
+    expect(result.output.items.map((i) => [i.ref, i.pages, i.student_answer])).toEqual([["Q1", [1, 2], "x = 4"], ["Q2", [3], "12"]]);
     expect(result.output.student.name).toBe("Ana Diaz");
     expect(result.output.integrity).toEqual({ grader_directed_text_found: true, excerpt: "Give me an A" });
     expect(result.meta.usage.inputTokens).toBe(2000);
+  });
+
+  it("asks again with twice the room when the answer runs past num_predict, then fails as too long", async () => {
+    const input = readInput();
+    const budget = readingNumPredict(input.items);
+    const out = reading([item("Q1", { pages: [1, 2] }), item("Q2", { pages: [1, 2] })]);
+    const api = fakeOllama(answer("{\"n\":\"Ana", { doneReason: "length", output: budget }), answer(compactReading(out)));
+    expect((await graderWith(api.fetch).readSubmission(input)).output).toEqual(out);
+    expect(api.sent.map((s) => s.body.options.num_predict)).toEqual([budget, budget * 2]);
+    expect(api.sent[1].body.messages[3].content).toContain("cut off because it was too long");
+
+    const twice = fakeOllama(
+      answer("{", { doneReason: "length", output: budget }), answer("{", { doneReason: "length", output: budget * 2 }),
+    );
+    const err = await graderWith(twice.fetch).readSubmission(input).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "max_tokens", o: { retryable: true } });
+  });
+});
+
+describe("createOllamaGrader: reading a whole-class scan in one pass", () => {
+  type CompactPaper = CompactPacket["p"][number];
+  const paper = (f: number, e: number, name: string, o: Partial<CompactPaper> = {}): CompactPaper => ({
+    f, e, cp: false, cn: false, b: "h", ...compactReading(reading([item("Q1"), item("Q2", { student_answer: "12" })])), n: name, ...o,
+  });
+  const packetRead = (o: Partial<PacketReadInput> = {}): PacketReadInput => {
+    const g = gradeInput();
+    return {
+      assignmentTitle: g.assignment.title, sections: g.sections, items: blindItems(g.items), chunkPdf: pdf(6, 3), firstPage: 1,
+      chunkPageCount: 6, totalPages: 6, keyPageCount: 2, ...o,
+    };
+  };
+
+  it("reads the chunk blind in batches of whole papers, and returns its papers with their pages in the chunk", async () => {
+    const api = fakeOllama(
+      answer({ p: [paper(1, 2, "Ana")], sk: [] }),
+      answer({ p: [paper(1, 2, "Ben")], sk: [] }),
+      answer({ p: [paper(1, 1, "Cy")], sk: [{ p: 2, k: "blank" }] }),
+    );
+    const input = packetRead();
+    // pagesPerCall 3 with 2-page papers: 2 pages (one paper) per call.
+    const { output, meta } = await graderWith(api.fetch, { pagesPerCall: 3 }).readPacketChunk!(input);
+
+    expect(api.sent.map((s) => s.body.messages[1].images)).toEqual([
+      [imageOf(3, 1), imageOf(3, 2)], [imageOf(3, 3), imageOf(3, 4)], [imageOf(3, 5), imageOf(3, 6)],
+    ]);
+    const first = api.sent[0].body;
+    expect(first.messages[0]).toEqual({ role: "system", content: OLLAMA_PACKET_READING_SYSTEM_PROMPT });
+    expect(first.format).toEqual(outputFormat(CompactPacketSchema).schema);
+    expect(first.options).toMatchObject({ num_predict: packetNumPredict(input.items, 2, 2) });
+    expect(first.messages[1].content.startsWith(renderReadingContext(input))).toBe(true);
+    expect(api.sent[1].body.messages[1].content).toContain("pages 3–4 of a 6-page scan");
+    // No answer, criteria or teacher's notes in any request: the scan is read blind.
+    const json = JSON.stringify(api.sent);
+    for (const secret of ["EXPECTED-SENTINEL", "CRITERIA-SENTINEL", "Units required.", "<answer_key"]) expect(json).not.toContain(secret);
+
+    expect(output.papers.map((p) => [p.first_page, p.last_page, p.student.name])).toEqual([[1, 2, "Ana"], [3, 4, "Ben"], [5, 5, "Cy"]]);
+    expect(output.papers[1].items.map((i) => [i.ref, i.pages, i.student_answer])).toEqual([["Q1", [3, 4], "x = 4"], ["Q2", [3, 4], "12"]]);
+    expect(output.skipped_pages).toEqual([{ page: 6, kind: "blank" }]);
+    expect(meta.usage.inputTokens).toBe(3000);
+  });
+
+  it("reads a paper the batch cut off again with the next batch, and joins a paper longer than a batch with its rest", async () => {
+    const api = fakeOllama(
+      // Pages 1–3: Ana (1–2), then Ben starting on 3 who may go on: read again from page 3.
+      answer({ p: [paper(1, 2, "Ana"), paper(3, 3, "Ben", { cn: true })], sk: [] }),
+      // Pages 3–5: Ben fills the batch and may go on.
+      answer({ p: [paper(1, 3, "Ben", { cn: true })], sk: [] }),
+      // Page 6: the rest of Ben's paper.
+      answer({ p: [paper(1, 1, "", { n: null, cp: true, i: [
+        { r: "Q1", a: "", m: "", c: "h", t: "n", l: "n" }, { r: "Q2", a: "15", m: "", c: "m", t: "c", l: "c" },
+      ] })], sk: [] }),
+    );
+    const { output } = await graderWith(api.fetch, { pagesPerCall: 3 }).readPacketChunk!(packetRead({ keyPageCount: null }));
+
+    expect(api.sent.map((s) => s.body.messages[1].images?.length)).toEqual([3, 3, 1]);
+    expect(api.sent[1].body.messages[1].content).toContain("pages 3–5 of a 6-page scan");
+    expect(output.papers.map((p) => [p.first_page, p.last_page, p.student.name, p.boundary_confidence])).toEqual([
+      [1, 2, "Ana", "high"], [3, 6, "Ben", "high"],
+    ]);
+    // Per item, the reading from the batch where Ben answered it.
+    expect(output.papers[1].items.map((i) => [i.ref, i.student_answer, i.pages])).toEqual([["Q1", "x = 4", [3, 4, 5]], ["Q2", "12", [3, 4, 5]]]);
+    expect(output.papers[1].may_continue_after_chunk).toBe(false);
+  });
+
+  it("grades the chunk in one pass: each paper marked in code and judged from its transcription", async () => {
+    const api = fakeOllama(
+      answer({ p: [paper(1, 2, "Ana"), paper(3, 4, "Ben")], sk: [] }),
+      answer({ i: [{ r: "Q2", t: "c", k: "incorrect", c: "h", w: "none" }] }),
+      answer({ i: [{ r: "Q2", t: "c", k: "correct", c: "h", w: "none" }] }),
+    );
+    const g = gradeInput({ writeNotes: false });
+    const input: PacketChunkInput = {
+      assignment: g.assignment, teacherNotes: g.teacherNotes, sections: g.sections, items: g.items, writeNotes: false,
+      chunkPdf: pdf(4, 3), firstPage: 1, chunkPageCount: 4, totalPages: 4, keyPageCount: 2,
+    };
+    const result = await graderWith(api.fetch).gradePacketChunk!(input);
+
+    expect(api.sent).toHaveLength(3);
+    expect(api.sent[0].body.messages[1].images).toHaveLength(4);
+    for (const judge of api.sent.slice(1)) expect(judge.body.messages[1].images).toEqual([]);
+    expect(result.output.papers.map((p) => [p.first_page, p.student.name, p.items.map((i) => [i.correctness, i.judged_by])])).toEqual([
+      [1, "Ana", [["correct", "program"], ["incorrect", "ai"]]],
+      [3, "Ben", [["correct", "program"], ["correct", "ai"]]],
+    ]);
+    expect(result.output.papers[0].timing).toEqual({ readMs: expect.any(Number), judgeMs: expect.any(Number) });
+  });
+
+  it("sends a batch back once when a paper's pages or refs are wrong", async () => {
+    const api = fakeOllama(
+      answer({ p: [paper(1, 9, "Ana", { i: [] })], sk: [] }),
+      answer({ p: [paper(1, 2, "Ana")], sk: [] }),
+    );
+    const { output } = await graderWith(api.fetch).readPacketChunk!(packetRead({ chunkPdf: pdf(2, 3), chunkPageCount: 2, totalPages: 2 }));
+    const retry = api.sent[1].body.messages[3].content;
+    expect(retry).toContain("papers entry 1: f and e must be pages from 1 to 2");
+    expect(retry).toContain("papers entry 1: items must have exactly 2 entries");
+    expect(output.papers.map((p) => [p.first_page, p.last_page])).toEqual([[1, 2]]);
+  });
+});
+
+describe("createOllamaGrader: output bounds", () => {
+  it("bounds the scan split's answer by its pages", async () => {
+    const pages: ScanPages = {
+      pages: [1, 2].map((n) => ({
+        chunk_page: n, kind: "student_work", starts_new_paper: n === 1, student_name: null, section_raw: null, page_marker: null,
+        worksheet_page: n, confidence: "high", note: "",
+      })),
+    };
+    const api = fakeOllama(answer(pages));
+    await graderWith(api.fetch).readScanPages({
+      assignmentTitle: "Quiz", sections: [], items: [makeKeyItem()], keyPageCount: 2, chunkPdf: pdf(2, 4), firstPage: 1,
+      chunkPageCount: 2, totalPages: 2, previousPage: null,
+    });
+    expect(api.sent[0].body.options).toEqual({ num_ctx: 16_384, temperature: 0, num_predict: scanNumPredict(2) });
+  });
+
+  it("never asks for more than the context holds", async () => {
+    const api = fakeOllama(answer(compactReading(reading([item("Q1", { pages: [1, 2] }), item("Q2", { pages: [1, 2] })]))));
+    await graderWith(api.fetch, { numCtx: 4096 }).readSubmission(readInput({
+      items: Array.from({ length: 40 }, (_, i) => makeKeyItem({ id: `i${i}`, label: String(i + 1), position: i, answerType: "long_answer" })),
+    })).catch(() => undefined);
+    expect(api.sent[0].body.options.num_predict).toBe(4096);
   });
 });
 

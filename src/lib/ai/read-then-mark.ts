@@ -42,7 +42,8 @@ export async function gradeByReading(
   } catch (e) {
     throw withEarlierCost(e, read.meta);
   }
-  return { output: judged.output, refs, meta: judged.meta === null ? read.meta : combineMeta(read.meta, judged.meta) };
+  const steps = { readMs: read.meta.durationMs, judgeMs: judged.meta?.durationMs ?? null };
+  return { output: judged.output, refs, meta: { ...(judged.meta === null ? read.meta : combineMeta(read.meta, judged.meta)), steps } };
 }
 
 /**
@@ -66,6 +67,8 @@ export async function gradePacketByReading(
   }, o);
 
   const papers = read.output.papers;
+  // Each paper's share of the chunk's reading time, for the time breakdown on its review page.
+  const readShareMs = papers.length === 0 ? 0 : Math.round(read.meta.durationMs / papers.length);
   const graded = new Array<PacketOutput["papers"][number]>(papers.length);
   const metas: AiCallMeta[] = [];
   let failure: { error: unknown } | null = null;
@@ -78,7 +81,7 @@ export async function gradePacketByReading(
         // The chunk's max_tokens is sized for its reading; each judge call uses the engine's default.
         const judged = await markAndJudge(g, input, refs, paper, { signal: o.signal });
         if (judged.meta) metas.push(judged.meta);
-        graded[index] = { ...boundary(paper), ...judged.output };
+        graded[index] = { ...boundary(paper), ...judged.output, timing: { readMs: readShareMs, judgeMs: judged.meta?.durationMs ?? null } };
       } catch (error) {
         failure ??= { error };
       }

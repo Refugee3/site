@@ -94,6 +94,8 @@ export interface Submission { id: string; assignmentId: string; source: "student
   gradingStartedAt: number | null;
   /** When the paper was last queued (upload or regrade): the grading batch it belongs to. */
   queuedAt: number;
+  /** How long the stored grading's reading and judging took (ms); judgeMs null when no judge call was needed or not recorded. */
+  readMs: number | null; judgeMs: number | null;
   createdAt: number; updatedAt: number }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
@@ -312,6 +314,13 @@ export type LessonNotSentReason = "inactive" | "agrees" | "no_reading" | "readin
 
 // ---- v2: view models ----
 export type ApiKeySource = "app" | "env" | "none";
+/**
+ * Settings → Grader → On this computer (Ollama), speed: the saved page image size and papers at a time (null = not set), the
+ * server's fallbacks (OLLAMA_IMAGE_MAX_EDGE, null when unset; OLLAMA_CONCURRENCY), and how long the last papers graded on this
+ * computer took (median of reading + judging, ms; null before any).
+ */
+export interface OllamaSpeedView { imageMaxEdge: number | null; papersAtATime: number | null; envImageMaxEdge: number | null;
+  envConcurrency: number; recent: { papers: number; medianMs: number; medianReadMs: number; medianJudgeMs: number } | null }
 export interface TeacherSettingsView {
   apiKey: { source: ApiKeySource; masked: string | null; check: "verified" | "unverified" | null; setAt: number | null;
     setByName: string | null; unreadable: boolean; envKeySet: boolean };
@@ -331,7 +340,7 @@ export interface ScanSummary { id: string; status: ScanStatus; splitMode: ScanSp
   autoGraded: boolean }
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
   maxScanMb: number; maxScanPages: number;
-  /** False while the hosted agent or Ollama grades: a scan uploaded to be graded in one pass is then split first. */
+  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
   onePassAvailable: boolean }
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage" | "onePass">;

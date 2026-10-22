@@ -12,7 +12,7 @@ import { addAssignmentUsage, getGradingBatchStartedAt, updateAssignment as updat
 import { updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateScan } from "@/lib/db/repos/scans";
 import { updateLesson } from "@/lib/db/repos/lessons";
-import { saveHostedAgentError, setGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
+import { saveHostedAgentError, setGradingEngine, setOllamaSpeedSettings, setStoredApiKey } from "@/lib/db/repos/settings";
 import { getSubmission, setItemOverride, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
@@ -28,7 +28,7 @@ import {
 import {
   AGENT_RUNTIME_USD_PER_HOUR, buildGradesCsv, buildQuestionStatsCsv, estimateCostUsd, estimateLedgerCostUsd, getAssignmentHeader, getBoardView,
   getDashboardView, getKeyEditorView, getLessonsView, getReviewView, getScanReviewView, getSettingsView, getItemStats,
-  getStrugglingQuestions, getTeacherSettingsView, getUploadPageView,
+  getOllamaSpeedView, getStrugglingQuestions, getTeacherSettingsView, getUploadPageView,
 } from "@/lib/services/views";
 import type { AiUsage, Assignment, KeyItem, Submission, Teacher } from "@/lib/types";
 import {
@@ -875,3 +875,31 @@ function getDbRun(sql: string, ...params: unknown[]): void {
 function rejectingRateLimit() {
   return scriptedGrader({ gradeSubmission: () => Promise.reject(new AiError("rate_limited", "429", { retryable: true, retryAfterMs: 60_000 })) });
 }
+
+describe("getOllamaSpeedView", () => {
+  /** A paper graded by `engine` at `at`, its reading and judging taking the given ms (null: not recorded / skipped). */
+  function graded(engine: "ollama" | "direct", at: number, readMs: number | null, judgeMs: number | null, status = "graded"): void {
+    const s = seedSubmission(assignment.id, { status: "queued" });
+    getDb().prepare("UPDATE submissions SET status = ?, grader_engine = ?, graded_at = ?, read_ms = ?, judge_ms = ? WHERE id = ?")
+      .run(status, engine, at, readMs, judgeMs, s.id);
+  }
+
+  it("shows the saved speed settings, the server's fallbacks, and nothing recent before any local paper", () => {
+    vi.stubEnv("OLLAMA_CONCURRENCY", "2");
+    resetConfigForTests();
+    expect(getOllamaSpeedView()).toEqual({
+      imageMaxEdge: null, papersAtATime: null, envImageMaxEdge: null, envConcurrency: 2, recent: null,
+    });
+    setOllamaSpeedSettings({ imageMaxEdge: 1280, papersAtATime: 3 });
+    expect(getOllamaSpeedView()).toMatchObject({ imageMaxEdge: 1280, papersAtATime: 3 });
+  });
+
+  it("takes the median of the last 10 papers graded on this computer, with their read and check times", () => {
+    graded("ollama", 1, 999_000, 999_000); // older than the last 10
+    for (let i = 0; i < 10; i++) graded("ollama", 100 + i, 40_000 + i * 1000, i % 2 === 0 ? 10_000 : null);
+    graded("direct", 500, 5_000, 1_000); // another engine
+    graded("ollama", 501, null, null); // graded before times were recorded
+    graded("ollama", 502, 1_000, 1_000, "failed");
+    expect(getOllamaSpeedView().recent).toEqual({ papers: 10, medianMs: 49_500, medianReadMs: 44_500, medianJudgeMs: 5_000 });
+  });
+});

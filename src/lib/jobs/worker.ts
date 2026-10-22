@@ -64,8 +64,9 @@ const ORPHAN_RETRY_MS = 30_000;
  * launched since the last cut count, so ten calls rejected together halve it once, not ten times, and jobs that started
  * before the cut don't undo it.
  *
- * `concurrency` may depend on the grader: Ollama on this computer runs OLLAMA_CONCURRENCY jobs at once (default 1), since one
- * local GPU serializes the work anyway (see concurrencyFor). It is read at every claim, so switching engines applies at once.
+ * `concurrency` may depend on the grader: Ollama on this computer runs its "Papers at a time" jobs at once (Settings, else
+ * OLLAMA_CONCURRENCY, default 1), since one local GPU serializes the work unless Ollama runs requests in parallel (see
+ * concurrencyFor). It is read at every claim, so switching engines or saving the setting applies at once.
  */
 export function createWorker(o: {
   grader: Grader | null | (() => Grader | null);
@@ -360,9 +361,12 @@ const POLL_MS = 1000;
 const HOUR_MS = 3_600_000;
 const FINISHED_JOB_RETENTION_MS = 30 * 24 * HOUR_MS;
 
-/** GRADING_CONCURRENCY, or OLLAMA_CONCURRENCY (default 1) while Ollama on this computer grades. */
+/**
+ * GRADING_CONCURRENCY, or while Ollama on this computer grades, its papers at a time: the grader's own `parallel` (Settings →
+ * Grader → "Papers at a time", else OLLAMA_CONCURRENCY, default 1), the same number of calls the grader sends Ollama at once.
+ */
 export function concurrencyFor(grader: Grader | null, cfg: Pick<AppConfig, "concurrency" | "ollamaConcurrency">): number {
-  return grader?.engine === "ollama" ? cfg.ollamaConcurrency : cfg.concurrency;
+  return grader?.engine === "ollama" ? (grader.parallel ?? cfg.ollamaConcurrency) : cfg.concurrency;
 }
 
 /**

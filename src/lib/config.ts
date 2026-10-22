@@ -45,8 +45,11 @@ export interface AppConfig {
   agentKeepSessions: boolean;
   /** Ollama engine: the most jobs the worker runs at once while it grades (one local GPU serializes work anyway). */
   ollamaConcurrency: number;
-  /** Ollama engine: each PDF page is rendered to a PNG whose longer side is this many pixels. */
-  ollamaImageMaxEdge: number;
+  /**
+   * Ollama engine: each PDF page is rendered to a PNG whose longer side is this many pixels; null (unset) = by model family
+   * (ollamaImageEdge: 1280 for Qwen, 896 for Gemma, 1600 otherwise). The size saved in Settings comes first.
+   */
+  ollamaImageMaxEdge: number | null;
   /** Ollama engine: the most page images per call; longer papers and keys are read in batches of this many pages. */
   ollamaPagesPerCall: number;
   /** Ollama engine: wall-clock limit of one call to Ollama (queued calls wait in this process first, not against it). */
@@ -126,7 +129,7 @@ const EnvSchema = z.object({
   AGENT_SESSION_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
   AGENT_KEEP_SESSIONS: z.enum(["0", "1"]).default("0"),
   OLLAMA_CONCURRENCY: intVar(1, 8, 1),
-  OLLAMA_IMAGE_MAX_EDGE: intVar(512, 4096, 1600),
+  OLLAMA_IMAGE_MAX_EDGE: z.coerce.number().int().min(512).max(4096).optional(),
   OLLAMA_PAGES_PER_CALL: intVar(1, 8, 4),
   OLLAMA_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
 });
@@ -182,7 +185,7 @@ function parseConfig(): AppConfig {
     agentSessionTimeoutMs: env.AGENT_SESSION_TIMEOUT_MS,
     agentKeepSessions: env.AGENT_KEEP_SESSIONS === "1",
     ollamaConcurrency: env.OLLAMA_CONCURRENCY,
-    ollamaImageMaxEdge: env.OLLAMA_IMAGE_MAX_EDGE,
+    ollamaImageMaxEdge: env.OLLAMA_IMAGE_MAX_EDGE ?? null,
     ollamaPagesPerCall: env.OLLAMA_PAGES_PER_CALL,
     ollamaTimeoutMs: env.OLLAMA_TIMEOUT_MS,
     startupWarnings: env.ANTHROPIC_MODEL === undefined ? [] : [ANTHROPIC_MODEL_RETIRED],

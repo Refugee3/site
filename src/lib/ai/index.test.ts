@@ -3,7 +3,8 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { resetConfigForTests } from "@/lib/config";
 import {
-  clearStoredApiKey, getAppSettings, getHostedAgentState, setAiModel, setGradingEngine, setOllamaSettings, setStoredApiKey,
+  clearStoredApiKey, getAppSettings, getHostedAgentState, setAiModel, setGradingEngine, setOllamaSettings, setOllamaSpeedSettings,
+  setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { encryptSecret } from "@/lib/secrets";
 import { makePdf, seedTeacher, useTestDb } from "@/test/helpers";
@@ -186,8 +187,11 @@ describe("Ollama on this computer", () => {
     resetGrader();
     const grader = getGrader();
     expect(grader).toMatchObject({ mode: "claude", engine: "ollama" });
-    // It can't grade a whole-class scan in one pass: such a scan is split first.
-    expect(grader?.gradePacketChunk).toBeUndefined();
+    // It grades a whole-class scan in one pass, like the direct API.
+    expect(grader?.readPacketChunk).toBeTypeOf("function");
+    expect(grader?.gradePacketChunk).toBeTypeOf("function");
+    // One paper at a time unless Settings says otherwise (OLLAMA_CONCURRENCY's default).
+    expect(grader?.parallel).toBe(1);
 
     // A key saved meanwhile changes nothing while Ollama is chosen; choosing a Claude engine again uses it.
     saveKey(KEY_A);
@@ -237,13 +241,75 @@ describe("Ollama on this computer", () => {
       expect(requests[0].body).toMatchObject({ model: "gemma3:12b", options: { num_ctx: 8192, temperature: 0 } });
       const images = requests[0].body.messages[1].images ?? [];
       expect(images).toHaveLength(2);
-      // PNGs, 1600 px on the long side (OLLAMA_IMAGE_MAX_EDGE's default).
+      // PNGs, 896 px on the long side: Gemma shrinks images to 896 px itself (no OLLAMA_IMAGE_MAX_EDGE, nothing in Settings).
       const png = Buffer.from(images[0], "base64");
       expect(png.subarray(1, 4).toString("latin1")).toBe("PNG");
-      expect(png.readUInt32BE(20)).toBe(1600);
+      expect(Math.max(png.readUInt32BE(16), png.readUInt32BE(20))).toBe(896);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("Ollama's page image size and papers at a time", () => {
+  /** The longer side of the first page image of each key read by the grader saved in Settings (a local fake Ollama answers). */
+  async function sentEdges(runs: Array<() => void>): Promise<number[]> {
+    const edges: number[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk.toString()));
+      req.on("end", () => {
+        const png = Buffer.from((JSON.parse(body) as { messages: Array<{ images?: string[] }> }).messages[1].images![0], "base64");
+        edges.push(Math.max(png.readUInt32BE(16), png.readUInt32BE(20)));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+          model: "m", done: true, done_reason: "stop", prompt_eval_count: 1, eval_count: 1,
+          message: { role: "assistant", content: JSON.stringify({
+            document_kind: "answer_key", items: [], stated_total_points: null, notes: "", questions_for_teacher: [], suggested_title: null,
+          }) },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      for (const run of runs) {
+        run();
+        setOllamaSettings({ ...getAppSettings().ollama, baseUrl });
+        resetGrader();
+        await getGrader()!.extractKey({ assignmentTitle: "Quiz", teacherNotes: "", keyPdf: await makePdf(1), pageCount: 1 });
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    return edges;
+  }
+
+  it("sends 1280 px pages to Qwen, 896 to Gemma, unless Settings or OLLAMA_IMAGE_MAX_EDGE say otherwise", async () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "" });
+    useTestDb();
+    setGradingEngine("ollama");
+    const model = (name: string) => () => setOllamaSettings({ ...getAppSettings().ollama, model: name });
+    expect(await sentEdges([
+      model("qwen2.5vl:32b"),
+      model("gemma3:27b"),
+      // Settings: 1200 px; Gemma still gets at most 1024.
+      () => setOllamaSpeedSettings({ imageMaxEdge: 1200, papersAtATime: null }),
+      model("qwen2.5vl:32b"),
+    ])).toEqual([1280, 896, 1024, 1200]);
+
+    useEnv({ OLLAMA_IMAGE_MAX_EDGE: "1536" });
+    setOllamaSpeedSettings({ imageMaxEdge: null, papersAtATime: null });
+    expect(await sentEdges([() => undefined])).toEqual([1536]);
+  });
+
+  it("grades papers at a time from Settings, else OLLAMA_CONCURRENCY", () => {
+    useEnv({ AI_MODE: "claude", ANTHROPIC_API_KEY: "", OLLAMA_CONCURRENCY: "3" });
+    useTestDb();
+    setGradingEngine("ollama");
+    expect(getGrader()?.parallel).toBe(3);
+    setOllamaSpeedSettings({ imageMaxEdge: null, papersAtATime: 2 });
+    resetGrader();
+    expect(getGrader()?.parallel).toBe(2);
   });
 });
 

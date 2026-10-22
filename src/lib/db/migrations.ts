@@ -500,6 +500,23 @@ ALTER TABLE submission_items ADD COLUMN judged_by TEXT CHECK (judged_by IN ('pro
 ALTER TABLE submission_items ADD COLUMN marks_seen TEXT NOT NULL DEFAULT '';
 `,
   },
+  {
+    version: 13,
+    name: "local_grading_speed",
+    sql: `
+-- Settings → Grader → On this computer (Ollama): the page image size (NULL = automatic: OLLAMA_IMAGE_MAX_EDGE, else by model
+-- family) and how many papers are graded at once (NULL = OLLAMA_CONCURRENCY).
+ALTER TABLE app_settings ADD COLUMN ollama_image_max_edge INTEGER
+  CHECK (ollama_image_max_edge IS NULL OR ollama_image_max_edge BETWEEN 512 AND 4096);
+ALTER TABLE app_settings ADD COLUMN ollama_papers_at_a_time INTEGER
+  CHECK (ollama_papers_at_a_time IS NULL OR ollama_papers_at_a_time BETWEEN 1 AND 4);
+
+-- How long the stored grading's READ call(s) and JUDGE call took, in ms (judge_ms NULL: no judge call was needed); NULL for
+-- gradings stored before this version or without a grading.
+ALTER TABLE submissions ADD COLUMN read_ms INTEGER CHECK (read_ms IS NULL OR read_ms >= 0);
+ALTER TABLE submissions ADD COLUMN judge_ms INTEGER CHECK (judge_ms IS NULL OR judge_ms >= 0);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

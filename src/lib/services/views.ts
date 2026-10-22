@@ -7,17 +7,18 @@ import { queuedJobsAhead } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
 import { countPendingScans, listScans } from "@/lib/db/repos/scans";
-import { getAppSettings, getGradingEngine } from "@/lib/db/repos/settings";
+import { getAppSettings, getGradingEngine, getOllamaSpeedSettings } from "@/lib/db/repos/settings";
 import { onePassAvailable } from "@/lib/services/scans";
 import {
   countByStatus, countSubmissions, listGuidanceStaleIds, listItems, listItemsForAssignment, listStaleIds,
-  listSubmissions,
+  listSubmissions, recentLocalPaperTimes,
 } from "@/lib/db/repos/submissions";
 import { getGradingPreferences, getTeacher } from "@/lib/db/repos/teachers";
 import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
 import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
 import { toCsv } from "@/lib/grading/csv";
+import { median } from "@/lib/grading/estimates";
 import {
   commonAnswers, computeItemStats, isCountedStatus, MISS_HIGHLIGHT_MIN_PAPERS, paperOutcomes, type ItemStatsSummary,
 } from "@/lib/grading/item-stats";
@@ -33,7 +34,8 @@ import { getGradingCounts, getGradingProgress, getSplitProgress, typicalExtracti
 import { currentOnly } from "@/lib/services/submissions";
 import type {
   AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, KeyEditorView, KeyItem, LessonsView,
-  LessonView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult, SettingsView, StatusCounts, Submission, SubmissionItem,
+  LessonView, OllamaSpeedView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult, SettingsView, StatusCounts, Submission,
+  SubmissionItem,
   StrugglingQuestion, SubmissionStatus, Teacher, TeacherSettingsView, UploadPageView,
 } from "@/lib/types";
 
@@ -401,6 +403,25 @@ export function getTeacherSettingsView(t: Teacher): TeacherSettingsView {
     worker: getWorkerStatus(),
     grader: { engine: getGradingEngine(), agent: getHostedAgentStatus(), ollama: settings.ollama },
   };
+}
+
+/** Papers in the median shown in Settings → Grader → On this computer. */
+export const LOCAL_PAPER_SAMPLE = 10;
+
+/** Settings → Grader → On this computer (Ollama): the speed settings and the median time of the last 10 local papers. */
+export function getOllamaSpeedView(): OllamaSpeedView {
+  const cfg = getConfig();
+  const speed = getOllamaSpeedSettings();
+  const times = recentLocalPaperTimes(LOCAL_PAPER_SAMPLE);
+  const recent = times.length === 0
+    ? null
+    : {
+      papers: times.length,
+      medianMs: Math.round(median(times.map((t) => t.readMs + (t.judgeMs ?? 0)))!),
+      medianReadMs: Math.round(median(times.map((t) => t.readMs))!),
+      medianJudgeMs: Math.round(median(times.map((t) => t.judgeMs ?? 0))!),
+    };
+  return { ...speed, envImageMaxEdge: cfg.ollamaImageMaxEdge, envConcurrency: cfg.ollamaConcurrency, recent };
 }
 
 /**

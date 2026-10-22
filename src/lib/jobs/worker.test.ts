@@ -14,7 +14,7 @@ import { getAssignmentUsage, listSections } from "@/lib/db/repos/assignments";
 import * as jobsRepo from "@/lib/db/repos/jobs";
 import { cancelQueuedJobs, claimNextJob, enqueueJob } from "@/lib/db/repos/jobs";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
-import { getAiModel } from "@/lib/db/repos/settings";
+import { getAiModel, setGradingEngine, setOllamaSpeedSettings } from "@/lib/db/repos/settings";
 import { getSubmission, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
@@ -1183,6 +1183,44 @@ describe("grading on this computer (Ollama)", () => {
     return { grader, calls };
   }
 
+  it("concurrencyFor: the Ollama grader's papers at a time, else OLLAMA_CONCURRENCY, while Ollama grades", () => {
+    const cfg = { concurrency: 10, ollamaConcurrency: 1 };
+    expect(concurrencyFor({ ...scriptedGrader({ engine: "ollama" }), parallel: 3 }, cfg)).toBe(3);
+    expect(concurrencyFor({ ...scriptedGrader({ engine: "direct" }), parallel: 3 }, cfg)).toBe(10);
+  });
+
+  it("grades \"Papers at a time\" papers at once when it is set in Settings, instead of OLLAMA_CONCURRENCY", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    vi.stubEnv("OLLAMA_CONCURRENCY", "1");
+    resetConfigForTests();
+    setGraderForTests(undefined);
+    setGradingEngine("ollama");
+    const cfg = getConfig();
+    expect(concurrencyFor(getGrader(), cfg)).toBe(1);
+
+    setOllamaSpeedSettings({ imageMaxEdge: null, papersAtATime: 2 });
+    setGraderForTests(undefined); // as saving the settings does (resetGrader)
+    const fromSettings = getGrader();
+    // The grader sends at most 2 calls to Ollama at once, and the worker runs 2 papers at once: the same number.
+    expect(fromSettings).toMatchObject({ engine: "ollama", parallel: 2 });
+    expect(concurrencyFor(fromSettings, cfg)).toBe(2);
+
+    const ids = [await uploadPaper("a"), await uploadPaper("b"), await uploadPaper("c")];
+    const local = hangingOllama();
+    const grader: Grader = { ...local.grader, parallel: fromSettings?.parallel };
+    const worker = createWorker({ grader: () => grader, concurrency: (g) => concurrencyFor(g, cfg), pollMs: 1000 });
+    worker.start();
+    await vi.waitFor(() => expect(local.calls).toHaveLength(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(local.calls).toHaveLength(2);
+    expect(worker.status()).toMatchObject({ concurrency: 2, running: 2, queued: 1 });
+    for (const release of local.calls.splice(0)) release();
+    await vi.waitFor(() => expect(local.calls).toHaveLength(1));
+    local.calls[0]();
+    await vi.waitFor(() => expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true));
+    await worker.stop();
+  });
+
   it("concurrencyFor: OLLAMA_CONCURRENCY while Ollama grades, GRADING_CONCURRENCY otherwise", () => {
     const cfg = { concurrency: 10, ollamaConcurrency: 1 };
     expect(concurrencyFor(scriptedGrader({ engine: "ollama" }), cfg)).toBe(1);
@@ -1244,7 +1282,36 @@ describe("grading on this computer (Ollama)", () => {
     });
     await drainQueue(grader);
     expect(getSubmission(id)).toMatchObject({ status: "graded", aiEngine: "ollama", aiModel: "ollama:qwen2.5vl:7b" });
+    // No time breakdown was reported by this grader, so none is stored.
+    expect(getSubmission(id)).toMatchObject({ readMs: null, judgeMs: null });
     expect(db.prepare("SELECT ai_engine, grader_engine FROM submissions WHERE id = ?").get(id)).toEqual({ ai_engine: null, grader_engine: "ollama" });
     expect(getAssignmentUsage(assignment.id)["ollama:qwen2.5vl:7b"]).toMatchObject({ calls: 1, inputTokens: 5000, outputTokens: 700 });
+  });
+});
+
+describe("the time breakdown of a paper", () => {
+  it("stores how long reading and judging took with the grading (judging null when it was skipped), and replaces it on regrade", async () => {
+    const id = await uploadPaper();
+    const timed = (steps: { readMs: number; judgeMs: number | null }) => scriptedGrader({
+      engine: "ollama",
+      async gradeSubmission(input) {
+        const refs = itemRefs(input.items.length);
+        return { output: makeGradingOutput(refs), refs, meta: { ...FAKE_META, servedModel: "ollama:gemma3:27b", durationMs: 1, steps } };
+      },
+    });
+    await drainQueue(timed({ readMs: 48_200, judgeMs: 11_900 }));
+    expect(getSubmission(id)).toMatchObject({ status: "graded", aiModel: "ollama:gemma3:27b", readMs: 48_200, judgeMs: 11_900 });
+
+    regradeSubmission(getSubmission(id)!);
+    await drainQueue(timed({ readMs: 30_400.6, judgeMs: null }));
+    expect(getSubmission(id)).toMatchObject({ status: "graded", readMs: 30_401, judgeMs: null });
+  });
+
+  it("is recorded through the real orchestration: one read, one judge", async () => {
+    const id = await uploadPaper();
+    await drainQueue(scriptedGrader());
+    const s = getSubmission(id)!;
+    expect(s.readMs).toEqual(expect.any(Number));
+    expect(s.judgeMs === null || typeof s.judgeMs === "number").toBe(true);
   });
 });

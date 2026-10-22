@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as ai from "@/lib/ai";
 import { getGrader } from "@/lib/ai/index";
 import { requireTeacher } from "@/lib/auth/dal";
-import { getAiModel, getAppSettings, setGradingEngine } from "@/lib/db/repos/settings";
+import { getAiModel, getAppSettings, getOllamaSpeedSettings, setGradingEngine } from "@/lib/db/repos/settings";
 import type { AiModel } from "@/lib/types";
 import { seedTeacher, useTestDb } from "@/test/helpers";
 import { saveOllamaSettingsAction, setAiModelAction, setGradingEngineAction, testOllamaConnectionAction } from "./settings";
@@ -86,6 +86,12 @@ describe("saveOllamaSettingsAction", () => {
       .toEqual({ ok: true, message: "Saved. Papers graded from now on use qwen2.5vl:32b on this computer." });
     expect(getAppSettings().ollama).toEqual({ baseUrl: "http://localhost:11434", model: "qwen2.5vl:32b", numCtx: 24_576 });
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves the page image size and papers at a time from the form", async () => {
+    const fields = { baseUrl: "http://localhost:11434", model: "gemma3:27b", numCtx: "16384", imageMaxEdge: "", papersAtATime: "2" };
+    expect(await saveOllamaSettingsAction(null, form(fields))).toMatchObject({ ok: true });
+    expect(getOllamaSpeedSettings()).toEqual({ imageMaxEdge: null, papersAtATime: 2 });
   });
 
   it("returns field errors and saves nothing", async () => {

@@ -15,7 +15,7 @@ type UploadKind = "per_student" | "stack";
 
 /**
  * The two ways to upload papers: one file per student, or one scan of the whole stack that the AI grades in one pass (or
- * splits first).
+ * splits first: the teacher's choice, and always with the hosted agent).
  * Both uploaders stay mounted, so switching never cancels uploads that are still running.
  */
 export function UploadChooser({ assignmentId, view }: UploadChooserProps) {

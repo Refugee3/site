@@ -302,4 +302,24 @@ describe("uploading a scan to grade in one pass", () => {
     const split = await ingestScan(assignment, await upload("b"), { mode: "one_pass", pagesPerPaper: null });
     expect(split).toMatchObject({ status: "splitting", splitMode: "auto" });
   });
+
+  it("grades in one pass with Ollama on this computer too: the scan is no longer split first", async () => {
+    vi.stubEnv("AI_MODE", "claude");
+    resetConfigForTests();
+    setGradingEngine("ollama");
+    const upload = { bytes: await makePdf(6, { label: "c" }), filename: "c.pdf" };
+    const scan = await ingestScan(assignment, upload, { mode: "one_pass", pagesPerPaper: null });
+    expect(scan).toMatchObject({ status: "splitting", splitMode: "one_pass" });
+  });
+});
+
+describe("the time breakdown of papers graded in one pass", () => {
+  it("stores each paper's share of the chunk's reading time and its own judging time", async () => {
+    const scan = await queuedPacket(6);
+    const timed = (p: PacketPaper, readMs: number, judgeMs: number | null): PacketPaper => ({ ...p, timing: { readMs, judgeMs } });
+    const calls: PacketChunkInput[] = [];
+    await drainQueue(packetGrader(calls, () => ({ papers: [timed(paper(1, 3), 20_000, 5_000), timed(paper(4, 6), 20_000, null)], skipped_pages: [] })));
+    expect(getScan(scan.id)).toMatchObject({ status: "done", createdCount: 2 });
+    expect(listSubmissions(assignment.id).map((s) => [s.readMs, s.judgeMs])).toEqual([[20_000, 5_000], [20_000, null]]);
+  });
 });

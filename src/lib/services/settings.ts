@@ -3,14 +3,14 @@ import { maskApiKey, normalizeApiKeyInput } from "@/lib/ai/api-key";
 import { testOllamaConnection } from "@/lib/ai/ollama/connection";
 import {
   clearStoredApiKey, getAiModel, getGradingEngine, setAiModel as storeAiModel, setGradingEngine as storeGradingEngine,
-  setOllamaSettings, setStoredApiKey,
+  setOllamaSettings, setOllamaSpeedSettings, setStoredApiKey,
 } from "@/lib/db/repos/settings";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { AppError } from "@/lib/errors";
 import { charLength } from "@/lib/grading/text";
 import { parseInput } from "@/lib/http/validation";
 import { resumeWorker } from "@/lib/jobs/queue";
-import { type OllamaConnectionResult, type OllamaSettings, OllamaSettingsSchema } from "@/lib/ollama-settings";
+import { type OllamaConnectionResult, type OllamaSettings, OllamaSettingsSchema, OllamaSpeedSchema } from "@/lib/ollama-settings";
 import { encryptSecret } from "@/lib/secrets";
 import type { AiModel, GradingEngineChoice, Teacher } from "@/lib/types";
 
@@ -86,13 +86,18 @@ export function setAiModel(model: AiModel): void {
   startHostedAgentSetup();
 }
 
+const OllamaFormSchema = OllamaSettingsSchema.extend(OllamaSpeedSchema.shape);
+
 /**
- * Settings → Grader → On this computer (Ollama): the address, model and context size, validated here. Applies from the next
- * job (the grader is rebuilt), and a pause Ollama caused ends: the fix may be this very change.
+ * Settings → Grader → On this computer (Ollama): the address, model and context size, and the page image size and papers at
+ * a time (empty or absent = automatic / OLLAMA_CONCURRENCY), validated here. Applies from the next job (the grader is rebuilt,
+ * and the worker reads the papers at a time from it), and a pause Ollama caused ends: the fix may be this very change.
+ * Returns the address, model and context size saved.
  */
 export function saveOllamaSettings(input: unknown): OllamaSettings {
-  const settings = parseInput(OllamaSettingsSchema, input);
+  const { imageMaxEdge, papersAtATime, ...settings } = parseInput(OllamaFormSchema, input);
   setOllamaSettings(settings);
+  setOllamaSpeedSettings({ imageMaxEdge, papersAtATime });
   resetGrader();
   resumeWorker();
   return settings;

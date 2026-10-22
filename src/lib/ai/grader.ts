@@ -14,6 +14,16 @@ export interface AiCallMeta {
   durationMs: number;
   /** Set only by the hosted agent. */
   agent?: AgentCallCost;
+  /**
+   * A paper's grading only (gradeByReading): how long its READ call(s) and its JUDGE call took, in ms; judgeMs is null when
+   * the judge call was skipped (the program marked every item and notes are off).
+   */
+  steps?: GradingSteps;
+}
+
+export interface GradingSteps {
+  readMs: number;
+  judgeMs: number | null;
 }
 
 export interface ExtractKeyInput {
@@ -143,6 +153,11 @@ export interface Grader {
   readonly mode: "claude" | "fake";
   /** Which engine this grader is (stored with each grading). */
   readonly engine: "direct" | "agent" | "fake" | "ollama";
+  /**
+   * Ollama only: papers graded at once (Settings → Grader → "Papers at a time", else OLLAMA_CONCURRENCY). The grader sends at
+   * most this many calls to Ollama at once, and the worker runs this many jobs (concurrencyFor).
+   */
+  readonly parallel?: number;
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
   /** READ: transcribes one paper, item by item, without the answer key (with the pages). */
   readSubmission(i: ReadInput, o?: CallOptions): Promise<{ output: ReadingOutput; meta: AiCallMeta }>;
@@ -154,7 +169,7 @@ export interface Grader {
   /** READ, MARK and JUDGE for one paper (gradeByReading over this grader's readSubmission and judgeSubmission). */
   gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; meta: AiCallMeta }>;
   readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;
-  /** READ of one chunk of a scan in one pass. Absent on an engine that can't (the hosted agent, Ollama). */
+  /** READ of one chunk of a scan in one pass. Absent on an engine that can't (the hosted agent). */
   readPacketChunk?(i: PacketReadInput, o?: CallOptions): Promise<{ output: PacketReadingOutput; meta: AiCallMeta }>;
   /**
    * Finds the papers in one chunk of a scan and grades each (gradePacketByReading: READ the chunk, then MARK and JUDGE each

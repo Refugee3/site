@@ -132,10 +132,14 @@ export const PacketReadingOutputSchema = z.object({
 });
 export type PacketReadingOutput = z.infer<typeof PacketReadingOutputSchema>;
 
-/** A chunk's papers, each read, marked and judged (internal, like GradingOutputSchema). */
+/**
+ * A chunk's papers, each read, marked and judged (internal, like GradingOutputSchema). `timing`: the paper's share of the
+ * chunk's reading time and its judge call's time, in ms (null: no judge call); absent in answers saved before it was recorded.
+ */
 export const PacketOutputSchema = z.object({
   papers: z.array(z.object({
     ...packetBoundary,
+    timing: z.object({ readMs: z.number(), judgeMs: z.number().nullable() }).optional(),
     student: gradingStudent,
     document_check: documentCheck,
     items: z.array(itemWithNotes),

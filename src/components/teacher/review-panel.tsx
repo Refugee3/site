@@ -19,6 +19,7 @@ import { TONE_CLASSES } from "@/components/ui/tone";
 import { STATUS_LABEL } from "@/lib/format";
 import type { ReviewItemView, ReviewView } from "@/lib/types";
 import { boardHref, reviewHref } from "./board-helpers";
+import { gradingTimeText } from "./grading-time";
 import { IdentityForm } from "./identity-form";
 import { ItemCard, itemFormKey } from "./item-card";
 import { OverallFeedbackForm } from "./overall-feedback-form";
@@ -122,6 +123,7 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
   const graded = (s.status === "graded" || s.status === "needs_review") && !s.flags.includes("ai_refused");
   const byHostedAgent = s.aiEngine === "agent" && graded;
   const onThisComputer = s.aiEngine === "ollama" && graded;
+  const timing = graded ? gradingTimeText(s) : null;
   return (
     <div className="flex flex-col gap-2">
       <Link href={boardHref(assignmentId, "all")} className="self-start text-sm">
@@ -139,6 +141,7 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
         {byHostedAgent && " · Graded by the hosted agent"}
         {onThisComputer && " · Graded on this computer (Ollama)"}
       </p>
+      {timing && <p className="text-sm text-muted">{timing}</p>}
       {view.earlierAttempts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
           <span>Earlier attempts:</span>
@@ -177,7 +180,7 @@ function GradingNotice({ view, serverNow }: { view: ReviewView; serverNow: numbe
       </p>
       {s.statusNote && <p className="whitespace-pre-wrap">{s.statusNote}</p>}
       {view.gradingEngine === "agent" && <p>The hosted agent takes a few minutes per paper.</p>}
-      {view.gradingEngine === "ollama" && <p>The model on this computer (Ollama) grades one paper at a time; it may take a few minutes per paper.</p>}
+      {view.gradingEngine === "ollama" && <p>The model on this computer (Ollama) may take a minute or more per paper.</p>}
       <p>This page updates by itself without replacing what you type. Save each change with its own Save button.</p>
     </div>
   );

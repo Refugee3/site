@@ -21,7 +21,7 @@ export interface ScanUploadProps {
   disabled: boolean;
   /** The worksheet's length, the likeliest number of pages per student. */
   keyPageCount: number | null;
-  /** False while the hosted agent or Ollama grades: a scan uploaded to be graded in one pass is then split first. */
+  /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
   onePassAvailable: boolean;
 }
 
@@ -30,8 +30,9 @@ const PAGES_ERROR = "Enter the pages per student as a whole number from 1 to 100
 export const ONE_PASS_TITLE = "Grade in one pass (cheapest)";
 export const ONE_PASS_DESCRIPTION = "The AI reads each page once: it finds whose paper it is and grades it in the same step. "
   + "Papers it isn't sure about are flagged for you.";
-export const ONE_PASS_AGENT_HINT = "The grader chosen in Settings → Grader (the hosted agent, or Ollama on this computer) reads one "
-  + "paper at a time and can't grade in one pass, so this scan will be split first and each paper then graded on its own.";
+export const ONE_PASS_AGENT_HINT = "The hosted agent, chosen in Settings → Grader, reads one paper at a time and can't grade in one "
+  + "pass, so this scan will be split first and each paper then graded on its own. Direct API and Ollama on this computer grade in "
+  + "one pass.";
 
 /** `?mode=…` for the upload, or null when "every N pages" has no valid N. */
 function splitQuery(mode: ScanSplitMode, pagesText: string): string | null {

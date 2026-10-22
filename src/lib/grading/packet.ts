@@ -49,6 +49,8 @@ export interface ChunkPaper {
   output: GradingOutput;
   /** Why the teacher should check where the paper starts or ends (the paper_boundary flag); empty when nothing is unsure. */
   boundaryNotes: string[];
+  /** How long reading (its share of the chunk) and judging the paper took, when recorded. */
+  timing: { readMs: number; judgeMs: number | null } | null;
 }
 
 export interface InterpretedChunk {
@@ -177,6 +179,7 @@ export function interpretChunk(output: PacketOutput, c: ChunkContext): Interpret
       lastPage: scanPage(p.last),
       output: paperGrading(p.paper, p.first),
       boundaryNotes: p.notes,
+      timing: p.paper.timing ?? null,
     })),
     skipped,
     nextPage: scanPage(nextChunkPage),

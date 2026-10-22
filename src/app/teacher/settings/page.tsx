@@ -8,7 +8,7 @@ import { PreferencesForm } from "@/components/teacher/preferences-form";
 import { Card } from "@/components/ui/card";
 import { testOllamaConnection } from "@/lib/ai/ollama/connection";
 import { requireTeacher } from "@/lib/auth/dal";
-import { getTeacherSettingsView } from "@/lib/services/views";
+import { getOllamaSpeedView, getTeacherSettingsView } from "@/lib/services/views";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -46,6 +46,7 @@ export default async function TeacherSettingsPage() {
           agent={view.grader.agent}
           ollama={view.grader.ollama}
           ollamaCheck={ollamaCheck}
+          ollamaSpeed={getOllamaSpeedView()}
         />
       </Card>
       <Card title="Grading preferences">

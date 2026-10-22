@@ -26,7 +26,9 @@ export interface GradingWrite {
     | "nameSortKey" | "sectionId" | "sectionKey" | "sectionSource" | "documentMatch" | "flags" | "status" | "teacherSummary"
     | "integrityNote" | "unmatchedWork" | "aiModel" | "usage"> & { overallFeedback: string; aiOutputJson: string | null;
     /** The engine that produced this grading; omitted = unknown (NULL). */
-    aiEngine?: GraderEngine | null };
+    aiEngine?: GraderEngine | null;
+    /** How long reading and judging took (ms); omitted = not recorded (NULL). judgeMs null: no judge call was needed. */
+    readMs?: number | null; judgeMs?: number | null };
 }
 
 interface SubmissionRow {
@@ -80,6 +82,8 @@ interface SubmissionRow {
   reviewed_at: number | null;
   grading_started_at: number | null;
   queued_at: number;
+  read_ms: number | null;
+  judge_ms: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -103,6 +107,10 @@ interface SubmissionItemRow {
   override_feedback: string | null;
   override_what_student_did: string | null;
   updated_at: number;
+}
+
+function msOrNull(ms: number | null | undefined): number | null {
+  return ms === undefined || ms === null || !Number.isFinite(ms) ? null : Math.max(0, Math.round(ms));
 }
 
 function usageToJson(usage: AiUsage | null): string | null {
@@ -158,6 +166,8 @@ function submissionFromRow(row: SubmissionRow): Submission {
     reviewedAt: row.reviewed_at,
     gradingStartedAt: row.grading_started_at,
     queuedAt: row.queued_at,
+    readMs: row.read_ms,
+    judgeMs: row.judge_ms,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -354,6 +364,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          section_source = @section_source, document_match = @document_match, flags_json = @flags_json, status = @status,
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
          ai_model = @ai_model, ai_engine = @ai_engine, grader_engine = @grader_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
+         read_ms = @read_ms, judge_ms = @judge_ms,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
          graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp, graded_at = @at, updated_at = @at,
          status_note = NULL, error_code = NULL, error_message = NULL, reviewed_at = NULL
@@ -384,6 +395,8 @@ export function saveGradingResult(w: GradingWrite): boolean {
         grader_engine: f.aiEngine ?? null,
         usage_json: usageToJson(f.usage),
         ai_output_json: f.aiOutputJson,
+        read_ms: msOrNull(f.readMs),
+        judge_ms: f.readMs === undefined || f.readMs === null ? null : msOrNull(f.judgeMs),
         overall_feedback: f.overallFeedback,
         graded_key_revision: w.keyRevision,
         guidance_fp: w.guidanceFingerprint,
@@ -635,4 +648,20 @@ export function recentGradingDurations(assignmentId: string | null, limit: numbe
       assignmentId, limit,
     );
   return rows.map((row) => row.ms);
+}
+
+/** A recent paper graded on this computer: how long its reading and judging took (ms; judge null when skipped). */
+export interface LocalPaperTime {
+  readMs: number;
+  judgeMs: number | null;
+}
+
+/** The last `limit` papers graded by Ollama with recorded times, newest first. */
+export function recentLocalPaperTimes(limit: number): LocalPaperTime[] {
+  return all<{ read_ms: number; judge_ms: number | null }>(
+    `SELECT read_ms, judge_ms FROM submissions
+     WHERE grader_engine = 'ollama' AND read_ms IS NOT NULL AND graded_at IS NOT NULL AND status IN ('graded', 'needs_review')
+     ORDER BY graded_at DESC, rowid DESC LIMIT ?`,
+    limit,
+  ).map((row) => ({ readMs: row.read_ms, judgeMs: row.judge_ms }));
 }

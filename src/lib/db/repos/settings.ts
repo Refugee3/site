@@ -4,7 +4,7 @@ import { DEFAULT_AI_MODEL, isAiModel } from "@/lib/ai-models";
 import { now } from "@/lib/clock";
 import { one, run } from "@/lib/db/sql";
 import { truncateChars } from "@/lib/grading/text";
-import type { OllamaSettings } from "@/lib/ollama-settings";
+import type { OllamaSettings, OllamaSpeedSettings } from "@/lib/ollama-settings";
 import type { AiModel, GradingEngineChoice, HostedAgentRole } from "@/lib/types";
 
 export interface AppSettings { apiKeyCiphertext: string | null; apiKeyMasked: string | null;
@@ -47,6 +47,8 @@ interface AppSettingsRow {
   ollama_base_url: string;
   ollama_model: string;
   ollama_num_ctx: number;
+  ollama_image_max_edge: number | null;
+  ollama_papers_at_a_time: number | null;
 }
 
 const MAX_AGENT_ERROR_CHARS = 500;
@@ -141,6 +143,20 @@ export function setOllamaSettings(o: OllamaSettings): void {
 
 export function getOllamaSettings(): OllamaSettings {
   return getAppSettings().ollama;
+}
+
+/** Settings → Grader → On this computer: page image size and papers at a time (migration 13; null = not set). */
+export function getOllamaSpeedSettings(): OllamaSpeedSettings {
+  const row = settingsRow();
+  return { imageMaxEdge: row.ollama_image_max_edge, papersAtATime: row.ollama_papers_at_a_time };
+}
+
+/** Validated by the caller (OllamaSpeedSchema). */
+export function setOllamaSpeedSettings(o: OllamaSpeedSettings): void {
+  run(
+    "UPDATE app_settings SET ollama_image_max_edge = @edge, ollama_papers_at_a_time = @papers, updated_at = @at WHERE id = 1",
+    { edge: o.imageMaxEdge, papers: o.papersAtATime, at: now() },
+  );
 }
 
 /** A stored JSON column read with `schema`; null when unset, and null (with a warning) when it doesn't parse. */

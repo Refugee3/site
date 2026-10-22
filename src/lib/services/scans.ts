@@ -34,17 +34,17 @@ const STATUS_REFUSAL: Record<ScanStatus, string> = {
   failed: "This scan couldn't be split.",
 };
 
-/**
- * Whether a scan can be graded in one pass now: with the direct API and the practice grader, not with the hosted agent or
- * Ollama on this computer (a scan uploaded for one pass is then split first, as with "auto").
- */
-/** How a grader that can't grade in one pass is named in messages. */
+/** How a grader that can't grade in one pass is named in messages (only the hosted agent can't). */
 export function engineName(engine: GradingEngineChoice): string {
   return engine === "ollama" ? "The model on this computer (Ollama)" : "The hosted agent";
 }
 
+/**
+ * Whether a scan can be graded in one pass now: with the direct API, Ollama on this computer and the practice grader, not
+ * with the hosted agent (a scan uploaded for one pass is then split first, as with "auto").
+ */
 export function onePassAvailable(): boolean {
-  return getConfig().aiMode === "fake" || getGradingEngine() === "direct";
+  return getConfig().aiMode === "fake" || getGradingEngine() !== "agent";
 }
 
 /**
@@ -171,8 +171,8 @@ export function retryScanWithAi(scan: Scan, o: { mode?: "auto" | "one_pass" } = 
 /** Runs inside retryScanWithAi's transaction. Keeps the progress (and an AI answer not stored yet), so nothing is paid twice. */
 function resumeOnePass(current: Scan): Scan {
   if (!onePassAvailable()) {
-    throw new AppError("invalid_state", `${engineName(getGradingEngine())} can't grade in one pass. Choose Direct API under Settings → Grader first, `
-      + "or have the AI split the scan.");
+    throw new AppError("invalid_state", `${engineName(getGradingEngine())} can't grade in one pass. Choose Direct API or On this computer (Ollama) under `
+      + "Settings → Grader first, or have the AI split the scan.");
   }
   const updated = updateScan(current.id, {
     splitGeneration: current.splitGeneration + 1,

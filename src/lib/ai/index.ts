@@ -2,9 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import { type AppConfig, getConfig } from "@/lib/config";
 import {
-  getAiModel, getGradingEngine, getHostedAgentState, getOllamaSettings, markStoredApiKeyVerified, saveHostedAgentError,
-  saveHostedAgentReady,
+  getAiModel, getGradingEngine, getHostedAgentState, getOllamaSettings, getOllamaSpeedSettings, markStoredApiKeyVerified,
+  saveHostedAgentError, saveHostedAgentReady,
 } from "@/lib/db/repos/settings";
+import { ollamaImageEdge } from "@/lib/ollama-settings";
 import type { GraderEngine, HostedAgentStatusView } from "@/lib/types";
 import type { AgentEngineConfig } from "./agent/definitions";
 import { createAgentGrader } from "./agent/grader";
@@ -137,19 +138,24 @@ function graderFromConfig(): Grader | null {
   });
 }
 
-/** Ollama on this computer, with the address, model and context size saved in Settings → Grader. */
+/**
+ * Ollama on this computer, with the address, model, context size, page image size and papers at a time saved in Settings →
+ * Grader. The image size falls back to OLLAMA_IMAGE_MAX_EDGE, then to the model family's (ollamaImageEdge); papers at a
+ * time to OLLAMA_CONCURRENCY. The grader sends that many calls at once, and the worker grades that many papers at once.
+ */
 function ollamaGrader(cfg: AppConfig): Grader {
   const settings = getOllamaSettings();
+  const speed = getOllamaSpeedSettings();
   return createOllamaGrader({
     client: createOllamaClient({ baseUrl: settings.baseUrl }),
     cfg: {
       model: settings.model,
       numCtx: settings.numCtx,
-      imageMaxEdge: cfg.ollamaImageMaxEdge,
+      imageMaxEdge: ollamaImageEdge(settings.model, { setting: speed.imageMaxEdge, env: cfg.ollamaImageMaxEdge }),
       pagesPerCall: cfg.ollamaPagesPerCall,
       timeoutMs: cfg.ollamaTimeoutMs,
       maxPages: Math.max(cfg.maxPages, cfg.maxScanPages),
-      concurrency: cfg.ollamaConcurrency,
+      concurrency: speed.papersAtATime ?? cfg.ollamaConcurrency,
     },
   });
 }

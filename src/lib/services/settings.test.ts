@@ -7,7 +7,9 @@ import { createFakeGrader } from "@/lib/ai/fake";
 import { getGrader, setGraderForTests } from "@/lib/ai/index";
 import { setClockForTests } from "@/lib/clock";
 import { getConfig, resetConfigForTests } from "@/lib/config";
-import { getAiModel, getAppSettings, setGradingEngine as storeGradingEngine, setStoredApiKey } from "@/lib/db/repos/settings";
+import {
+  getAiModel, getAppSettings, getOllamaSpeedSettings, setGradingEngine as storeGradingEngine, setStoredApiKey,
+} from "@/lib/db/repos/settings";
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { attemptWithData } from "@/lib/http/action-result";
 import { decryptSecret, encryptSecret } from "@/lib/secrets";
@@ -221,6 +223,29 @@ describe("Ollama on this computer", () => {
     expect(getAppSettings().ollama).toEqual({ baseUrl: "http://127.0.0.1:11434", model: "gemma3:12b", numCtx: 32_768 });
     expect(getGrader()).not.toBe(before);
     expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves the page image size and papers at a time with them; empty means automatic and OLLAMA_CONCURRENCY", () => {
+    const base = { baseUrl: "http://localhost:11434", model: "gemma3:27b", numCtx: "16384" };
+    saveOllamaSettings({ ...base, imageMaxEdge: "1024", papersAtATime: "2" });
+    expect(getOllamaSpeedSettings()).toEqual({ imageMaxEdge: 1024, papersAtATime: 2 });
+    expect(getGrader()).toMatchObject({ engine: "fake" }); // practice mode; the Ollama grader is built in claude mode
+    saveOllamaSettings({ ...base, imageMaxEdge: "", papersAtATime: "" });
+    expect(getOllamaSpeedSettings()).toEqual({ imageMaxEdge: null, papersAtATime: null });
+  });
+
+  it("refuses a bad page image size or papers at a time, and saves nothing", async () => {
+    const base = { baseUrl: "http://localhost:11434", model: "gemma3:27b", numCtx: "16384" };
+    const result = await attemptWithData(() => saveOllamaSettings({ ...base, imageMaxEdge: "100", papersAtATime: "9" }));
+    expect(result).toMatchObject({
+      ok: false,
+      fieldErrors: {
+        imageMaxEdge: ["Enter a page image size from 512 to 4096 pixels, or leave it empty for automatic."],
+        papersAtATime: ["Choose from 1 to 4 papers at a time."],
+      },
+    });
+    expect(getAppSettings().ollama).toEqual(DEFAULT_OLLAMA_SETTINGS);
+    expect(getOllamaSpeedSettings()).toEqual({ imageMaxEdge: null, papersAtATime: null });
   });
 
   it("refuses bad settings field by field and saves nothing", async () => {

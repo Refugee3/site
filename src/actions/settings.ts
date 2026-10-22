@@ -81,10 +81,13 @@ export async function setUpHostedAgentAction(): Promise<ActionResult> {
   return result.data.ok ? { ok: true, message: HOSTED_AGENT_READY } : { ok: false, error: result.data.error };
 }
 
-/** Settings → Grader → On this computer (Ollama): saves the address, model and context size (fields baseUrl, model, numCtx). */
+/**
+ * Settings → Grader → On this computer (Ollama): saves the address, model and context size, the page image size and the
+ * papers at a time (fields baseUrl, model, numCtx, imageMaxEdge, papersAtATime).
+ */
 export async function saveOllamaSettingsAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
   await requireTeacher();
-  const result = await attemptWithData(() => saveOllamaSettings(formFields(fd, ["baseUrl", "model", "numCtx"])));
+  const result = await attemptWithData(() => saveOllamaSettings(formFields(fd, ["baseUrl", "model", "numCtx", "imageMaxEdge", "papersAtATime"])));
   if (!result.ok) return result;
   refresh();
   return { ok: true, message: `Saved. Papers graded from now on use ${result.data.model} on this computer.` };

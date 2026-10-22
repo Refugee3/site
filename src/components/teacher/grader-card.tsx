@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { LocalTime } from "@/components/ui/local-time";
 import { Spinner } from "@/components/ui/spinner";
 import type { OllamaConnectionResult, OllamaSettings } from "@/lib/ollama-settings";
-import type { GradingEngineChoice, HostedAgentStatusView } from "@/lib/types";
+import type { GradingEngineChoice, HostedAgentStatusView, OllamaSpeedView } from "@/lib/types";
 import { OllamaSettingsForm } from "./ollama-settings-form";
 import { useActionRunner } from "./use-action-runner";
 
@@ -20,6 +20,8 @@ export interface GraderCardProps {
   /** The saved Ollama settings, and what the server found at that address when the page loaded (null: it didn't look). */
   ollama: OllamaSettings;
   ollamaCheck: OllamaConnectionResult | null;
+  /** Ollama's page image size and papers at a time, and how long recent local papers took. */
+  ollamaSpeed: OllamaSpeedView;
 }
 
 interface EngineOption {
@@ -54,7 +56,7 @@ const ENGINE_OPTIONS: EngineOption[] = [
 ];
 
 /** Settings → Grader: which engine sends papers, answer keys and scans to Claude, and whether the hosted agent is set up. */
-export function GraderCard({ engine, aiMode, agent, ollama, ollamaCheck }: GraderCardProps) {
+export function GraderCard({ engine, aiMode, agent, ollama, ollamaCheck, ollamaSpeed }: GraderCardProps) {
   const runner = useActionRunner();
   // The choice moves at once; it settles on the stored value when the action and refresh finish (or fail).
   const [shownEngine, setShownEngine] = useOptimistic(engine);
@@ -113,7 +115,7 @@ export function GraderCard({ engine, aiMode, agent, ollama, ollamaCheck }: Grade
               Practice mode (AI_MODE=fake): the practice grader runs instead. Ollama is used once the server runs with AI_MODE=claude.
             </p>
           )}
-          <OllamaSettingsForm settings={ollama} initialCheck={ollamaCheck} />
+          <OllamaSettingsForm settings={ollama} initialCheck={ollamaCheck} speed={ollamaSpeed} />
         </>
       ) : shownEngine === "agent" ? (
         <HostedAgentStatus aiMode={aiMode} agent={agent} />
