@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { Database } from "@/lib/db/sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import { MIGRATIONS, migrate } from "@/lib/db/migrations";
 import { deleteAssignmentRow } from "@/lib/db/repos/assignments";
@@ -10,7 +10,7 @@ import { getSubmission, listItems, setItemOverride } from "@/lib/db/repos/submis
 import { setDbForTests, type DB } from "@/lib/db/connection";
 import { seedApprovedKey, seedAssignment, seedLesson, seedScan, seedSubmission, seedTeacher, useTestDb } from "@/test/helpers";
 
-function tableNames(db: Database.Database): string[] {
+function tableNames(db: Database): string[] {
   return (db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>)
     .map((row) => row.name);
 }

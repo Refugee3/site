@@ -23,10 +23,10 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
-  // Already in Next's default list; explicit because the app cannot run without the native module. pdf.js loads its worker
-  // and data files from its own package at run time, and @napi-rs/canvas is a native module: both stay out of the bundle
-  // (Ollama engine: PDF pages → images).
-  serverExternalPackages: ["better-sqlite3", "pdfjs-dist", "@napi-rs/canvas"],
+  // pdf.js loads its worker and data files from its own package at run time, and @napi-rs/canvas is a native module: both
+  // stay out of the bundle (Ollama engine: PDF pages → images). The database is Node's built-in node:sqlite, which, like
+  // every node: module, is never bundled.
+  serverExternalPackages: ["pdfjs-dist", "@napi-rs/canvas"],
   experimental: {
     serverActions: {
       bodySizeLimit: "2mb",

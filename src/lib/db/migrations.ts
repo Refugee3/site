@@ -1,4 +1,4 @@
-import type { Database } from "better-sqlite3";
+import type { Database } from "@/lib/db/sqlite";
 
 export interface Migration {
   version: number;

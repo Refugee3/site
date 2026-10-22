@@ -1,14 +1,14 @@
-import Database, { type Statement } from "better-sqlite3";
 import { now } from "@/lib/clock";
 import { getDb, type DB } from "@/lib/db/connection";
+import { isSqliteUniqueError, type Statement } from "@/lib/db/sqlite";
 
-/** Values better-sqlite3 can bind. Booleans are not among them: encode them with `toBit`. */
-export type SqlValue = string | number | bigint | Buffer | null;
+/** Values SQLite can bind. Booleans are not among them: encode them with `toBit`. */
+export type SqlValue = string | number | bigint | Uint8Array | null;
 
-const statements = new WeakMap<DB, Map<string, Statement<unknown[]>>>();
+const statements = new WeakMap<DB, Map<string, Statement>>();
 
 /** Prepares `source` on the current connection, once per connection. */
-function prepare(source: string): Statement<unknown[]> {
+function prepare(source: string): Statement {
   const db = getDb();
   let cache = statements.get(db);
   if (!cache) {
@@ -78,7 +78,5 @@ export function updateRow<Row>(table: string, where: Record<string, SqlValue>, v
 
 /** True for a UNIQUE violation on `constraint`, as SQLite names it (e.g. "teachers.email"). */
 export function isUniqueViolation(error: unknown, constraint: string): boolean {
-  return error instanceof Database.SqliteError
-    && error.code === "SQLITE_CONSTRAINT_UNIQUE"
-    && error.message.includes(constraint);
+  return isSqliteUniqueError(error) && error.message.includes(constraint);
 }

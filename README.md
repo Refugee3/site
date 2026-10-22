@@ -33,7 +33,7 @@ The dashboard's **Where students are struggling** lists every question that most
 
 ## Quick start
 
-Requires Node 22 or newer.
+Requires Node 22.13 or newer. The database is Node's built-in SQLite (`node:sqlite`), so `npm install` compiles nothing; Node prints "ExperimentalWarning: SQLite is an experimental feature" once at startup, which is harmless.
 
 ```bash
 npm install
@@ -127,7 +127,7 @@ The **Anthropic-hosted agent** (Claude Managed Agents) is optional and off by de
 
 The whole app can run on one Windows PC, like Ollama: double-click to start it, it opens in your browser at `http://localhost:3000`, and the papers are read on that computer by a free AI model. No Anthropic account or API key is needed, and student work never leaves the computer.
 
-1. **Install Node.js LTS** from <https://nodejs.org> (version 22.13 or newer; the big green button). Accept the defaults.
+1. **Install Node.js LTS** from <https://nodejs.org> (version 22.13 or newer; the big green button). Accept the defaults. Nothing else is needed for the app's packages: no Python, Visual Studio or other build tools (the database is built into Node, and the one native package comes ready-made for Windows).
 2. **Install Ollama for Windows** from <https://ollama.com/download>. It runs in the background (look for the llama icon by the clock).
 3. **Download a vision model** once. Open *Command Prompt* or *PowerShell* and run:
 

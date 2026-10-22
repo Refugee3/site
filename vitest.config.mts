@@ -11,7 +11,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
-    setupFiles: ["src/test/setup.ts"],
+    setupFiles: ["src/test/quiet-sqlite-warning.ts", "src/test/setup.ts"],
     pool: "forks",
     testTimeout: 20000,
   },

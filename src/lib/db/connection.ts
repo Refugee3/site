@@ -1,11 +1,11 @@
 import "server-only";
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
 import { getConfig } from "@/lib/config";
 import { migrate } from "@/lib/db/migrations";
+import { Database } from "@/lib/db/sqlite";
 
-export type DB = import("better-sqlite3").Database;
+export type DB = Database;
 
 // Process-wide globalThis slot so separate module copies share it: instrumentation and route bundles
 // may load separate copies of this module.
