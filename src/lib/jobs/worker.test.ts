@@ -97,7 +97,7 @@ async function startGatedAnswer(answer: (refs: string[]) => GradingOutput) {
       called.resolve();
       await gate.promise;
       const refs = itemRefs(input.items.length);
-      return { output: answer(refs), refs, keyPdfIncluded: false, meta: FAKE_META };
+      return { output: answer(refs), refs, meta: FAKE_META };
     },
   });
   const run = workerWith(grader).runOnce();
@@ -111,7 +111,7 @@ function recordingGrader(inputs: GradeInput[]): Grader {
     async gradeSubmission(input) {
       inputs.push(input);
       const refs = itemRefs(input.items.length);
-      return { output: makeGradingOutput(refs), refs, keyPdfIncluded: false, meta: FAKE_META };
+      return { output: makeGradingOutput(refs), refs, meta: FAKE_META };
     },
   });
 }
@@ -160,7 +160,7 @@ describe("grading with the fake grader", () => {
     await drainQueue(scriptedGrader({
       async gradeSubmission(input) {
         const refs = itemRefs(input.items.length);
-        return { output: makeGradingOutput(refs), refs, keyPdfIncluded: false, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage } };
+        return { output: makeGradingOutput(refs), refs, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage } };
       },
     }));
     regradeSubmission(getSubmission(id)!);
@@ -186,7 +186,7 @@ describe("grading with the hosted agent", () => {
     await drainQueue(agentGrader(async (input) => {
       const refs = itemRefs(input.items.length);
       return {
-        output: makeGradingOutput(refs), refs, keyPdfIncluded: false,
+        output: makeGradingOutput(refs), refs,
         meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage, agent: { listCostCents: 85, activeSeconds: 240 } },
       };
     }));
@@ -417,7 +417,7 @@ describe("AI failures", () => {
     expect(getSubmission(id)).toMatchObject({ status: "queued", statusNote: "Retrying after a temporary AI error" });
   });
 
-  it("never sends a key PDF that the extraction judged to be a student's paper", async () => {
+  it("never sends a key PDF with a paper, not even one the extraction judged to be a student's paper (papers are read blind)", async () => {
     await ingestKeyPdf(assignment, { filename: "maria.pdf", bytes: await makePdf(1, { label: "maria" }) });
     // A key row from before such PDFs were detached: approved items, but the student's paper still attached.
     updateKey(assignment.id, { status: "ready", revision: 1, approvedRevision: 1, documentKind: "student_work" });
@@ -427,7 +427,7 @@ describe("AI failures", () => {
     await drainQueue(recordingGrader(inputs));
 
     expect(inputs).toHaveLength(1);
-    expect(inputs[0].keyPdf).toBeNull();
+    expect(inputs[0]).not.toHaveProperty("keyPdf");
   });
 
   it("marks a paper failed when its PDF is missing", async () => {
@@ -653,7 +653,7 @@ describe("key extraction", () => {
     const inputs: GradeInput[] = [];
     await drainQueue(recordingGrader(inputs));
 
-    expect(inputs.map((input) => input.keyPdf)).toEqual([null]);
+    expect(inputs.map((input) => "keyPdf" in input)).toEqual([false]);
     expect(getSubmission(submissionId)!.status).toBe("graded");
   });
 
@@ -1236,7 +1236,7 @@ describe("grading on this computer (Ollama)", () => {
       async gradeSubmission(input) {
         const refs = itemRefs(input.items.length);
         return {
-          output: makeGradingOutput(refs), refs, keyPdfIncluded: false,
+          output: makeGradingOutput(refs), refs,
           meta: { ...FAKE_META, requestedModel: "ollama:qwen2.5vl:7b", servedModel: "ollama:qwen2.5vl:7b",
             usage: { inputTokens: 5000, outputTokens: 700, cacheReadTokens: 0, cacheWriteTokens: 0 } },
         };

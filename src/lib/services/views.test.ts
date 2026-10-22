@@ -178,7 +178,7 @@ describe("teacher views", () => {
     const billed = scriptedGrader({
       async gradeSubmission(input) {
         const refs = input.items.map((_item, index) => `Q${index + 1}`);
-        return { output: makeGradingOutput(refs), refs, keyPdfIncluded: false, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage } };
+        return { output: makeGradingOutput(refs), refs, meta: { ...FAKE_META, servedModel: "claude-opus-5-5", usage } };
       },
     });
     const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1) }]);

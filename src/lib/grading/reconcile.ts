@@ -32,6 +32,7 @@ type IdentityFields = Pick<Reconciled["fields"], "aiName" | "aiNameConfidence" |
 // Silent caps on AI text, in characters; truncation is not recorded as a repair.
 const CAPS = {
   studentAnswer: 2000,
+  marksSeen: 300,
   itemNote: 1000,
   overallFeedback: 2000,
   teacherSummary: 2000,
@@ -168,6 +169,8 @@ function toJudgment(o: OutputItem, label: string, pageCount: number, repairs: st
     whatStudentDid: cap(o.what_student_did, CAPS.itemNote),
     feedback: cap(o.feedback, CAPS.itemNote),
     teacherNote: cap(o.teacher_note, CAPS.itemNote),
+    ...(o.judged_by ? { judgedBy: o.judged_by } : {}),
+    ...(o.marks_seen?.trim() ? { marksSeen: cap(o.marks_seen, CAPS.marksSeen) } : {}),
   };
 }
 

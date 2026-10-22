@@ -1,6 +1,9 @@
-import type { AiUsage, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
+import type { AutoMark } from "@/lib/grading/auto-mark";
+import type { AiUsage, AnswerType, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
 import type { AgentCallCost } from "./errors";
-import type { GradingOutput, KeyExtraction, PacketOutput, ScanPages } from "./schemas";
+import type {
+  GradingOutput, JudgingOutput, KeyExtraction, PacketOutput, PacketReadingOutput, ReadingOutput, ScanPages,
+} from "./schemas";
 
 export interface AiCallMeta {
   requestedModel: string;
@@ -26,14 +29,13 @@ export interface GradeInput {
   sections: Section[];
   /** Position order; item i is referred to as `Q${i + 1}`. */
   items: KeyItem[];
-  keyPdf: Uint8Array | null;
   studentPdf: Uint8Array;
   studentPageCount: number;
   /** The teacher's preferences and lessons for this assignment; absent means none. */
   guidance?: GradingGuidance;
   /**
-   * The assignment's "Write notes for students" (absent = true). Off, the AI is asked for no notes at all and the
-   * grader returns them as "" (withEmptyNotes).
+   * The assignment's "Write notes for students" (absent = true). Off, the judge is asked for no notes at all and the
+   * grading's notes are "".
    */
   writeNotes?: boolean;
 }
@@ -44,8 +46,46 @@ export function writesNotes(i: Pick<GradeInput, "writeNotes">): boolean {
 }
 
 /**
- * One chunk of a whole-class scan, graded in one pass: the same class-shared prefix as GradeInput (key PDF, context,
- * guidance), then the chunk's pages, which may hold several students' papers.
+ * What the reader is told about an item: never its expected or accepted answers, criteria or points (blindItems copies only
+ * these fields, so a KeyItem passed in never carries its answers into a READ request).
+ */
+export interface BlindItem {
+  label: string;
+  groupLabel: string;
+  answerType: AnswerType;
+  prompt: string;
+}
+
+export function blindItems(items: ReadonlyArray<BlindItem>): BlindItem[] {
+  return items.map((item) => ({ label: item.label, groupLabel: item.groupLabel, answerType: item.answerType, prompt: item.prompt }));
+}
+
+/** A READ request for one paper: the pages and the outline of the items, without the answer key. */
+export interface ReadInput {
+  assignmentTitle: string;
+  sections: Section[];
+  items: BlindItem[];
+  studentPdf: Uint8Array;
+  studentPageCount: number;
+}
+
+/** A JUDGE request for one paper: the answer key and the teacher's guidance, and the paper's reading (text only, no pages). */
+export interface JudgeInput {
+  assignment: Pick<Assignment, "title" | "instructions">;
+  teacherNotes: string;
+  sections: Section[];
+  /** Position order, as in GradeInput. */
+  items: KeyItem[];
+  guidance?: GradingGuidance;
+  writeNotes?: boolean;
+  /** The items read, in key order: each with its ref, the reader's transcription, and the program's mark (null: judge it). */
+  reading: Array<{ ref: string; item: ReadingOutput["items"][number]; mark: AutoMark | null }>;
+  unmatchedWork: string;
+}
+
+/**
+ * One chunk of a whole-class scan, graded in one pass: the chunk is read blind (papers and their transcriptions), then each
+ * paper is marked and judged like a paper of its own.
  */
 export interface PacketChunkInput extends Omit<GradeInput, "studentPdf" | "studentPageCount"> {
   /** Consecutive pages cut from the scan. */
@@ -55,6 +95,15 @@ export interface PacketChunkInput extends Omit<GradeInput, "studentPdf" | "stude
   chunkPageCount: number;
   totalPages: number;
   /** How many pages a paper usually has (a hint), when the key tells. */
+  keyPageCount: number | null;
+}
+
+/** The READ request of one chunk of a scan read in one pass: no answer key. */
+export interface PacketReadInput extends Omit<ReadInput, "studentPdf" | "studentPageCount"> {
+  chunkPdf: Uint8Array;
+  firstPage: number;
+  chunkPageCount: number;
+  totalPages: number;
   keyPageCount: number | null;
 }
 
@@ -95,11 +144,22 @@ export interface Grader {
   /** Which engine this grader is (stored with each grading). */
   readonly engine: "direct" | "agent" | "fake" | "ollama";
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
-  gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
-  readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;
+  /** READ: transcribes one paper, item by item, without the answer key (with the pages). */
+  readSubmission(i: ReadInput, o?: CallOptions): Promise<{ output: ReadingOutput; meta: AiCallMeta }>;
   /**
-   * Finds the papers in one chunk of a scan and grades each (`output` always has the note fields; "" when notes are off).
-   * Absent on an engine that can't (the hosted agent, Ollama): a scan is then split first and each paper graded on its own.
+   * JUDGE: judges the items the program left, from their transcriptions, against the key (text only). The output has the note
+   * fields ("" when notes are off; then only the items to judge are returned).
    */
-  gradePacketChunk?(i: PacketChunkInput, o?: CallOptions): Promise<{ output: PacketOutput; refs: string[]; keyPdfIncluded: boolean; meta: AiCallMeta }>;
+  judgeSubmission(i: JudgeInput, o?: CallOptions): Promise<{ output: JudgingOutput; meta: AiCallMeta }>;
+  /** READ, MARK and JUDGE for one paper (gradeByReading over this grader's readSubmission and judgeSubmission). */
+  gradeSubmission(i: GradeInput, o?: CallOptions): Promise<{ output: GradingOutput; refs: string[]; meta: AiCallMeta }>;
+  readScanPages(i: ReadScanInput, o?: CallOptions): Promise<{ output: ScanPages; meta: AiCallMeta }>;
+  /** READ of one chunk of a scan in one pass. Absent on an engine that can't (the hosted agent, Ollama). */
+  readPacketChunk?(i: PacketReadInput, o?: CallOptions): Promise<{ output: PacketReadingOutput; meta: AiCallMeta }>;
+  /**
+   * Finds the papers in one chunk of a scan and grades each (gradePacketByReading: READ the chunk, then MARK and JUDGE each
+   * paper; `output` always has the note fields, "" when notes are off). Present exactly when readPacketChunk is; absent, a scan
+   * is split first and each paper graded on its own.
+   */
+  gradePacketChunk?(i: PacketChunkInput, o?: CallOptions): Promise<{ output: PacketOutput; refs: string[]; meta: AiCallMeta }>;
 }

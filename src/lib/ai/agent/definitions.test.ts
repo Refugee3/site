@@ -1,6 +1,6 @@
 import type { BetaManagedAgentsCustomToolParams } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import { describe, expect, it } from "vitest";
-import { GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
+import { KeyExtractionSchema, outputFormat, ReadingOutputSchema, ScanPagesSchema } from "../schemas";
 import {
   AGENT_ROLES,
   agentDefinition,
@@ -11,10 +11,7 @@ import {
   SUBMIT_TOOL,
   submitToolSchema,
 } from "./definitions";
-import {
-  AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_GRADING_WITHOUT_NOTES,
-  SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION, SUBMIT_TOOL_DESCRIPTION,
-} from "./prompts";
+import { AGENT_KEY_SYSTEM_PROMPT, AGENT_READING_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_TOOL_DESCRIPTION } from "./prompts";
 import { testAgentConfig } from "./test-fake";
 
 const cfg = testAgentConfig();
@@ -30,14 +27,14 @@ describe("agentDefinition", () => {
     expect(new Set(defs.map((d) => d.hash)).size).toBe(3);
     expect(defs.map((d) => d.params.name)).toEqual([
       "PDF Auto-Grader: answer key reader [a1b2c3d4e5f6]",
-      "PDF Auto-Grader: paper grader [a1b2c3d4e5f6]",
+      "PDF Auto-Grader: paper reader [a1b2c3d4e5f6]",
       "PDF Auto-Grader: scan splitter [a1b2c3d4e5f6]",
     ]);
-    expect(defs.map((d) => d.params.system)).toEqual([AGENT_KEY_SYSTEM_PROMPT, AGENT_GRADING_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT]);
+    expect(defs.map((d) => d.params.system)).toEqual([AGENT_KEY_SYSTEM_PROMPT, AGENT_READING_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT]);
     expect(defs[0].params.description).toBe("Reads a teacher's answer-key PDF into gradable items for the PDF Auto-Grader. "
       + "Managed by the app: changes made here are overwritten.");
-    expect(defs[1].params.description).toBe("Grades one student's handwritten paper against the answer key for the PDF Auto-Grader. "
-      + "Managed by the app: changes made here are overwritten.");
+    expect(defs[1].params.description).toBe("Reads one student's handwritten paper, without the answer key, for the PDF Auto-Grader "
+      + "(the app marks it afterwards). Managed by the app: changes made here are overwritten.");
     expect(defs[2].params.description).toBe("Describes scanned pages so the PDF Auto-Grader can split a class's stack into papers. "
       + "Managed by the app: changes made here are overwritten.");
   });
@@ -67,7 +64,7 @@ describe("agentDefinition", () => {
   it("disables every toolset tool by default under the auto policy and enables only bash and read", () => {
     for (const role of AGENT_ROLES) {
       const tools = agentDefinition(role, cfg, INSTALL).params.tools ?? [];
-      expect(tools).toHaveLength(role === "grade" ? 3 : 2);
+      expect(tools).toHaveLength(2);
       expect(tools[0]).toEqual({
         type: "agent_toolset_20260401",
         default_config: { enabled: false, permission_policy: { type: "auto" } },
@@ -82,23 +79,21 @@ describe("agentDefinition", () => {
   });
 
   it("gives each agent a custom submit tool whose input schema is the structured-output schema", () => {
-    const schemas = { extract: KeyExtractionSchema, grade: GradingOutputSchema, scan: ScanPagesSchema };
+    const schemas = { extract: KeyExtractionSchema, grade: ReadingOutputSchema, scan: ScanPagesSchema };
     for (const role of AGENT_ROLES) {
       const tools = customTools(role);
-      expect(tools).toHaveLength(role === "grade" ? 2 : 1);
+      expect(tools).toHaveLength(1);
       expect(tools[0].name).toBe(SUBMIT_TOOL[role]);
       expect(tools[0].description).toBe(SUBMIT_TOOL_DESCRIPTION[role]);
       expect(tools[0].input_schema).toEqual(outputFormat(schemas[role]).schema);
     }
-    expect(Object.values(SUBMIT_TOOL)).toEqual(["submit_answer_key", "submit_grading", "submit_scan_pages"]);
+    expect(Object.values(SUBMIT_TOOL)).toEqual(["submit_answer_key", "submit_reading", "submit_scan_pages"]);
   });
 
-  it("gives the grader a second submit tool for gradings without notes", () => {
-    const lean = customTools("grade")[1];
-    expect(lean.name).toBe(SUBMIT_GRADING_WITHOUT_NOTES);
-    expect(lean.description).toBe(SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION);
-    expect(lean.input_schema).toEqual(outputFormat(GradingOutputWithoutNotesSchema).schema);
-    expect(JSON.stringify(lean.input_schema)).not.toMatch(/what_student_did|feedback|teacher_note|teacher_summary/);
+  it("gives the paper agent a reading to submit, with no judgment, note or answer in it", () => {
+    const json = JSON.stringify(agentDefinition("grade", cfg, INSTALL).params);
+    expect(json).not.toMatch(/"correctness"|"what_student_did"|"feedback"|"teacher_summary"|answer_key items|Expected answer/);
+    expect(json).toContain("reading_confidence");
   });
 
   it("uses no skills, MCP servers, multiagent roster or inference geo", () => {

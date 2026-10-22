@@ -92,17 +92,13 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       ? { kind: "fail", error: "file_missing: student PDF not found" }
       : DONE;
   }
-  // A PDF the extraction judged not to be a key (a student's paper, something unrelated) is never shown as the teacher's reference.
-  const keyPdfPath = key.documentKind !== null && NOT_A_KEY.has(key.documentKind) ? null : key.sourcePdfPath;
-  const keyPdf = keyPdfPath ? await readStoredPdf(keyPdfPath) : null;
-  if (keyPdfPath && !keyPdf) console.warn(`[jobs] key PDF of assignment ${assignment.id} is missing; grading without it`);
-
+  // The paper is read without the answer key (no key PDF either), then marked and judged from that reading (gradeByReading).
   let outcome: GradingOutcome;
   try {
     const result = await grader.gradeSubmission(
       {
         assignment, teacherNotes: key.teacherNotes, sections: ctx.sections, items: ctx.items,
-        keyPdf, studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
+        studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
         // Off, the grader returns every note as "" (the scoring, lessons and views are unaffected).
         writeNotes: assignment.writeNotes,
       },

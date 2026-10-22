@@ -181,6 +181,20 @@ describe("saveGradingResult", () => {
     expect(listItems(s.id).map((i) => [i.itemId, i.judgment])).toEqual(items.map((item) => [item.id, judgment()]));
   });
 
+  it("stores who decided each item and the marks the reader saw, and reads them back", () => {
+    const s = gradingSubmission();
+    const decided = [judgment({ judgedBy: "program", marksSeen: "B circled, A crossed out", correctness: "incorrect" }), judgment({ judgedBy: "ai" })];
+    saveGradingResult(gradingWrite(s, { items: items.map((item, i) => ({ itemId: item.id, judgment: decided[i] ?? judgment() })) }));
+    const read = listItems(s.id).map((i) => i.judgment);
+    expect(read[0]).toEqual(decided[0]);
+    expect(read[1]).toEqual(decided[1]);
+    expect(read[1]).not.toHaveProperty("marksSeen");
+    // A grading without them (as stored before) reads back without them.
+    const plain = gradingSubmission();
+    saveGradingResult(gradingWrite(plain));
+    expect(listItems(plain.id)[0].judgment).not.toHaveProperty("judgedBy");
+  });
+
   it("records the fingerprint of the guidance the grading was sent", () => {
     const withGuidance = gradingSubmission();
     const without = gradingSubmission();

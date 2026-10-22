@@ -58,7 +58,7 @@ function packetGrader(calls: PacketChunkInput[], answer: Answer = () => null): G
       calls.push(input);
       const scripted = answer(input, calls.length);
       if (scripted instanceof AiError) throw scripted;
-      if (scripted) return { output: scripted, refs: items.map((_, i) => `Q${i + 1}`), keyPdfIncluded: false, meta: FAKE_META };
+      if (scripted) return { output: scripted, refs: items.map((_, i) => `Q${i + 1}`), meta: FAKE_META };
       return instantFake.gradePacketChunk!(input, options);
     },
   });

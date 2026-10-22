@@ -2,6 +2,7 @@
 import { createFakeGrader } from "@/lib/ai/fake";
 import type { AiCallMeta, GradeInput, Grader } from "@/lib/ai/grader";
 import { itemRefs } from "@/lib/ai/prompts";
+import { gradeByReading, gradePacketByReading } from "@/lib/ai/read-then-mark";
 import type { GradingOutput } from "@/lib/ai/schemas";
 import { getDb } from "@/lib/db/connection";
 import { createWorker } from "@/lib/jobs/worker";
@@ -19,21 +20,31 @@ export const FAKE_META: AiCallMeta = {
 };
 
 /**
- * A grader whose methods default to the instant fake grader; override one (or the engine) to script a test. `gradePacketChunk:
+ * A grader whose methods default to the instant fake grader; override one (or the engine) to script a test. Unless
+ * scripted, gradeSubmission and gradePacketChunk are the real orchestration (read blind, mark, judge) over this grader's
+ * own readSubmission / readPacketChunk / judgeSubmission, so scripting a reading tests the whole path. `gradePacketChunk:
  * null` makes a grader that can't grade in one pass (as the hosted agent).
  */
 export function scriptedGrader(
-  o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages">> & { gradePacketChunk?: Grader["gradePacketChunk"] | null } = {},
+  o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages" | "readSubmission" | "judgeSubmission">>
+    & { gradePacketChunk?: Grader["gradePacketChunk"] | null; readPacketChunk?: Grader["readPacketChunk"] } = {},
 ): Grader {
-  const gradePacketChunk = o.gradePacketChunk === null ? undefined : (o.gradePacketChunk ?? instantFake.gradePacketChunk);
-  return {
+  const grader: Grader = {
     mode: "fake",
     engine: o.engine ?? "fake",
     extractKey: o.extractKey ?? instantFake.extractKey,
-    gradeSubmission: o.gradeSubmission ?? instantFake.gradeSubmission,
+    readSubmission: o.readSubmission ?? instantFake.readSubmission,
+    judgeSubmission: o.judgeSubmission ?? instantFake.judgeSubmission,
+    gradeSubmission: o.gradeSubmission ?? ((input, options) => gradeByReading(grader, input, options)),
     readScanPages: o.readScanPages ?? instantFake.readScanPages,
-    ...(gradePacketChunk ? { gradePacketChunk } : {}),
+    ...(o.gradePacketChunk === null
+      ? {}
+      : {
+        readPacketChunk: o.readPacketChunk ?? instantFake.readPacketChunk,
+        gradePacketChunk: o.gradePacketChunk ?? ((input, options) => gradePacketByReading(grader, input, options)),
+      }),
   };
+  return grader;
 }
 
 /** A grader that answers each paper with `answer(refs, input)`. */
@@ -41,7 +52,7 @@ export function answeringGrader(answer: (refs: string[], input: GradeInput) => G
   return scriptedGrader({
     async gradeSubmission(input) {
       const refs = itemRefs(input.items.length);
-      return { output: answer(refs, input), refs, keyPdfIncluded: false, meta: FAKE_META };
+      return { output: answer(refs, input), refs, meta: FAKE_META };
     },
   });
 }

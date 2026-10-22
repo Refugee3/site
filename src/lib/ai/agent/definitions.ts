@@ -7,19 +7,17 @@ import type { EnvironmentCreateParams } from "@anthropic-ai/sdk/resources/beta/e
 import type * as z from "zod";
 import { sha256Hex } from "@/lib/ids";
 import type { AiModel, Effort } from "@/lib/types";
-import { GradingOutputSchema, GradingOutputWithoutNotesSchema, KeyExtractionSchema, outputFormat, ScanPagesSchema } from "../schemas";
+import { KeyExtractionSchema, outputFormat, ReadingOutputSchema, ScanPagesSchema } from "../schemas";
 import type { Body } from "./port";
-import {
-  AGENT_GRADING_SYSTEM_PROMPT, AGENT_KEY_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_GRADING_WITHOUT_NOTES,
-  SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION, SUBMIT_TOOL_DESCRIPTION,
-} from "./prompts";
+import { AGENT_KEY_SYSTEM_PROMPT, AGENT_READING_SYSTEM_PROMPT, AGENT_SCAN_SYSTEM_PROMPT, SUBMIT_TOOL_DESCRIPTION } from "./prompts";
 
 // What the app creates in the key's Anthropic workspace: one environment and one agent per task type. Each
 // definition carries a hash of the fields that matter, so a changed prompt, model or effort updates the agent.
 
+/** `grade` is the paper agent: it READS a paper without the answer key (the role keeps its name, so stored ids stay valid). */
 export const AGENT_ROLES = ["extract", "grade", "scan"] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
-export const SUBMIT_TOOL = { extract: "submit_answer_key", grade: "submit_grading", scan: "submit_scan_pages" } as const;
+export const SUBMIT_TOOL = { extract: "submit_answer_key", grade: "submit_reading", scan: "submit_scan_pages" } as const;
 export const UPLOADS_DIR = "/mnt/session/uploads";
 /** mount_path values (rooted under UPLOADS_DIR by the platform). */
 export const MOUNT = { answerKey: "/answer-key.pdf", student: "/student-submission.pdf", scan: "/scanned-pages.pdf" } as const;
@@ -58,11 +56,11 @@ const TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   ],
 };
 
-const ROLE_NAME: Record<AgentRole, string> = { extract: "answer key reader", grade: "paper grader", scan: "scan splitter" };
+const ROLE_NAME: Record<AgentRole, string> = { extract: "answer key reader", grade: "paper reader", scan: "scan splitter" };
 
 const ROLE_DESCRIPTION: Record<AgentRole, string> = {
   extract: "Reads a teacher's answer-key PDF into gradable items for the PDF Auto-Grader. Managed by the app: changes made here are overwritten.",
-  grade: "Grades one student's handwritten paper against the answer key for the PDF Auto-Grader. "
+  grade: "Reads one student's handwritten paper, without the answer key, for the PDF Auto-Grader (the app marks it afterwards). "
     + "Managed by the app: changes made here are overwritten.",
   scan: "Describes scanned pages so the PDF Auto-Grader can split a class's stack into papers. "
     + "Managed by the app: changes made here are overwritten.",
@@ -70,11 +68,11 @@ const ROLE_DESCRIPTION: Record<AgentRole, string> = {
 
 const SYSTEM_PROMPT: Record<AgentRole, string> = {
   extract: AGENT_KEY_SYSTEM_PROMPT,
-  grade: AGENT_GRADING_SYSTEM_PROMPT,
+  grade: AGENT_READING_SYSTEM_PROMPT,
   scan: AGENT_SCAN_SYSTEM_PROMPT,
 };
 
-const OUTPUT_SCHEMA: Record<AgentRole, z.ZodType> = { extract: KeyExtractionSchema, grade: GradingOutputSchema, scan: ScanPagesSchema };
+const OUTPUT_SCHEMA: Record<AgentRole, z.ZodType> = { extract: KeyExtractionSchema, grade: ReadingOutputSchema, scan: ScanPagesSchema };
 
 /** The model a role's agent runs on: the scan splitter's own, else the one chosen in Settings. */
 export function roleModel(cfg: Pick<AgentEngineConfig, "model" | "scanModel">, role: AgentRole): AiModel {
@@ -93,15 +91,6 @@ export function agentDefinition(
   const tools: NonNullable<AgentCreateParams["tools"]> = [
     TOOLSET,
     { type: "custom", name: SUBMIT_TOOL[role], description: SUBMIT_TOOL_DESCRIPTION[role], input_schema: submitToolSchema(role) },
-    // The grader hands in a grading without notes with its own tool: a tool's schema is fixed when the agent is created.
-    ...(role === "grade"
-      ? [{
-        type: "custom" as const,
-        name: SUBMIT_GRADING_WITHOUT_NOTES,
-        description: SUBMIT_GRADING_WITHOUT_NOTES_DESCRIPTION,
-        input_schema: objectSchema(GradingOutputWithoutNotesSchema, SUBMIT_GRADING_WITHOUT_NOTES),
-      }]
-      : []),
   ];
   const hash = definitionHash({ name, description, model, system, tools });
   return {

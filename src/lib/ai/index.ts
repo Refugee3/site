@@ -123,12 +123,17 @@ function graderFromConfig(): Grader | null {
     return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), direct);
   }
   const deps = agentDeps(cfg, resolved);
-  if (deps === null) return null;
+  const key = agentKey(resolved);
+  if (deps === null || key === null) return null;
+  // The agent reads each paper in its session; judging the transcriptions is text only, so it is the direct engine's
+  // Messages API call, with the same key and the model chosen in Settings (read when each call starts).
+  const judgeRunner = createSdkRunner(cfg, key);
   return createAgentGrader({
     ...deps,
     // A saved key that couldn't be confirmed when it was saved is confirmed by the first task that succeeds with it.
     onFirstSuccess: resolved.source === "app" ? () => markStoredApiKeyVerified(resolved.ciphertext) : undefined,
     currentModel: getAiModel,
+    judge: (input, o) => createClaudeGrader(judgeRunner, { ...cfg, model: getAiModel() }).judgeSubmission(input, o),
   });
 }
 

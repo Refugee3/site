@@ -489,6 +489,17 @@ ALTER TABLE submissions ADD COLUMN grader_engine TEXT CHECK (grader_engine IN ('
 UPDATE submissions SET grader_engine = ai_engine;
 `,
   },
+  {
+    version: 12,
+    name: "blind_reading",
+    sql: `
+-- Papers are read without the answer key, then marked. judged_by records who decided each item's correctness: 'program'
+-- (compared in code with the key) or 'ai' (judged from the transcription); NULL for gradings stored before this version.
+-- marks_seen is what the reader saw of the student's marks ("B circled, A crossed out").
+ALTER TABLE submission_items ADD COLUMN judged_by TEXT CHECK (judged_by IN ('program','ai'));
+ALTER TABLE submission_items ADD COLUMN marks_seen TEXT NOT NULL DEFAULT '';
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

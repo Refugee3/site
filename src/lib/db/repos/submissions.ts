@@ -8,7 +8,7 @@ import {
   FLAG_CODES,
   SUBMISSION_STATUSES,
   type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode, type GraderEngine,
-  type ItemJudgment, type ItemReviewReason, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
+  type ItemJudgment, type ItemReviewReason, type JudgedBy, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
   type SubmissionStatus,
 } from "@/lib/types";
 
@@ -97,6 +97,8 @@ interface SubmissionItemRow {
   what_student_did: string;
   feedback: string;
   teacher_note: string;
+  judged_by: JudgedBy | null;
+  marks_seen: string;
   override_centi: number | null;
   override_feedback: string | null;
   override_what_student_did: string | null;
@@ -178,6 +180,9 @@ function judgmentFromRow(row: SubmissionItemRow): ItemJudgment | null {
     whatStudentDid: row.what_student_did,
     feedback: row.feedback,
     teacherNote: row.teacher_note,
+    // Present only for gradings that recorded them (migration 12 and later).
+    ...(row.judged_by === null ? {} : { judgedBy: row.judged_by }),
+    ...(row.marks_seen === "" ? {} : { marksSeen: row.marks_seen }),
   };
 }
 
@@ -296,14 +301,15 @@ function withoutVanishedSection(f: GradingWrite["fields"], assignmentId: string)
 function upsertJudgment(submissionId: string, itemId: string, judgment: ItemJudgment | null, at: number): void {
   run(
     `INSERT INTO submission_items (submission_id, item_id, attempt, correctness, legibility, confidence, review_reason,
-       student_answer, pages_json, what_student_did, feedback, teacher_note, updated_at)
+       student_answer, pages_json, what_student_did, feedback, teacher_note, judged_by, marks_seen, updated_at)
      VALUES (@submission_id, @item_id, @attempt, @correctness, @legibility, @confidence, @review_reason,
-       @student_answer, @pages_json, @what_student_did, @feedback, @teacher_note, @updated_at)
+       @student_answer, @pages_json, @what_student_did, @feedback, @teacher_note, @judged_by, @marks_seen, @updated_at)
      ON CONFLICT (submission_id, item_id) DO UPDATE SET
        attempt = excluded.attempt, correctness = excluded.correctness, legibility = excluded.legibility,
        confidence = excluded.confidence, review_reason = excluded.review_reason, student_answer = excluded.student_answer,
        pages_json = excluded.pages_json, what_student_did = excluded.what_student_did, feedback = excluded.feedback,
-       teacher_note = excluded.teacher_note, updated_at = excluded.updated_at`,
+       teacher_note = excluded.teacher_note, judged_by = excluded.judged_by, marks_seen = excluded.marks_seen,
+       updated_at = excluded.updated_at`,
     {
       submission_id: submissionId,
       item_id: itemId,
@@ -317,6 +323,8 @@ function upsertJudgment(submissionId: string, itemId: string, judgment: ItemJudg
       what_student_did: judgment?.whatStudentDid ?? "",
       feedback: judgment?.feedback ?? "",
       teacher_note: judgment?.teacherNote ?? "",
+      judged_by: judgment?.judgedBy ?? null,
+      marks_seen: judgment?.marksSeen ?? "",
       updated_at: at,
     },
   );

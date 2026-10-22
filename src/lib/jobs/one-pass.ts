@@ -21,7 +21,7 @@ import { keyPageCountHint, SCAN_CHUNK_MAX_BYTES } from "@/lib/grading/split";
 import { newId, newToken, sha256Hex } from "@/lib/ids";
 import { decideFailure } from "@/lib/jobs/backoff";
 import {
-  addUsage, describe, DONE, failureLimits, type HandlerResult, isFinalRefusal, KEY_WAIT_MS, NOT_A_KEY, readStoredPdf, recordUsage,
+  addUsage, describe, DONE, failureLimits, type HandlerResult, isFinalRefusal, KEY_WAIT_MS, readStoredPdf, recordUsage,
   WAITING_FOR_KEY,
 } from "@/lib/jobs/handler-shared";
 import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
@@ -37,8 +37,9 @@ import {
 } from "@/lib/types";
 
 // Grading a whole-class scan in one pass (split mode "one_pass", run by the scan's split_scan job): the scan is read in
-// chunks of consecutive pages, in order, and each AI call both finds the papers of its chunk and grades them, so every page
-// is read once. Each paper is cut from the scan and stored already graded, through the same reconcile → saveGradingResult →
+// chunks of consecutive pages, in order; each chunk's AI call finds the papers in it and reads them WITHOUT the answer key, then
+// each paper is marked in code and judged from its transcriptions in a small text-only call (gradePacketChunk →
+// gradePacketByReading), so every page is sent to the AI once. Each paper is cut from the scan and stored already graded, through the same reconcile → saveGradingResult →
 // rescore path as a paper graded on its own (which it can be later: a regrade grades it the usual way).
 //
 // Crash safety: a chunk's AI answer is saved on the scan (onePass.pending) before any of its papers is stored, and each paper
@@ -48,10 +49,8 @@ import {
 /** How today's split path is run, for a scan whose engine can't grade in one pass (the hosted agent). */
 export type SplitFirst = (job: Job, grader: Grader, signal: AbortSignal) => Promise<HandlerResult>;
 
-/** Output budget per paper of a chunk, by whether the AI writes notes. */
-const TOKENS_PER_PAPER = { notes: 16_000, lean: 8_000 } as const;
-/** The key PDF goes with every chunk only when at least this much of the request's PDF budget is left for the pages. */
-const MIN_CHUNK_BYTES = 8 * 1_048_576;
+/** Output budget per paper of a chunk's reading (transcriptions only: the notes, if any, come from each paper's judge call). */
+const READ_TOKENS_PER_PAPER = 8_000;
 
 export const AGENT_FALLBACK_NOTE = "The hosted agent can't grade in one pass, so the AI splits this scan first; each paper is then graded on its own.";
 const AGENT_CANT_RESUME = "The hosted agent can't grade in one pass. Choose Direct API under Settings → Grader, then try again; "
@@ -119,12 +118,8 @@ export async function handleOnePassScan(
   // Loaded once: every chunk of this run is sent the same guidance, so they all share one cached prefix.
   const guidance = loadGuidance(assignment, items);
   const sections = listSections(assignment.id);
-  // A PDF the extraction judged not to be a key is never shown as the teacher's reference (as when grading one paper).
-  const keyPdfPath = key.documentKind !== null && NOT_A_KEY.has(key.documentKind) ? null : key.sourcePdfPath;
-  const storedKeyPdf = keyPdfPath ? await readStoredPdf(keyPdfPath) : null;
-  // The key PDF goes with every chunk or with none, so the prefix stays the same; chunks are cut to fit beside it.
-  const keyPdf = storedKeyPdf !== null && storedKeyPdf.byteLength <= PDF_BYTE_BUDGET - MIN_CHUNK_BYTES ? storedKeyPdf : null;
-  const chunkByteLimit = Math.min(SCAN_CHUNK_MAX_BYTES, PDF_BYTE_BUDGET - (keyPdf?.byteLength ?? 0));
+  // Each chunk is read without the answer key (no key PDF either), then each paper is marked and judged (gradePacketByReading).
+  const chunkByteLimit = Math.min(SCAN_CHUNK_MAX_BYTES, PDF_BYTE_BUDGET);
 
   let progress: OnePassProgress = scan.onePass ?? emptyProgress();
   let usage = scan.usage;
@@ -146,14 +141,14 @@ export async function handleOnePassScan(
     const chunkPages = chunk.lastPage - chunk.firstPage + 1;
 
     const input: PacketChunkInput = {
-      assignment, teacherNotes: key.teacherNotes, sections, items, keyPdf, guidance: guidance.guidance, writeNotes: assignment.writeNotes,
+      assignment, teacherNotes: key.teacherNotes, sections, items, guidance: guidance.guidance, writeNotes: assignment.writeNotes,
       chunkPdf: chunk.pdf, firstPage: chunk.firstPage, chunkPageCount: chunkPages, totalPages: scan.pageCount,
       keyPageCount: ctx.keyPageCount,
     };
     let result: Awaited<ReturnType<NonNullable<Grader["gradePacketChunk"]>>>;
     try {
       result = await gradeChunk.call(grader, input, {
-        signal, maxTokens: job.maxTokens ?? chunkMaxTokens(cfg, chunkPages, ctx.keyPageCount, assignment.writeNotes),
+        signal, maxTokens: job.maxTokens ?? chunkMaxTokens(cfg, chunkPages, ctx.keyPageCount),
       });
       recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
       // Checked before it is saved, so an unusable answer is retried like any failed call.
@@ -196,11 +191,10 @@ function emptyProgress(): OnePassProgress {
   return { nextPage: 1, endedCleanly: true, chunks: 0, maxChunkPages: null, papers: [], skipped: [], pending: null };
 }
 
-/** Room for the AI's answer for a chunk: per expected paper (2 pages each when the key doesn't tell), within the configured limits. */
-function chunkMaxTokens(cfg: AppConfig, pages: number, keyPageCount: number | null, writeNotes: boolean): number {
+/** Room for the AI's reading of a chunk: per expected paper (2 pages each when the key doesn't tell), within the configured limits. */
+function chunkMaxTokens(cfg: AppConfig, pages: number, keyPageCount: number | null): number {
   const papers = Math.ceil(pages / Math.max(1, keyPageCount ?? 2));
-  const perPaper = writeNotes ? TOKENS_PER_PAPER.notes : TOKENS_PER_PAPER.lean;
-  return Math.min(cfg.maxTokensCeiling, Math.max(cfg.maxTokens, papers * perPaper));
+  return Math.min(cfg.maxTokensCeiling, Math.max(cfg.maxTokens, papers * READ_TOKENS_PER_PAPER));
 }
 
 /**

@@ -1,15 +1,29 @@
+import { matchesExactly, optionLettersFromPrompt } from "@/lib/grading/auto-mark";
 import { sha256Hex } from "@/lib/ids";
-import type { Attempt, Correctness, GradingGuidance, Legibility } from "@/lib/types";
+import type { Attempt, Correctness, GradingGuidance, KeyItem, Legibility } from "@/lib/types";
 import { AiError } from "./errors";
-import { type AiCallMeta, type CallOptions, type Grader, type PacketChunkInput, type ReadScanInput, writesNotes } from "./grader";
+import {
+  type AiCallMeta, type BlindItem, type CallOptions, type Grader, type JudgeInput, type PacketReadInput, type ReadScanInput, writesNotes,
+} from "./grader";
 import { itemRefs } from "./prompts";
-import { type GradingOutput, type KeyExtraction, type PacketOutput, type ScanPages, withEmptyNotes } from "./schemas";
+import { gradeByReading, gradePacketByReading } from "./read-then-mark";
+import type { JudgingOutput, KeyExtraction, PacketReadingOutput, ReadingItem, ReadingOutput, ScanPages } from "./schemas";
 
 // AI_MODE=fake: a deterministic stand-in so the whole flow runs without an API key. Every "random"
 // choice is derived from the PDF's bytes and a named purpose, so the same paper always grades the same.
+// Like the real engines it reads each paper blind (readSubmission never sees an answer), then the program marks what it can
+// and the fake judge decides the rest from the transcription alone.
 
 type Seed = (purpose: string) => Buffer;
-type OutputItem = GradingOutput["items"][number];
+
+export interface FakeGraderOptions {
+  delayMs?: number;
+  /**
+   * Tests: what the fake reader "sees" for an item instead of its seeded transcription (for example () => "B" for a
+   * multiple-choice mark that is wrong); undefined keeps the seeded one. "" reads as a blank item.
+   */
+  transcribe?: (ref: string, item: BlindItem) => string | undefined;
+}
 
 function seedFor(pdf: Uint8Array): Seed {
   const pdfHash = sha256Hex(pdf);
@@ -21,7 +35,7 @@ function fraction(bytes: Buffer, offset = 0): number {
   return bytes.readUInt16BE(offset) / 0x10000;
 }
 
-export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
+export function createFakeGrader(o: FakeGraderOptions = {}): Grader {
   async function simulateCall(seed: Seed, options: CallOptions): Promise<AiCallMeta> {
     const startedAt = performance.now();
     await sleep(o.delayMs ?? 300 + Math.floor(fraction(seed("delay")) * 1200), options.signal);
@@ -35,78 +49,164 @@ export function createFakeGrader(o: { delayMs?: number } = {}): Grader {
     };
   }
 
-  return {
+  const grader: Grader = {
     mode: "fake",
     engine: "fake",
     async extractKey(input, options = {}) {
       const meta = await simulateCall(seedFor(input.keyPdf), options);
       return { output: fakeKey(input.pageCount), meta };
     },
-    async gradeSubmission(input, options = {}) {
+    async readSubmission(input, options = {}) {
       const seed = seedFor(input.studentPdf);
       const meta = await simulateCall(seed, options);
-      const refs = itemRefs(input.items.length);
-      const output: GradingOutput = {
-        student: fakeStudent(seed, input.sections.map((s) => s.label)),
-        document_check: fakeDocumentCheck(seed),
-        items: refs.map((ref, i) => followRuling(fakeItem(seed, ref, input.studentPageCount), input.items[i].id, input.guidance)),
-        integrity: { grader_directed_text_found: false, excerpt: "" },
-        unmatched_work: "",
-        overall_feedback: "This is sample feedback from the practice grader. Keep showing your steps, "
-          + "and check each answer once more before you hand it in.",
-        teacher_summary: "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.",
-      };
-      return { output: writesNotes(input) ? output : withEmptyNotes(output), refs, keyPdfIncluded: false, meta };
+      return { output: fakeReading(seed, input.items, input.sections.map((s) => s.label), input.studentPageCount, o.transcribe), meta };
     },
+    async judgeSubmission(input, options = {}) {
+      // Text only, like the real judge: seeded by the transcriptions, never by a PDF.
+      const meta = await simulateCall(seedForText(JSON.stringify(input.reading)), options);
+      return { output: fakeJudging(input), meta };
+    },
+    gradeSubmission: (input, options) => gradeByReading(grader, input, options),
     async readScanPages(input, options = {}) {
       const seed = seedFor(input.chunkPdf);
       const meta = await simulateCall(seed, options);
       return { output: fakeScanPages(seed, input), meta };
     },
-    async gradePacketChunk(input, options = {}) {
+    async readPacketChunk(input, options = {}) {
       const seed = seedFor(input.chunkPdf);
       const meta = await simulateCall(seed, options);
-      const refs = itemRefs(input.items.length);
-      return { output: fakePacket(seed, input, refs), refs, keyPdfIncluded: false, meta };
+      return { output: fakePacketReading(seed, input, o.transcribe), meta };
     },
+    gradePacketChunk: (input, options) => gradePacketByReading(grader, input, options),
+  };
+  return grader;
+}
+
+function seedForText(text: string): Seed {
+  const hash = sha256Hex(text);
+  return (purpose) => Buffer.from(sha256Hex(`${hash}:${purpose}`), "hex");
+}
+
+const PRACTICE_SUMMARY = "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.";
+const PRACTICE_FEEDBACK = "This is sample feedback from the practice grader. Keep showing your steps, "
+  + "and check each answer once more before you hand it in.";
+
+/** One paper read blind: the seeded outcome's transcription for each item (or the test's `transcribe`). Pages are paper pages. */
+function fakeReading(
+  seed: Seed, items: BlindItem[], sectionLabels: string[], pageCount: number, transcribe: FakeGraderOptions["transcribe"],
+): ReadingOutput {
+  return {
+    student: fakeStudent(seed, sectionLabels),
+    document_check: fakeDocumentCheck(seed),
+    items: itemRefs(items.length).map((ref, i) => fakeReadItem(seed, ref, items[i], pageCount, transcribe)),
+    integrity: { grader_directed_text_found: false, excerpt: "" },
+    unmatched_work: "",
+  };
+}
+
+function fakeReadItem(seed: Seed, ref: string, item: BlindItem, pageCount: number, transcribe: FakeGraderOptions["transcribe"]): ReadingItem {
+  const bytes = seed(ref);
+  const page = 1 + (bytes[3] % Math.max(pageCount, 1));
+  const scripted = transcribe?.(ref, item);
+  if (scripted !== undefined) {
+    const blank = scripted.trim() === "";
+    return {
+      ref, pages: blank ? [] : [page], student_answer: scripted, marks_seen: blank || item.answerType !== "multiple_choice" ? "" : `${scripted} circled`,
+      legibility: blank ? "no_writing" : "clear", attempt: blank ? "none" : "complete", reading_confidence: "high",
+    };
+  }
+  const outcome = pickOutcome(fraction(bytes));
+  const lowConfidence = bytes[2] % 8 === 0;
+  // A multiple-choice question that lists its options is answered with one of them, which the program then marks.
+  const options = item.answerType === "multiple_choice" ? optionLettersFromPrompt(item.prompt) : null;
+  if (options && outcome.attempt !== "none" && outcome.legibility !== "illegible") {
+    const letter = options[bytes[4] % options.length];
+    return {
+      ref, pages: [page], student_answer: letter, marks_seen: `${letter} circled`, legibility: "clear", attempt: "complete",
+      reading_confidence: lowConfidence ? "low" : "high",
+    };
+  }
+  return {
+    ref,
+    pages: outcome.attempt === "none" ? [] : [page],
+    student_answer: outcome.answer(ref),
+    marks_seen: "",
+    legibility: outcome.legibility,
+    attempt: outcome.attempt,
+    reading_confidence: lowConfidence ? "low" : "high",
   };
 }
 
 /**
- * Grading a chunk of a scan in one pass, like fakeScanPages: identical worksheets of `keyPageCount` pages (2 without a key
- * page count) from the scan's first page, each graded like a paper of its own (seeded by the chunk and the paper's first
+ * The fake judge: the program's marks as given; any other item by the outcome its transcription came from (the fake's
+ * transcriptions name it: "Sample answer for Q2 with a slip"), else an exact match with the key or incorrect. The teacher's
+ * newest ruling on the same answer to the same item wins. With notes off only the items left to it are returned, without notes.
+ */
+function fakeJudging(input: JudgeInput): JudgingOutput {
+  const writeNotes = writesNotes(input);
+  const refs = itemRefs(input.items.length);
+  const entries = input.reading.filter((r) => writeNotes || r.mark === null);
+  return {
+    items: entries.map(({ ref, item: read, mark }) => {
+      const keyItem = input.items[refs.indexOf(ref)];
+      const outcome = OUTCOMES.find((candidate) => candidate.answer(ref) === read.student_answer && candidate.attempt === read.attempt);
+      const notes = {
+        what_student_did: writeNotes ? (outcome?.did(ref) ?? `You answered ${ref} with "${read.student_answer}".`) : "",
+        feedback: writeNotes ? (outcome?.feedback(ref) ?? `Check ${ref} against what the question asks.`) : "",
+        teacher_note: writeNotes && read.reading_confidence === "low" ? "Practice grader: marked low confidence to exercise the review flow." : "",
+      };
+      if (mark) {
+        return { ref, attempt: read.attempt, correctness: mark.correctness, confidence: mark.confidence, review_reason: mark.review_reason, ...notes };
+      }
+      const judged = followRuling(read, keyItem, input.guidance)
+        ?? (outcome
+          ? { attempt: outcome.attempt, correctness: outcome.correctness, teacherNote: null }
+          : {
+            attempt: read.attempt,
+            correctness: keyItem && matchesExactly(read.student_answer, [keyItem.expectedAnswer, ...keyItem.acceptableAnswers])
+              ? "correct" as const
+              : "incorrect" as const,
+            teacherNote: null,
+          });
+      return {
+        ref,
+        attempt: judged.attempt,
+        correctness: judged.correctness,
+        confidence: judged.teacherNote ? "high" : read.reading_confidence === "low" ? "low" : "high",
+        review_reason: "none",
+        ...notes,
+        ...(judged.teacherNote && writeNotes ? { teacher_note: judged.teacherNote } : {}),
+      };
+    }),
+    overall_feedback: writeNotes ? PRACTICE_FEEDBACK : "",
+    teacher_summary: writeNotes ? PRACTICE_SUMMARY : "",
+  };
+}
+
+/**
+ * Reading a chunk of a scan in one pass, like fakeScanPages: identical worksheets of `keyPageCount` pages (2 without a key
+ * page count) from the scan's first page, each read like a paper of its own (seeded by the chunk and the paper's first
  * page). A paper cut off by the chunk's start continues from the chunk before; one cut off by its end may continue after it.
  */
-function fakePacket(seed: Seed, input: PacketChunkInput, refs: string[]): PacketOutput {
+function fakePacketReading(seed: Seed, input: PacketReadInput, transcribe: FakeGraderOptions["transcribe"]): PacketReadingOutput {
   const k = Math.max(1, input.keyPageCount ?? 2);
   const lastPage = input.firstPage + input.chunkPageCount - 1;
-  const papers: PacketOutput["papers"] = [];
+  const papers: PacketReadingOutput["papers"] = [];
   for (let paperStart = input.firstPage - ((input.firstPage - 1) % k); paperStart <= lastPage; paperStart += k) {
     const first = Math.max(paperStart, input.firstPage);
     const last = Math.min(paperStart + k - 1, lastPage, input.totalPages);
     const paperSeed: Seed = (purpose) => seed(`paper:${first}:${purpose}`);
     const pageCount = last - first + 1;
     const toChunk = (paperPage: number) => paperPage + first - input.firstPage;
-    const grading: GradingOutput = {
-      student: fakeStudent(paperSeed, input.sections.map((section) => section.label)),
-      document_check: fakeDocumentCheck(paperSeed),
-      items: refs.map((ref, i) => {
-        const item = followRuling(fakeItem(paperSeed, ref, pageCount), input.items[i].id, input.guidance);
-        return { ...item, pages: item.pages.map(toChunk) };
-      }),
-      integrity: { grader_directed_text_found: false, excerpt: "" },
-      unmatched_work: "",
-      overall_feedback: "This is sample feedback from the practice grader. Keep showing your steps, "
-        + "and check each answer once more before you hand it in.",
-      teacher_summary: "Fake AI mode: these judgments are repeatable placeholders, not a real reading of the paper.",
-    };
+    const reading = fakeReading(paperSeed, input.items, input.sections.map((section) => section.label), pageCount, transcribe);
     papers.push({
       first_page: toChunk(1),
       last_page: toChunk(pageCount),
       continues_from_previous_chunk: paperStart < input.firstPage,
       may_continue_after_chunk: paperStart + k - 1 > lastPage && lastPage < input.totalPages,
       boundary_confidence: "high",
-      ...(writesNotes(input) ? grading : withEmptyNotes(grading)),
+      ...reading,
+      items: reading.items.map((item) => ({ ...item, pages: item.pages.map(toChunk) })),
     });
   }
   return { papers, skipped_pages: [] };
@@ -162,7 +262,7 @@ function letterTag(hex4: string): string {
   return letters.charAt(0).toUpperCase() + letters.slice(1);
 }
 
-function fakeStudent(seed: Seed, sectionLabels: string[]): GradingOutput["student"] {
+function fakeStudent(seed: Seed, sectionLabels: string[]): ReadingOutput["student"] {
   const nameBytes = seed("name");
   const name = nameBytes[0] % 10 === 0 ? null : `Test Student ${letterTag(nameBytes.toString("hex").slice(2, 6))}`;
   const sectionBytes = seed("section");
@@ -172,7 +272,7 @@ function fakeStudent(seed: Seed, sectionLabels: string[]): GradingOutput["studen
   return { name, name_confidence: "high", section_raw: section, section_match: section, multiple_students_detected: false };
 }
 
-function fakeDocumentCheck(seed: Seed): GradingOutput["document_check"] {
+function fakeDocumentCheck(seed: Seed): ReadingOutput["document_check"] {
   return seed("match")[0] % 20 === 0
     ? { match: "uncertain", pages_appear_missing: false, note: "Practice grader: could not confirm this paper belongs to the assignment." }
     : { match: "matches", pages_appear_missing: false, note: "" };
@@ -215,40 +315,17 @@ function pickOutcome(r: number): Outcome {
   return OUTCOMES[OUTCOMES.length - 1];
 }
 
-function fakeItem(seed: Seed, ref: string, pageCount: number): OutputItem {
-  const bytes = seed(ref);
-  const outcome = pickOutcome(fraction(bytes));
-  const lowConfidence = bytes[2] % 8 === 0;
-  return {
-    ref,
-    pages: outcome.attempt === "none" ? [] : [1 + (bytes[3] % Math.max(pageCount, 1))],
-    student_answer: outcome.answer(ref),
-    legibility: outcome.legibility,
-    attempt: outcome.attempt,
-    correctness: outcome.correctness,
-    confidence: lowConfidence ? "low" : "high",
-    review_reason: "none",
-    what_student_did: outcome.did(ref),
-    feedback: outcome.feedback(ref),
-    teacher_note: lowConfidence ? "Practice grader: marked low confidence to exercise the review flow." : "",
-  };
-}
-
 /**
- * Applies the teacher's newest ruling on the same answer to the same item. The fake's answers repeat
+ * The teacher's newest ruling on the same answer to the same item, as the fake judge applies it. The fake's answers repeat
  * across papers ("Sample answer for Q2"), so a correction visibly changes other papers in the demo.
  */
-function followRuling(item: OutputItem, itemId: string, guidance: GradingGuidance | undefined): OutputItem {
-  const ruling = guidance?.lessons.find((l) => l.itemId === itemId && l.studentAnswer === item.student_answer && l.teacherAttempt !== null);
-  if (!ruling || ruling.teacherAttempt === null || ruling.teacherCorrectness === null) return item;
-  return {
-    ...item,
-    attempt: ruling.teacherAttempt,
-    correctness: ruling.teacherCorrectness,
-    legibility: ruling.teacherAttempt === "none" ? "no_writing" : "clear",
-    confidence: "high",
-    teacher_note: "Practice grader: followed your ruling on this answer.",
-  };
+function followRuling(
+  read: ReadingItem, item: KeyItem | undefined, guidance: GradingGuidance | undefined,
+): { attempt: Attempt; correctness: Correctness; teacherNote: string } | null {
+  if (!item) return null;
+  const ruling = guidance?.lessons.find((l) => l.itemId === item.id && l.studentAnswer === read.student_answer && l.teacherAttempt !== null);
+  if (!ruling || ruling.teacherAttempt === null || ruling.teacherCorrectness === null) return null;
+  return { attempt: ruling.teacherAttempt, correctness: ruling.teacherCorrectness, teacherNote: "Practice grader: followed your ruling on this answer." };
 }
 
 /** A scan of identical worksheets, `keyPageCount` pages each (2 without a key page count), every paper named. */

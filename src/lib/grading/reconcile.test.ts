@@ -52,6 +52,18 @@ describe("reconcileGrading: a clean response", () => {
   });
 });
 
+describe("reconcileGrading: provenance", () => {
+  it("keeps who decided each item and the marks seen, and adds neither when the output has none", () => {
+    const items = withItem(0, { judged_by: "program", marks_seen: "  B circled  ", correctness: "incorrect" });
+    items[1] = makeOutputItem("Q2", { judged_by: "ai", marks_seen: "" });
+    const result = reconcile(output({ items }));
+    expect(result.items[0].judgment).toMatchObject({ judgedBy: "program", marksSeen: "B circled", correctness: "incorrect" });
+    expect(result.items[1].judgment).toMatchObject({ judgedBy: "ai" });
+    expect(result.items[1].judgment).not.toHaveProperty("marksSeen");
+    expect(result.items[2].judgment).not.toHaveProperty("judgedBy");
+  });
+});
+
 describe("reconcileGrading: item matching", () => {
   it("normalizes refs (brackets, case, spaces)", () => {
     const items = [makeOutputItem(" [q1] "), makeOutputItem("Q2"), makeOutputItem("[Q3]"), makeOutputItem("q4")];

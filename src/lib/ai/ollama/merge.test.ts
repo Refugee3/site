@@ -1,16 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { GradingOutput } from "../schemas";
-import { itemsInRefOrder, mergeGradings, pageBatches, previousFrom, refProblems } from "./merge";
+import type { ReadingOutput } from "../schemas";
+import { itemsInRefOrder, mergeReadings, pageBatches, previousFrom, refProblems } from "./merge";
 
-const item = (ref: string, o: Partial<GradingOutput["items"][number]> = {}): GradingOutput["items"][number] => ({
-  ref, pages: [1], student_answer: "4", legibility: "clear", attempt: "complete", correctness: "correct", confidence: "high",
-  review_reason: "none", what_student_did: "", feedback: "", teacher_note: "", ...o,
+const item = (ref: string, o: Partial<ReadingOutput["items"][number]> = {}): ReadingOutput["items"][number] => ({
+  ref, pages: [1], student_answer: "4", marks_seen: "", legibility: "clear", attempt: "complete", reading_confidence: "high", ...o,
 });
 
-const grading = (items: GradingOutput["items"], o: Partial<GradingOutput> = {}): GradingOutput => ({
+const grading = (items: ReadingOutput["items"], o: Partial<ReadingOutput> = {}): ReadingOutput => ({
   student: { name: null, name_confidence: "low", section_raw: null, section_match: null, multiple_students_detected: false },
   document_check: { match: "matches", pages_appear_missing: false, note: "" },
-  items, integrity: { grader_directed_text_found: false, excerpt: "" }, unmatched_work: "", overall_feedback: "", teacher_summary: "", ...o,
+  items, integrity: { grader_directed_text_found: false, excerpt: "" }, unmatched_work: "", ...o,
 });
 
 describe("pageBatches", () => {
@@ -31,28 +30,28 @@ describe("itemsInRefOrder and refProblems", () => {
   });
 });
 
-describe("mergeGradings", () => {
+describe("mergeReadings", () => {
   it("takes each ref from the batch where the student did the most, and combines the rest", () => {
-    const none = { attempt: "none" as const, correctness: "no_answer" as const, legibility: "no_writing" as const, pages: [] as number[] };
-    const merged = mergeGradings([
+    const none = { attempt: "none" as const, legibility: "no_writing" as const, pages: [] as number[] };
+    const merged = mergeReadings([
       grading([item("Q1", { pages: [1] }), item("Q2", none), item("Q3", { attempt: "partial", pages: [2] })], {
-        document_check: { match: "matches", pages_appear_missing: false, note: "Page 1 is faint." }, overall_feedback: "Short.",
+        document_check: { match: "matches", pages_appear_missing: false, note: "Page 1 is faint." },
       }),
-      grading([item("Q1", none), item("Q2", { pages: [3] }), item("Q3", { pages: [3], confidence: "low" })], {
+      grading([item("Q1", none), item("Q2", { pages: [3] }), item("Q3", { pages: [3], reading_confidence: "low" })], {
         student: { name: "Ana", name_confidence: "high", section_raw: "P3", section_match: null, multiple_students_detected: false },
         document_check: { match: "uncertain", pages_appear_missing: true, note: "Page 1 is faint." },
-        unmatched_work: "A doodle.", overall_feedback: "A longer piece of feedback.", teacher_summary: "Fine.",
+        unmatched_work: "A doodle.",
       }),
     ], ["Q1", "Q2", "Q3"]);
     expect(merged.items.map((i) => [i.ref, i.pages, i.attempt])).toEqual([["Q1", [1], "complete"], ["Q2", [3], "complete"], ["Q3", [3], "complete"]]);
     expect(merged.student.name).toBe("Ana");
     expect(merged.document_check).toEqual({ match: "matches", pages_appear_missing: true, note: "Page 1 is faint." });
-    expect(merged).toMatchObject({ unmatched_work: "A doodle.", overall_feedback: "A longer piece of feedback.", teacher_summary: "Fine." });
+    expect(merged).toMatchObject({ unmatched_work: "A doodle." });
   });
 
   it("returns a single batch as it is", () => {
     const only = grading([item("Q1")]);
-    expect(mergeGradings([only], ["Q1"])).toBe(only);
+    expect(mergeReadings([only], ["Q1"])).toBe(only);
   });
 });
 

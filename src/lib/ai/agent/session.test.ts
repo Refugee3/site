@@ -16,12 +16,12 @@ const Answer = z.object({ answer: z.string(), count: z.number() });
 type Answer = z.infer<typeof Answer>;
 const VALID: Answer = { answer: "x = 4", count: 2 };
 const INVALID = { answer: 4 };
-const TOOL = "submit_grading";
+const TOOL = "submit_reading";
 
 function taskSpec(overrides: Partial<AgentTaskSpec<Answer>> = {}): AgentTaskSpec<Answer> {
   return {
     role: "grade",
-    title: "PDF Auto-Grader: grade one paper",
+    title: "PDF Auto-Grader: read one paper",
     files: [
       { uploadName: "answer-key.pdf", mount: "/answer-key.pdf", bytes: new Uint8Array([1, 2]) },
       { uploadName: "student-submission.pdf", mount: "/student-submission.pdf", bytes: new Uint8Array([3, 4, 5]) },
@@ -116,7 +116,7 @@ describe("runAgentTask", () => {
     expect(create.args).toEqual([{
       agent: { type: "agent", id: provisioned.agents.grade.id, version: 1 },
       environment_id: provisioned.environmentId,
-      title: "PDF Auto-Grader: grade one paper",
+      title: "PDF Auto-Grader: read one paper",
       metadata: { app: "pdf-autograder", install: provisioned.installId, role: "grade" },
       resources: [
         { type: "file", file_id: "file_1", mount_path: "/answer-key.pdf" },
@@ -173,7 +173,7 @@ describe("runAgentTask", () => {
     const sent = replies(fake.sent());
     expect(sent).toHaveLength(2);
     expect(sent[0].is_error).toBe(true);
-    expect(replyText(sent[0])).toMatch(/^Not accepted \(attempt 1 of 3\)\. Fix every problem below, then call submit_grading again/);
+    expect(replyText(sent[0])).toMatch(/^Not accepted \(attempt 1 of 3\)\. Fix every problem below, then call submit_reading again/);
     expect(replyText(sent[0])).toContain("\n- answer: ");
     expect(replyText(sent[0])).toContain("\n- count: ");
     expect(sent[1]).toMatchObject({ is_error: false, content: [{ type: "text", text: SUBMIT_ACCEPTED }] });
@@ -251,7 +251,7 @@ describe("runAgentTask", () => {
     });
     const result = await runAgentTask(d, taskSpec());
     expect(replies(fake.sent()).map((e) => [replyText(e), e.is_error])).toEqual([
-      ["Unknown tool. Use submit_grading.", true],
+      ["Unknown tool. Use submit_reading.", true],
       [SUBMIT_ACCEPTED, false],
       [SUBMIT_ALREADY_ACCEPTED, false],
     ]);

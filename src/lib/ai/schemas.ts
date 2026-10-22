@@ -6,6 +6,7 @@ import {
   CORRECTNESS,
   DOCUMENT_MATCHES,
   ITEM_REVIEW_REASONS,
+  JUDGED_BY,
   KEY_QUESTION_KINDS,
   LEGIBILITY,
   SCAN_PAGE_KINDS,
@@ -35,17 +36,70 @@ export const KeyExtractionSchema = z.object({
 });
 export type KeyExtraction = z.infer<typeof KeyExtractionSchema>;
 
-// Field order = generation order: identify → check → read+judge → summarize.
+// Grading a paper takes two AI calls and a program in between (src/lib/ai/read-then-mark.ts):
+// 1. READ: the model transcribes each item from the pages without ever seeing the answer key (ReadingOutputSchema);
+// 2. MARK: code compares the transcriptions with the key where the answer is objective (src/lib/grading/auto-mark.ts);
+// 3. JUDGE: the model judges the remaining items from the transcriptions alone, text only (JudgingOutputSchema).
+// The three are combined into a GradingOutput, which is what everything downstream (reconcile, scoring, views) reads.
+// Field order = generation order: identify → check → read → summarize.
 const gradingStudent = z.object({ name: z.string().nullable(), name_confidence: conf, section_raw: z.string().nullable(),
   section_match: z.string().nullable(), multiple_students_detected: z.boolean() });
 const documentCheck = z.object({ match: z.enum(DOCUMENT_MATCHES), pages_appear_missing: z.boolean(), note: z.string() });
-const itemJudgment = z.object({
-  ref: z.string(), pages: z.array(z.number()), student_answer: z.string(), legibility: z.enum(LEGIBILITY),
-  attempt: z.enum(ATTEMPTS), correctness: z.enum(CORRECTNESS), confidence: conf, review_reason: z.enum(ITEM_REVIEW_REASONS),
-});
 const integrity = z.object({ grader_directed_text_found: z.boolean(), excerpt: z.string() });
 
-const itemWithNotes = itemJudgment.extend({ what_student_did: z.string(), feedback: z.string(), teacher_note: z.string() });
+/** One item as read from the pages, without the key: what the student marked, never whether it is right. */
+const readItem = z.object({
+  ref: z.string(), pages: z.array(z.number()), student_answer: z.string(), marks_seen: z.string(), legibility: z.enum(LEGIBILITY),
+  attempt: z.enum(ATTEMPTS), reading_confidence: conf,
+});
+const paperReading = {
+  student: gradingStudent,
+  document_check: documentCheck,
+  items: z.array(readItem),
+  integrity,
+  unmatched_work: z.string(),
+};
+
+/** The blind reading of one paper (the READ call's answer). */
+export const ReadingOutputSchema = z.object(paperReading);
+export type ReadingOutput = z.infer<typeof ReadingOutputSchema>;
+export type ReadingItem = ReadingOutput["items"][number];
+
+/** One item judged from its transcription (the JUDGE call). With notes on, every item gets its notes too. */
+const judgedItem = z.object({
+  ref: z.string(), attempt: z.enum(ATTEMPTS), correctness: z.enum(CORRECTNESS), confidence: conf, review_reason: z.enum(ITEM_REVIEW_REASONS),
+});
+
+/** The JUDGE call's answer with notes: one entry per item (the program's items only get their notes from it). */
+export const JudgingOutputSchema = z.object({
+  items: z.array(judgedItem.extend({ what_student_did: z.string(), feedback: z.string(), teacher_note: z.string() })),
+  overall_feedback: z.string(),
+  teacher_summary: z.string(),
+});
+export type JudgingOutput = z.infer<typeof JudgingOutputSchema>;
+
+/** The JUDGE call's answer when the assignment's notes are off: only the items the program left to it, without notes. */
+export const JudgingOutputWithoutNotesSchema = z.object({ items: z.array(judgedItem) });
+export type JudgingOutputWithoutNotes = z.infer<typeof JudgingOutputWithoutNotesSchema>;
+
+/** A judging without notes as a JudgingOutput whose notes are all "". */
+export function judgingWithEmptyNotes(o: JudgingOutputWithoutNotes): JudgingOutput {
+  return {
+    items: o.items.map((item) => ({ ...item, what_student_did: "", feedback: "", teacher_note: "" })),
+    overall_feedback: "",
+    teacher_summary: "",
+  };
+}
+
+// The combined grading of one paper. Never sent to the model as a schema (the model only ever answers ReadingOutputSchema,
+// PacketReadingOutputSchema or a JudgingOutput schema), so it may carry optional fields: judged_by and marks_seen are absent in
+// gradings stored before papers were read without the key.
+const itemWithNotes = z.object({
+  ref: z.string(), pages: z.array(z.number()), student_answer: z.string(), legibility: z.enum(LEGIBILITY),
+  attempt: z.enum(ATTEMPTS), correctness: z.enum(CORRECTNESS), confidence: conf, review_reason: z.enum(ITEM_REVIEW_REASONS),
+  what_student_did: z.string(), feedback: z.string(), teacher_note: z.string(),
+  judged_by: z.enum(JUDGED_BY).optional(), marks_seen: z.string().optional(),
+});
 
 export const GradingOutputSchema = z.object({
   student: gradingStudent,
@@ -58,39 +112,9 @@ export const GradingOutputSchema = z.object({
 });
 export type GradingOutput = z.infer<typeof GradingOutputSchema>;
 
-/**
- * The grading asked for when the assignment's notes are off: the same judgments without any note, so the AI
- * writes far less. withEmptyNotes turns it into a GradingOutput for everything downstream.
- */
-export const GradingOutputWithoutNotesSchema = z.object({
-  student: gradingStudent,
-  document_check: documentCheck,
-  items: z.array(itemJudgment),
-  integrity,
-  unmatched_work: z.string(),
-});
-export type GradingOutputWithoutNotes = z.infer<typeof GradingOutputWithoutNotesSchema>;
-
-/** The full grading with every note empty (also blanks the notes of a full grading). */
-export function withEmptyNotes(o: GradingOutputWithoutNotes): GradingOutput {
-  return {
-    student: o.student,
-    document_check: o.document_check,
-    items: o.items.map((item) => ({
-      ref: item.ref, pages: item.pages, student_answer: item.student_answer, legibility: item.legibility, attempt: item.attempt,
-      correctness: item.correctness, confidence: item.confidence, review_reason: item.review_reason,
-      what_student_did: "", feedback: "", teacher_note: "",
-    })),
-    integrity: o.integrity,
-    unmatched_work: o.unmatched_work,
-    overall_feedback: "",
-    teacher_summary: "",
-  };
-}
-
-// Grading a whole-class scan in one pass: each chunk of pages comes back as the papers found in it, each graded like one
-// paper (same fields, in the same order), plus the pages that belong to no paper. Pages are chunk pages (1 = the chunk's
-// first page), including each item's pages.
+// A whole-class scan in one pass: each chunk of pages is read blind as the papers found in it, each read like one paper
+// (same fields, in the same order), plus the pages that belong to no paper. Pages are chunk pages (1 = the chunk's first
+// page), including each item's pages. Each paper is then marked and judged on its own, giving PacketOutput.
 export const SKIPPED_PAGE_KINDS = ["blank", "cover_or_separator", "answer_key", "other"] as const;
 const packetBoundary = {
   first_page: z.number(),
@@ -101,6 +125,14 @@ const packetBoundary = {
 };
 const skippedPage = z.object({ page: z.number(), kind: z.enum(SKIPPED_PAGE_KINDS) });
 
+/** The blind reading of one chunk of a scan (the one-pass READ call's answer). */
+export const PacketReadingOutputSchema = z.object({
+  papers: z.array(z.object({ ...packetBoundary, ...paperReading })),
+  skipped_pages: z.array(skippedPage),
+});
+export type PacketReadingOutput = z.infer<typeof PacketReadingOutputSchema>;
+
+/** A chunk's papers, each read, marked and judged (internal, like GradingOutputSchema). */
 export const PacketOutputSchema = z.object({
   papers: z.array(z.object({
     ...packetBoundary,
@@ -116,35 +148,6 @@ export const PacketOutputSchema = z.object({
 });
 export type PacketOutput = z.infer<typeof PacketOutputSchema>;
 export type PacketPaper = PacketOutput["papers"][number];
-
-/** The chunk asked for when the assignment's notes are off (as GradingOutputWithoutNotesSchema is for one paper). */
-export const PacketOutputWithoutNotesSchema = z.object({
-  papers: z.array(z.object({
-    ...packetBoundary,
-    student: gradingStudent,
-    document_check: documentCheck,
-    items: z.array(itemJudgment),
-    integrity,
-    unmatched_work: z.string(),
-  })),
-  skipped_pages: z.array(skippedPage),
-});
-export type PacketOutputWithoutNotes = z.infer<typeof PacketOutputWithoutNotesSchema>;
-
-/** Every paper's notes empty, as withEmptyNotes does for one paper. */
-export function packetWithEmptyNotes(o: PacketOutputWithoutNotes): PacketOutput {
-  return {
-    papers: o.papers.map((paper) => ({
-      first_page: paper.first_page,
-      last_page: paper.last_page,
-      continues_from_previous_chunk: paper.continues_from_previous_chunk,
-      may_continue_after_chunk: paper.may_continue_after_chunk,
-      boundary_confidence: paper.boundary_confidence,
-      ...withEmptyNotes(paper),
-    })),
-    skipped_pages: o.skipped_pages,
-  };
-}
 
 export const ScanPagesSchema = z.object({
   pages: z.array(z.object({

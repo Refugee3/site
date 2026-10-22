@@ -6,28 +6,32 @@ import { DOCUMENT_CONTEXT } from "../claude";
 import { AiError } from "../errors";
 import { type AiCallMeta, type CallOptions, type Grader, writesNotes } from "../grader";
 import {
-  extractionTask, GRADING_SYSTEM_PROMPT, gradingTask, itemRefs, KEY_EXTRACTION_SYSTEM_PROMPT, renderGradingContext, renderGuidance,
-  renderScanContext, SCAN_SPLIT_SYSTEM_PROMPT, scanSplitTask,
+  extractionTask, itemRefs, JUDGING_SYSTEM_PROMPT, judgingTask, KEY_EXTRACTION_SYSTEM_PROMPT, READING_SYSTEM_PROMPT, readingTask,
+  renderGradingContext, renderGuidance, renderJudgeReading, renderReadingContext, renderScanContext, SCAN_SPLIT_SYSTEM_PROMPT,
+  scanSplitTask,
 } from "../prompts";
+import { gradeByReading } from "../read-then-mark";
 import {
-  type GradingOutput, GradingOutputSchema, type GradingOutputWithoutNotes, GradingOutputWithoutNotesSchema, type KeyExtraction,
-  KeyExtractionSchema, outputFormat, type ScanPages, ScanPagesSchema, withEmptyNotes,
+  type JudgingOutput, JudgingOutputSchema, type JudgingOutputWithoutNotes, JudgingOutputWithoutNotesSchema, judgingWithEmptyNotes,
+  type KeyExtraction, KeyExtractionSchema, outputFormat, type ReadingOutput, ReadingOutputSchema, type ScanPages, ScanPagesSchema,
 } from "../schemas";
 import type { OllamaChatResponse, OllamaClient, OllamaMessage } from "./client";
 import { classifyOllamaError } from "./errors";
 import {
-  itemsInRefOrder, mergeGradings, mergeKeyExtractions, offsetScanPages, pageBatches, previousFrom, refProblems, scanPageProblems,
+  itemsInRefOrder, mergeKeyExtractions, mergeReadings, offsetScanPages, pageBatches, previousFrom, refProblems, scanPageProblems,
 } from "./merge";
 import { type PdfRenderer, type RenderedPage, renderPdfPages } from "./render";
 
 // The Grader backed by a vision model running on this computer through Ollama: no API key, nothing leaves the computer, and
-// it costs nothing per paper. The same prompts as the Claude engines (system prompts, grading context, guidance, task text),
-// with each PDF sent as page images, since local models can't read PDFs:
+// it costs nothing per paper. The same prompts as the Claude engines (system prompts, reading and grading context, guidance,
+// task text), with each PDF sent as page images, since local models can't read PDFs:
+// - a paper is read blind (page images, the items' questions, no answers), marked in code, and its remaining items judged in
+//   a text-only call (gradeByReading), as with every engine; small local models are the likeliest to "read" the expected
+//   answer into a faint mark, so the reader never sees it;
 // - one paper per call (no one-pass grading of whole-class scans: gradePacketChunk is absent, so such a scan is split first and
 //   each paper graded on its own, as with the hosted agent);
 // - at most `pagesPerCall` page images per call: longer keys, papers and scan chunks are read in page batches and merged
 //   (merge.ts);
-// - the teacher's key PDF is not sent with papers: the structured key (the authority anyway) is, which fits a small context;
 // - the answer must match the JSON schema (Ollama's structured outputs); an unusable answer is sent back once with what is
 //   wrong before the call fails.
 
@@ -142,7 +146,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     };
   }
 
-  return {
+  const grader: Grader = {
     mode: "claude",
     engine: "ollama",
 
@@ -170,42 +174,62 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
       return { output: mergeKeyExtractions(parts), meta: meta(usage, startedAt) };
     },
 
-    async gradeSubmission(input, o = {}) {
+    async readSubmission(input, o = {}) {
       const startedAt = performance.now();
       const pages = await pagesOf(input.studentPdf, o);
       const refs = itemRefs(input.items.length);
-      const writeNotes = writesNotes(input);
-      const guidance = renderGuidance(input.guidance, input.items);
-      const context = renderGradingContext({
-        assignment: input.assignment, teacherNotes: input.teacherNotes, sections: input.sections, items: input.items,
-      });
+      const context = renderReadingContext(input);
       const batches = pageBatches(pages.length, cfg.pagesPerCall);
-      const parts: GradingOutputWithoutNotes[] = [];
+      const parts: ReadingOutput[] = [];
       let usage = NO_USAGE;
       for (const [first, last] of batches) {
         const count = last - first + 1;
         const where = batches.length === 1
           ? `The STUDENT SUBMISSION is attached as ${imageCount(count)}, in page order (image 1 is page 1). ${DOCUMENT_CONTEXT.student}`
           : `The STUDENT SUBMISSION has ${pages.length} pages; this message shows pages ${first}–${last} as ${imageCount(count)} `
-            + `(image 1 is page ${first}). ${DOCUMENT_CONTEXT.student} The other pages are graded separately. Give pages as page `
-            + "numbers of the whole submission. For an item whose answer is not on these pages, return attempt \"none\", correctness "
-            + "\"no_answer\", legibility \"no_writing\", confidence \"high\", review_reason \"none\", pages [] and an empty student_answer.";
-        const spec = {
-          system: GRADING_SYSTEM_PROMPT,
-          text: [context, guidance, where, gradingTask(count, refs, writeNotes)].filter((block) => block !== "").join("\n\n"),
+            + `(image 1 is page ${first}). ${DOCUMENT_CONTEXT.student} The other pages are read separately. Give pages as page `
+            + "numbers of the whole submission. For an item whose answer is not on these pages, return attempt \"none\", legibility "
+            + "\"no_writing\", reading_confidence \"high\", pages [], and an empty student_answer and marks_seen.";
+        const result = await call({
+          system: READING_SYSTEM_PROMPT,
+          text: [context, where, readingTask(count, refs)].join("\n\n"),
           images: pages.slice(first - 1, last),
-          check: (out: GradingOutputWithoutNotes) => refProblems(out, refs),
-        };
-        const result = writeNotes
-          ? await call<GradingOutput>({ ...spec, schema: GradingOutputSchema }, o)
-          : await call<GradingOutputWithoutNotes>({ ...spec, schema: GradingOutputWithoutNotesSchema }, o);
+          schema: ReadingOutputSchema,
+          check: (out: ReadingOutput) => refProblems(out, refs),
+        }, o);
         parts.push(itemsInRefOrder(result.output, refs));
         usage = sumUsage(usage, result.usage);
       }
-      const merged = mergeGradings(parts, refs);
-      const output = writeNotes ? (merged as GradingOutput) : withEmptyNotes(merged);
-      return { output, refs, keyPdfIncluded: false, meta: meta(usage, startedAt) };
+      return { output: mergeReadings(parts, refs), meta: meta(usage, startedAt) };
     },
+
+    async judgeSubmission(input, o = {}) {
+      const startedAt = performance.now();
+      const writeNotes = writesNotes(input);
+      const allRefs = input.reading.map((r) => r.ref);
+      const judgeRefs = input.reading.filter((r) => r.mark === null).map((r) => r.ref);
+      const expected = writeNotes ? allRefs : judgeRefs;
+      const spec = {
+        system: JUDGING_SYSTEM_PROMPT,
+        text: [
+          renderGradingContext({ assignment: input.assignment, teacherNotes: input.teacherNotes, sections: input.sections, items: input.items }),
+          renderGuidance(input.guidance, input.items),
+          renderJudgeReading(input.reading.map(({ ref, item, mark }) => ({ ref, reading: item, mark })), input.unmatchedWork),
+          judgingTask({ allRefs, judgeRefs, writeNotes }),
+        ].filter((block) => block !== "").join("\n\n"),
+        // Text only: the judge never sees the pages.
+        images: [],
+        check: (out: JudgingOutputWithoutNotes) => refProblems(out, expected),
+      };
+      if (writeNotes) {
+        const result = await call<JudgingOutput>({ ...spec, schema: JudgingOutputSchema }, o);
+        return { output: itemsInRefOrder(result.output, expected), meta: meta(result.usage, startedAt) };
+      }
+      const result = await call<JudgingOutputWithoutNotes>({ ...spec, schema: JudgingOutputWithoutNotesSchema }, o);
+      return { output: judgingWithEmptyNotes(itemsInRefOrder(result.output, expected)), meta: meta(result.usage, startedAt) };
+    },
+
+    gradeSubmission: (input, o) => gradeByReading(grader, input, o),
 
     async readScanPages(input, o = {}) {
       const startedAt = performance.now();
@@ -237,6 +261,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
       return { output: { pages: read }, meta: meta(usage, startedAt) };
     },
   };
+  return grader;
 }
 
 function imageCount(n: number): string {

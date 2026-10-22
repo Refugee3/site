@@ -66,8 +66,18 @@ export interface KeyQuestion { id: string; assignmentId: string; position: numbe
   question: string; suggestedAnswer: string | null; choices: string[]; status: KeyQuestionStatus; answer: string | null;
   answeredAt: number | null; createdAt: number; updatedAt: number }
 export type NewKeyQuestion = Pick<KeyQuestion, "kind" | "itemLabel" | "question" | "suggestedAnswer" | "choices">;
+/**
+ * Who decided an item's correctness: `program` = compared in code with the key (an exact match, a blank, an unreadable answer),
+ * `ai` = judged by the AI from the blind transcription.
+ */
+export const JUDGED_BY = ["program", "ai"] as const;
+export type JudgedBy = (typeof JUDGED_BY)[number];
 export interface ItemJudgment { attempt: Attempt; correctness: Correctness; legibility: Legibility; confidence: Confidence;
-  reviewReason: ItemReviewReason; studentAnswer: string; pages: number[]; whatStudentDid: string; feedback: string; teacherNote: string }
+  reviewReason: ItemReviewReason; studentAnswer: string; pages: number[]; whatStudentDid: string; feedback: string; teacherNote: string;
+  /** Absent for gradings stored before the paper was read without the key (and for judgments that never had one). */
+  judgedBy?: JudgedBy;
+  /** What the reader saw of the student's marks ("B circled, A crossed out"); absent or "" when there was nothing to add. */
+  marksSeen?: string }
 export interface SubmissionItem { submissionId: string; itemId: string; judgment: ItemJudgment | null; overrideCenti: number | null;
   overrideFeedback: string | null; overrideWhatStudentDid: string | null; updatedAt: number }
 export interface Submission { id: string; assignmentId: string; source: "student" | "teacher"; receiptToken: string; pdfPath: string;

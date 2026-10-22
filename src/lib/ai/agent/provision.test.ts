@@ -176,7 +176,7 @@ describe("ensureProvisioned", () => {
     await ensureProvisioned(d);
     expect(count(fake, "createEnvironment")).toBe(0);
     expect(fake.calls.filter((c) => c.method === "createAgent").map((c) => (c.args[0] as { name: string }).name)).toEqual([
-      "PDF Auto-Grader: paper grader [a1b2c3d4e5f6]", "PDF Auto-Grader: scan splitter [a1b2c3d4e5f6]",
+      "PDF Auto-Grader: paper reader [a1b2c3d4e5f6]", "PDF Auto-Grader: scan splitter [a1b2c3d4e5f6]",
     ]);
     expect(store.state.agents).toMatchObject({ extract: { id: "agent_1" }, grade: { id: "agent_4" }, scan: { id: "agent_5" } });
   });
@@ -327,7 +327,7 @@ describe("ensureProvisioned", () => {
 
   it("maps a 403 to agent_unavailable and keeps the partial progress, so the next attempt creates no duplicates", async () => {
     const { fake, store, d } = setup();
-    fake.fail("createAgent", apiError(403), { match: ([p]) => (p as { name: string }).name.includes("paper grader") });
+    fake.fail("createAgent", apiError(403), { match: ([p]) => (p as { name: string }).name.includes("paper reader") });
     const err = await rejection(ensureProvisioned(d));
     expect(err).toMatchObject({ code: "agent_unavailable", message: NOT_ALLOWED });
     expect(store.saves).toEqual([{

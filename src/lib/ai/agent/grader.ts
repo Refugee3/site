@@ -1,15 +1,13 @@
 import "server-only";
 import { DOCUMENT_CONTEXT, PDF_BYTE_BUDGET, PDF_TOO_LARGE } from "../claude";
 import { AiError } from "../errors";
-import { type AiCallMeta, type CallOptions, type Grader, writesNotes } from "../grader";
-import { itemRefs, renderGradingContext, renderGuidance, renderScanContext } from "../prompts";
-import {
-  type GradingOutput, GradingOutputSchema, type GradingOutputWithoutNotes, GradingOutputWithoutNotesSchema, KeyExtractionSchema,
-  type ScanPages, ScanPagesSchema, withEmptyNotes,
-} from "../schemas";
+import { type AiCallMeta, type CallOptions, type Grader } from "../grader";
+import { itemRefs, renderReadingContext, renderScanContext } from "../prompts";
+import { gradeByReading } from "../read-then-mark";
+import { KeyExtractionSchema, type ReadingOutput, ReadingOutputSchema, type ScanPages, ScanPagesSchema } from "../schemas";
 import { AGENT_ROLES, type AgentEngineConfig, MOUNT, roleModel } from "./definitions";
 import { teacherMessageFor } from "./errors";
-import { agentExtractionTask, agentGradingTask, agentScanTask, SUBMIT_GRADING_WITHOUT_NOTES } from "./prompts";
+import { agentExtractionTask, agentReadingTask, agentScanTask } from "./prompts";
 import { agentProcessSlot, ensureProvisioned, type ProvisionDeps, type ProvisionedAgents } from "./provision";
 import {
   type AgentTaskResult,
@@ -22,9 +20,13 @@ import {
 } from "./session";
 
 // The Grader backed by the Anthropic-hosted agent: the same inputs, outputs and errors as the direct path, with
-// each task run as one Managed Agents session.
+// each task run as one Managed Agents session. A paper is READ by the paper agent in its session, which is given the page
+// files and the items' questions but never the answer key (not in its instructions, its task or its files). The JUDGE step
+// needs no pages and no workspace, so it is the direct engine's text-only Messages API call (`judge`), on the same model.
 
 export interface AgentGraderDeps extends ProvisionDeps {
+  /** JUDGE: judges a paper's transcriptions against the key, text only (the direct engine's judgeSubmission). */
+  judge: Grader["judgeSubmission"];
   /** Called once, after the first task that succeeds (confirms a saved key, like confirmKeyOnSuccess). */
   onFirstSuccess?: () => void;
   /**
@@ -110,7 +112,7 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
     }
   }
 
-  return {
+  const grader: Grader = {
     mode: "claude",
     engine: "agent",
     async extractKey(input, o = {}) {
@@ -126,39 +128,26 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
         schema: KeyExtractionSchema,
       }, o);
     },
-    async gradeSubmission(input, o = {}) {
-      const studentBytes = input.studentPdf.byteLength;
-      if (studentBytes > PDF_BYTE_BUDGET) throw new AiError("request_too_large", PDF_TOO_LARGE.student, { retryable: false });
-      const keyPdf = input.keyPdf !== null && input.keyPdf.byteLength + studentBytes <= PDF_BYTE_BUDGET ? input.keyPdf : null;
+    async readSubmission(input, o = {}) {
+      if (input.studentPdf.byteLength > PDF_BYTE_BUDGET) throw new AiError("request_too_large", PDF_TOO_LARGE.student, { retryable: false });
       const refs = itemRefs(input.items.length);
-      const guidance = renderGuidance(input.guidance, input.items);
-      const context = renderGradingContext({
-        assignment: input.assignment, teacherNotes: input.teacherNotes, sections: input.sections, items: input.items,
-      });
-      const writeNotes = writesNotes(input);
-      const task: Omit<AgentTaskSpec<GradingOutputWithoutNotes>, "budgetCents" | "schema"> = {
+      // Only the reading context: the assignment, sections and the items' questions, never an answer.
+      const context = renderReadingContext(input);
+      return run<ReadingOutput>({
         role: "grade",
-        title: "PDF Auto-Grader: grade one paper",
-        files: [
-          ...(keyPdf ? [{ uploadName: "answer-key.pdf", mount: MOUNT.answerKey, bytes: keyPdf }] : []),
-          { uploadName: "student-submission.pdf", mount: MOUNT.student, bytes: input.studentPdf },
-        ],
-        content: (fileIds) => [
-          ...(keyPdf ? [document("TEACHER ANSWER KEY", fileIds[0], DOCUMENT_CONTEXT.teacherKey)] : []),
+        title: "PDF Auto-Grader: read one paper",
+        files: [{ uploadName: "student-submission.pdf", mount: MOUNT.student, bytes: input.studentPdf }],
+        content: ([studentId]) => [
           { type: "text", text: context },
-          ...(guidance === "" ? [] : [{ type: "text" as const, text: guidance }]),
-          document("STUDENT SUBMISSION", fileIds[fileIds.length - 1], DOCUMENT_CONTEXT.student),
-          { type: "text", text: agentGradingTask(input.studentPageCount, refs, keyPdf !== null, writeNotes) },
+          document("STUDENT SUBMISSION", studentId, DOCUMENT_CONTEXT.student),
+          { type: "text", text: agentReadingTask(input.studentPageCount, refs) },
         ],
+        schema: ReadingOutputSchema,
         check: (out) => refProblems(out, refs),
-      };
-      if (writeNotes) {
-        const { output, meta } = await run<GradingOutput>({ ...task, schema: GradingOutputSchema }, o);
-        return { output, refs, keyPdfIncluded: keyPdf !== null, meta };
-      }
-      const { output, meta } = await run({ ...task, schema: GradingOutputWithoutNotesSchema, tool: SUBMIT_GRADING_WITHOUT_NOTES }, o);
-      return { output: withEmptyNotes(output), refs, keyPdfIncluded: keyPdf !== null, meta };
+      }, o);
     },
+    judgeSubmission: (input, o) => d.judge(input, o),
+    gradeSubmission: (input, o) => gradeByReading(grader, input, o),
     async readScanPages(input, o = {}) {
       if (input.chunkPdf.byteLength > PDF_BYTE_BUDGET) throw new AiError("request_too_large", PDF_TOO_LARGE.scan, { retryable: false });
       const lastPage = input.firstPage + input.chunkPageCount - 1;
@@ -176,14 +165,15 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
       }, o);
     },
   };
+  return grader;
 }
 
 function document(title: string, fileId: string, context?: string): UserContentBlock {
   return { type: "document", title, ...(context ? { context } : {}), source: { type: "file", file_id: fileId } };
 }
 
-/** The grading must have exactly one entry per ref, in key order. */
-function refProblems(output: GradingOutputWithoutNotes, refs: string[]): string[] {
+/** The reading must have exactly one entry per ref, in key order. */
+function refProblems(output: ReadingOutput, refs: string[]): string[] {
   const got = output.items.map((item) => item.ref);
   if (got.length === refs.length && got.every((ref, i) => ref === refs[i])) return [];
   const n = refs.length;

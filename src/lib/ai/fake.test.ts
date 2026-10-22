@@ -4,7 +4,7 @@ import type { GuidanceLesson } from "@/lib/types";
 import { AiError } from "./errors";
 import { createFakeGrader } from "./fake";
 import type { GradeInput, PacketChunkInput, ReadScanInput } from "./grader";
-import { GradingOutputSchema, KeyExtractionSchema, PacketOutputSchema, ScanPagesSchema, withEmptyNotes } from "./schemas";
+import { GradingOutputSchema, KeyExtractionSchema, PacketOutputSchema, ReadingOutputSchema, ScanPagesSchema } from "./schemas";
 import { makeKeyItem, makeSection } from "./test-utils";
 
 const grader = createFakeGrader({ delayMs: 0 });
@@ -16,7 +16,6 @@ function gradeInput(studentPdf: Uint8Array, itemCount = 5, sections = [makeSecti
     teacherNotes: "",
     sections,
     items: Array.from({ length: itemCount }, (_, i) => makeKeyItem({ id: `item-${i}`, label: String(i + 1), position: i })),
-    keyPdf: null,
     studentPdf,
     studentPageCount: 3,
   };
@@ -34,8 +33,12 @@ describe("fake grader", () => {
   it("writes no notes when they are off, with the same judgments", async () => {
     const on = await grader.gradeSubmission(gradeInput(pdf("dave")));
     const off = await grader.gradeSubmission({ ...gradeInput(pdf("dave")), writeNotes: false });
-    expect(off.output).toEqual(withEmptyNotes(on.output));
-    expect(off.output.overall_feedback).toBe("");
+    expect(off.output).toEqual({
+      ...on.output,
+      items: on.output.items.map((item) => ({ ...item, what_student_did: "", feedback: "", teacher_note: "" })),
+      overall_feedback: "",
+      teacher_summary: "",
+    });
   });
 
   it("grades different papers differently", async () => {
@@ -49,7 +52,6 @@ describe("fake grader", () => {
     expect(GradingOutputSchema.parse(result.output)).toEqual(result.output);
     expect(result.refs).toEqual(["Q1", "Q2", "Q3", "Q4"]);
     expect(result.output.items.map((i) => i.ref)).toEqual(result.refs);
-    expect(result.keyPdfIncluded).toBe(false);
     expect(grader.mode).toBe("fake");
     expect(grader.engine).toBe("fake");
     expect(result.meta).toMatchObject({
@@ -141,6 +143,41 @@ describe("fake grader", () => {
   });
 });
 
+describe("fake grader: read blind, then mark", () => {
+  const mcItem = makeKeyItem({ id: "mc", label: "1", answerType: "multiple_choice", prompt: "Pick one: A) x B) y C) z D) w", expectedAnswer: "C" });
+
+  it("reads each item without the key and lets the program mark a scripted wrong multiple-choice mark as wrong", async () => {
+    const reader = createFakeGrader({ delayMs: 0, transcribe: (ref) => (ref === "Q1" ? "B" : undefined) });
+    const input = { ...gradeInput(pdf("mc paper"), 2), items: [mcItem, makeKeyItem({ id: "x", label: "2", position: 1 })] };
+    const { output } = await reader.gradeSubmission(input);
+    expect(output.items[0]).toMatchObject({ student_answer: "B", marks_seen: "B circled", correctness: "incorrect", judged_by: "program" });
+    const right = await createFakeGrader({ delayMs: 0, transcribe: () => "C" }).gradeSubmission({ ...input, items: [mcItem] });
+    expect(right.output.items[0]).toMatchObject({ student_answer: "C", correctness: "correct", judged_by: "program" });
+  });
+
+  it("answers a multiple-choice question that lists its options with one of them, marked by the program", async () => {
+    const input = { ...gradeInput(pdf("letters"), 1), items: [mcItem] };
+    const letters = new Set<string>();
+    for (let n = 0; n < 40; n++) {
+      const { output } = await grader.gradeSubmission({ ...input, studentPdf: pdf(`letters ${n}`) });
+      const [item] = output.items;
+      if (item.attempt === "none" || item.legibility === "illegible") continue;
+      letters.add(item.student_answer);
+      expect(item).toMatchObject({ judged_by: "program", correctness: item.student_answer === "C" ? "correct" : "incorrect" });
+    }
+    expect([...letters].every((l) => ["A", "B", "C", "D"].includes(l))).toBe(true);
+    expect(letters.size).toBeGreaterThan(1);
+  });
+
+  it("returns a schema-valid blind reading", async () => {
+    const input = gradeInput(pdf("reading"), 3);
+    const { output } = await grader.readSubmission({
+      assignmentTitle: "Quiz", sections: input.sections, items: input.items, studentPdf: input.studentPdf, studentPageCount: 3,
+    });
+    expect(ReadingOutputSchema.parse(output)).toEqual(output);
+  });
+});
+
 describe("fake grader rulings", () => {
   function ruling(o: Partial<GuidanceLesson>): GuidanceLesson {
     return {
@@ -152,7 +189,7 @@ describe("fake grader rulings", () => {
   it("follows the teacher's newest ruling on the same answer to the same item, and nothing else", async () => {
     const input = gradeInput(pdf("ruled paper"), 30);
     const plain = (await grader.gradeSubmission(input)).output.items;
-    const target = plain.findIndex((i) => i.correctness === "correct");
+    const target = plain.findIndex((i) => i.correctness === "correct" && i.confidence === "high");
     const answer = plain[target].student_answer;
     const itemId = input.items[target].id;
 
@@ -168,20 +205,20 @@ describe("fake grader rulings", () => {
     };
     const ruled = (await grader.gradeSubmission({ ...input, guidance })).output.items;
     expect(ruled[target]).toEqual({
-      ...plain[target], attempt: "partial", correctness: "major_error", legibility: "clear", confidence: "high",
+      ...plain[target], attempt: "partial", correctness: "major_error", confidence: "high", judged_by: "ai",
       teacher_note: "Practice grader: followed your ruling on this answer.",
     });
     expect(ruled.filter((_, n) => n !== target)).toEqual(plain.filter((_, n) => n !== target));
   });
 
-  it("reports no writing when the teacher ruled the answer not attempted", async () => {
+  it("follows a ruling that the answer was not attempted", async () => {
     const input = gradeInput(pdf("ruled not attempted"), 1);
     const [item] = (await grader.gradeSubmission({
       ...input,
       guidance: { preferences: "", lessons: [ruling({ studentAnswer: (await grader.gradeSubmission(input)).output.items[0].student_answer,
         teacherAttempt: "none", teacherCorrectness: "no_answer" })] },
     })).output.items;
-    expect(item).toMatchObject({ attempt: "none", correctness: "no_answer", legibility: "no_writing" });
+    expect(item).toMatchObject({ attempt: "none", correctness: "no_answer", judged_by: "ai" });
   });
 });
 
@@ -239,8 +276,8 @@ describe("fake scan reading", () => {
 
 describe("fake grading of a scan in one pass", () => {
   function chunk(firstPage: number, chunkPageCount: number, o: Partial<PacketChunkInput> = {}): PacketChunkInput {
-    const { assignment, teacherNotes, sections, items, keyPdf } = gradeInput(pdf("x"), 3);
-    return { assignment, teacherNotes, sections, items, keyPdf, chunkPdf: pdf(`chunk ${firstPage}`), firstPage, chunkPageCount, totalPages: 10, keyPageCount: 3, ...o };
+    const { assignment, teacherNotes, sections, items } = gradeInput(pdf("x"), 3);
+    return { assignment, teacherNotes, sections, items, chunkPdf: pdf(`chunk ${firstPage}`), firstPage, chunkPageCount, totalPages: 10, keyPageCount: 3, ...o };
   }
 
   it("finds a paper every key-page-count pages, cut off at the chunk's edges, each graded on every item", async () => {

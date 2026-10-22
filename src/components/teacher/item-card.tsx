@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { Tone } from "@/components/ui/tone";
 import { ANSWER_TYPE_LABEL, ATTEMPT_LABEL, CORRECTNESS_LABEL, formatPoints, REVIEW_REASON_LABEL } from "@/lib/format";
 import type { Attempt, Confidence, Correctness, ItemJudgment, Legibility, ReviewItemView } from "@/lib/types";
+import { judgmentSourceText } from "./judgment-source";
 import { lessonStatusText, overrideFormState, overrideRequest, type OverrideContext, type OverrideTexts } from "./override-form";
 import { parsePointsOverride, pointsInputText } from "./points";
 import { useReportUnsaved } from "./unsaved-edits-context";
@@ -58,7 +59,7 @@ function needsAttention(j: ItemJudgment | null): boolean {
   return j.confidence === "low" || j.reviewReason !== "none" || j.correctness === "cannot_judge" || j.legibility === "illegible";
 }
 
-/** One key item on the review page: what was expected, what the student wrote, the AI's judgment, and overrides. */
+/** One key item on the review page: what the AI read, what was expected, the judgment and who made it, and overrides. */
 export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: ItemCardProps) {
   const { item, result, score } = entry;
   const judgment = result?.judgment ?? null;
@@ -86,29 +87,14 @@ export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: Item
 
       {item.prompt && <p className="whitespace-pre-wrap text-sm text-muted">{item.prompt}</p>}
 
-      <dl className="grid gap-3 text-sm sm:grid-cols-2">
-        <div className="flex flex-col gap-1">
-          <dt className="text-xs font-medium uppercase tracking-wide text-muted">Expected</dt>
-          <dd className="whitespace-pre-wrap">{item.expectedAnswer || "—"}</dd>
-          {item.acceptableAnswers.length > 0 && (
-            <dd className="whitespace-pre-wrap text-muted">Also accepted: {item.acceptableAnswers.join(" · ")}</dd>
-          )}
-        </div>
-        <div className="flex flex-col gap-1">
-          <dt className="text-xs font-medium uppercase tracking-wide text-muted">Student wrote</dt>
-          <dd className="whitespace-pre-wrap rounded-md bg-subtle px-2 py-1 font-mono text-[13px]">
-            {judgment ? judgment.studentAnswer || "(blank)" : "No AI judgment"}
-          </dd>
-          {judgment && judgment.pages.length > 0 && (
-            <dd className="flex flex-wrap gap-1">
-              {judgment.pages.map((page) => (
-                <Button key={page} variant="ghost" size="sm" onClick={() => onShowPage(page)} aria-label={`Show page ${page} of the paper`}>
-                  p.{page}
-                </Button>
-              ))}
-            </dd>
-          )}
-        </div>
+      <AiReading judgment={judgment} onShowPage={onShowPage} />
+
+      <dl className="flex flex-col gap-1 text-sm">
+        <dt className="text-xs font-medium uppercase tracking-wide text-muted">Expected</dt>
+        <dd className="whitespace-pre-wrap">{item.expectedAnswer || "—"}</dd>
+        {item.acceptableAnswers.length > 0 && (
+          <dd className="whitespace-pre-wrap text-muted">Also accepted: {item.acceptableAnswers.join(" · ")}</dd>
+        )}
       </dl>
 
       {judgment && <JudgmentChips judgment={judgment} />}
@@ -122,6 +108,38 @@ export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: Item
 
       <OverrideForm assignmentId={assignmentId} submissionId={submissionId} entry={entry} />
     </article>
+  );
+}
+
+/**
+ * What the AI read on the paper for this item (it reads without the answer key), the marks it saw, the pages, and who
+ * decided the item: the program (an exact comparison with the key) or the AI (a judgment of that reading).
+ */
+function AiReading({ judgment: j, onShowPage }: { judgment: ItemJudgment | null; onShowPage: (page: number) => void }) {
+  if (!j) {
+    return <p className="rounded-md border border-line bg-subtle px-3 py-2 text-sm text-muted">No AI judgment</p>;
+  }
+  const source = judgmentSourceText(j);
+  return (
+    <section aria-label="What the AI read" className="flex flex-col gap-1 rounded-md border border-line bg-subtle px-3 py-2">
+      <p className="text-sm">
+        <span className="font-semibold">What the AI read: </span>
+        <span className="whitespace-pre-wrap font-mono text-[13px]">{j.studentAnswer || "(blank)"}</span>
+      </p>
+      {j.marksSeen && <p className="text-xs text-muted">Marks it saw: {j.marksSeen}</p>}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {source && <p className="text-xs text-muted">{source}</p>}
+        {j.pages.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {j.pages.map((page) => (
+              <Button key={page} variant="ghost" size="sm" onClick={() => onShowPage(page)} aria-label={`Show page ${page} of the paper`}>
+                p.{page}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
