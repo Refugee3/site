@@ -517,6 +517,37 @@ ALTER TABLE submissions ADD COLUMN read_ms INTEGER CHECK (read_ms IS NULL OR rea
 ALTER TABLE submissions ADD COLUMN judge_ms INTEGER CHECK (judge_ms IS NULL OR judge_ms >= 0);
 `,
   },
+  {
+    version: 14,
+    name: "answer_spots",
+    sql: `
+-- Mark detection: an unanswered copy of the worksheet and where each question is answered on it ("answer spots": boxes in
+-- normalized page coordinates, linked to key items by label). status 'detecting' while the AI looks for the spots of a
+-- scanned blank; spots_source says where the spots came from ('text': the PDF's text layer, 'ai', 'manual'); confirmed_at is
+-- when the teacher last saved them (papers are only read from confirmed spots).
+CREATE TABLE blank_worksheets (
+  assignment_id TEXT PRIMARY KEY REFERENCES assignments(id) ON DELETE CASCADE,
+  pdf_path TEXT NOT NULL,
+  original_filename TEXT NOT NULL CHECK (length(original_filename) <= 300),
+  content_sha256 TEXT NOT NULL,
+  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+  page_count INTEGER NOT NULL CHECK (page_count >= 1),
+  page_sizes_json TEXT NOT NULL DEFAULT '[]',
+  has_text INTEGER NOT NULL DEFAULT 0 CHECK (has_text IN (0,1)),
+  status TEXT NOT NULL CHECK (status IN ('detecting','ready')),
+  spots_source TEXT CHECK (spots_source IN ('text','ai','manual')),
+  spots_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT CHECK (note IS NULL OR length(note) <= 500),
+  confirmed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+-- Where mark detection read an item on this paper (page, crop, the blank → paper map and the ink found), so the review page
+-- can show the crop; NULL for items the AI read.
+ALTER TABLE submission_items ADD COLUMN answer_spot_json TEXT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

@@ -87,7 +87,11 @@ export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: Item
 
       {item.prompt && <p className="whitespace-pre-wrap text-sm text-muted">{item.prompt}</p>}
 
-      <AiReading judgment={judgment} onShowPage={onShowPage} />
+      <AiReading
+        judgment={judgment}
+        onShowPage={onShowPage}
+        cropUrl={judgment?.spot ? `/api/teacher/submissions/${submissionId}/spots/${item.id}?v=${result?.updatedAt ?? 0}` : null}
+      />
 
       <dl className="flex flex-col gap-1 text-sm">
         <dt className="text-xs font-medium uppercase tracking-wide text-muted">Expected</dt>
@@ -115,18 +119,31 @@ export function ItemCard({ assignmentId, submissionId, entry, onShowPage }: Item
  * What the AI read on the paper for this item (it reads without the answer key), the marks it saw, the pages, and who
  * decided the item: the program (an exact comparison with the key) or the AI (a judgment of that reading).
  */
-function AiReading({ judgment: j, onShowPage }: { judgment: ItemJudgment | null; onShowPage: (page: number) => void }) {
+function AiReading(props: { judgment: ItemJudgment | null; onShowPage: (page: number) => void; cropUrl: string | null }) {
+  const { judgment: j, onShowPage, cropUrl } = props;
   if (!j) {
     return <p className="rounded-md border border-line bg-subtle px-3 py-2 text-sm text-muted">No AI judgment</p>;
   }
   const source = judgmentSourceText(j);
+  const fromMarks = j.spot?.kind === "choice" || (j.spot !== undefined && j.correctness === "no_answer");
+  const heading = j.spot ? (fromMarks ? "Read from the marks" : "Read from the answer spot") : "What the AI read";
   return (
-    <section aria-label="What the AI read" className="flex flex-col gap-1 rounded-md border border-line bg-subtle px-3 py-2">
+    <section aria-label={heading} className="flex flex-col gap-1 rounded-md border border-line bg-subtle px-3 py-2">
+      {cropUrl && (
+        // A private crop of the paper, generated on request; next/image would only proxy it.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={cropUrl}
+          alt={`The answer spot on page ${j.spot?.page ?? 1} of the paper${j.spot?.marked?.length ? `, with ${j.spot.marked.join(" and ")} outlined` : ""}`}
+          loading="lazy"
+          className="mb-1 h-auto max-h-56 w-auto max-w-full self-start rounded border border-line bg-white object-contain"
+        />
+      )}
       <p className="text-sm">
-        <span className="font-semibold">What the AI read: </span>
+        <span className="font-semibold">{heading}: </span>
         <span className="whitespace-pre-wrap font-mono text-[13px]">{j.studentAnswer || "(blank)"}</span>
       </p>
-      {j.marksSeen && <p className="text-xs text-muted">Marks it saw: {j.marksSeen}</p>}
+      {j.marksSeen && <p className="text-xs text-muted">{j.spot ? "Ink found" : "Marks it saw"}: {j.marksSeen}</p>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {source && <p className="text-xs text-muted">{source}</p>}
         {j.pages.length > 0 && (

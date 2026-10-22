@@ -97,6 +97,12 @@ export const FLAG_DEFS: Record<FlagCode, FlagDef> = {
     label: "Fallback model",
     description: "This paper was graded by a fallback model because the primary model was unavailable.",
   },
+  worksheet_unaligned: {
+    severity: "review",
+    label: "Couldn't line up with the blank worksheet",
+    description: "Mark detection was skipped: this paper's pages couldn't be lined up with the blank worksheet (or it has a "
+      + "different number of pages), so the AI read every question instead. Check the choice questions.",
+  },
 };
 
 export const IDENTITY_FLAGS: ReadonlySet<FlagCode> = new Set<FlagCode>([

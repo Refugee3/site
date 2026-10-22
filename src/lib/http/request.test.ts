@@ -37,7 +37,10 @@ async function multipart(fd: FormData): Promise<Request> {
 }
 
 /** A request whose body arrives in `chunks` (no Content-Length unless given); `cancelled` records abandonment. */
-function streamed(chunks: Uint8Array[], headers: Record<string, string> = {}): { req: Request; cancelled: () => boolean } {
+function streamed(
+  chunks: Uint8Array[],
+  headers: Record<string, string> = {},
+): { req: Request; cancelled: () => boolean; pulled: () => number } {
   let wasCancelled = false;
   let next = 0;
   const body = new ReadableStream<Uint8Array>({
@@ -50,7 +53,7 @@ function streamed(chunks: Uint8Array[], headers: Record<string, string> = {}): {
     },
   });
   const init = { method: "POST", body, duplex: "half", headers: { "content-type": "multipart/form-data; boundary=x", ...headers } };
-  return { req: new Request("http://localhost/upload", init as RequestInit), cancelled: () => wasCancelled };
+  return { req: new Request("http://localhost/upload", init as RequestInit), cancelled: () => wasCancelled, pulled: () => next };
 }
 
 function file(name: string, bytes: number[] | Uint8Array, type = "application/pdf"): File {
@@ -140,10 +143,12 @@ describe("readLimitedFormData", () => {
   });
 
   it("stops reading a streamed body as soon as it passes the limit", async () => {
-    const { req, cancelled } = streamed([new Uint8Array(600), new Uint8Array(600), new Uint8Array(600), new Uint8Array(600)]);
+    const chunks = Array.from({ length: 50 }, () => new Uint8Array(600));
+    const { req, pulled } = streamed(chunks);
     const error = await caught(() => readLimitedFormData(req, 1000));
     expect(error.code).toBe("too_large");
-    expect(cancelled()).toBe(true);
+    // Two chunks pass the limit; the stream may have buffered a few more ahead, but the rest is never pulled.
+    expect(pulled()).toBeLessThan(10);
   });
 
   it("reports an unreadable body as a validation error", async () => {

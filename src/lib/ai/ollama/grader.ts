@@ -12,9 +12,10 @@ import {
 } from "../prompts";
 import { gradeByReading, gradePacketByReading } from "../read-then-mark";
 import {
-  judgingWithEmptyNotes, type KeyExtraction, KeyExtractionSchema, outputFormat, type PacketReadingOutput, type ReadingOutput,
-  type ScanPages, ScanPagesSchema,
+  type CropTranscriptions, CropTranscriptionSchema, judgingWithEmptyNotes, type KeyExtraction, KeyExtractionSchema, outputFormat,
+  type PacketReadingOutput, type ReadingOutput, type ScanPages, ScanPagesSchema, SpotProposalSchema,
 } from "../schemas";
+import { cropLabel, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask } from "../spot-prompts";
 import type { OllamaChatResponse, OllamaClient, OllamaMessage } from "./client";
 import {
   type CompactJudging, CompactJudgingSchema, type CompactJudgingWithoutNotes, CompactJudgingWithoutNotesSchema, type CompactPacket,
@@ -67,6 +68,9 @@ export interface OllamaGraderDeps {
   cfg: OllamaGraderConfig;
   render?: PdfRenderer;
 }
+
+/** Crops of written answer spots transcribed per call (mark detection). */
+export const OLLAMA_CROPS_PER_CALL = 6;
 
 /** How long Ollama keeps the model loaded between calls. */
 export const OLLAMA_KEEP_ALIVE = "30m";
@@ -370,6 +374,46 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
 
     readPacketChunk,
     gradePacketChunk: (input, o) => gradePacketByReading(grader, input, o),
+
+    // Mark detection: only crops of the student's written answer spots, a few per call, each image labelled with its id.
+    async transcribeCrops(input, o = {}) {
+      const startedAt = performance.now();
+      const crops: CropTranscriptions["crops"] = [];
+      let usage = NO_USAGE;
+      for (let k = 0; k < input.crops.length; k += OLLAMA_CROPS_PER_CALL) {
+        const batch = input.crops.slice(k, k + OLLAMA_CROPS_PER_CALL);
+        const ids = batch.map((c) => c.id);
+        const result = await call({
+          system: TRANSCRIBE_SYSTEM_PROMPT,
+          text: [
+            batch.map((c, n) => `Image ${n + 1}: ${cropLabel(c.id, c.kind).replace(/:$/, "")}.`).join("\n"),
+            transcribeTask(ids),
+          ].join("\n\n"),
+          images: batch.map((c) => ({ png: c.png, width: c.width, height: c.height })),
+          schema: CropTranscriptionSchema,
+          check: (out: CropTranscriptions) => {
+            const missing = ids.filter((id) => !out.crops.some((c) => c.id.trim().toUpperCase() === id.toUpperCase()));
+            return missing.length > 0 ? [`crops must have one entry for each id (${ids.join(", ")}); missing: ${missing.join(", ")}`] : [];
+          },
+          numPredict: 100 + 150 * batch.length,
+        }, o);
+        crops.push(...result.output.crops);
+        usage = sumUsage(usage, result.usage);
+      }
+      return { output: { crops }, meta: meta(usage, startedAt) };
+    },
+
+    async proposeSpots(input, o = {}) {
+      const startedAt = performance.now();
+      const result = await call({
+        system: PROPOSE_SPOTS_SYSTEM_PROMPT,
+        text: proposeSpotsTask({ width: input.page.width, height: input.page.height, pageNumber: input.pageNumber, itemLabels: input.itemLabels }),
+        images: [input.page],
+        schema: SpotProposalSchema,
+        numPredict: 6_000,
+      }, o);
+      return { output: result.output, meta: meta(result.usage, startedAt) };
+    },
   };
   return grader;
 }

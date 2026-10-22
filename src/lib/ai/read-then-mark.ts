@@ -1,11 +1,16 @@
 import { type AutoMark, autoMark } from "@/lib/grading/auto-mark";
+import { type SpotItem, spotReadings, withSpotReadings } from "@/lib/omr/merge";
+import type { SpotEvidence } from "@/lib/omr/types";
 import type { AiUsage, Confidence } from "@/lib/types";
 import { type AgentCallCost, AiError, classifySdkError } from "./errors";
 import {
-  type AiCallMeta, blindItems, type CallOptions, type GradeInput, type Grader, type JudgeInput, type PacketChunkInput, writesNotes,
+  type AiCallMeta, blindItems, type CallOptions, type DetectedSpot, type GradeInput, type Grader, type JudgeInput, type PacketChunkInput,
+  type SpotDetection, writesNotes,
 } from "./grader";
 import { itemRefs } from "./prompts";
-import type { GradingOutput, JudgingOutput, PacketOutput, PacketReadingOutput, ReadingItem, ReadingOutput } from "./schemas";
+import type {
+  CropTranscriptions, GradingOutput, JudgingOutput, PacketOutput, PacketReadingOutput, ReadingItem, ReadingOutput,
+} from "./schemas";
 
 // "Read blind, then mark": how every engine grades a paper (and each paper of a scan read in one pass).
 // 1. READ: the engine transcribes the paper without the answer key (readSubmission / readPacketChunk). The request is built
@@ -14,9 +19,16 @@ import type { GradingOutput, JudgingOutput, PacketOutput, PacketReadingOutput, R
 // 3. JUDGE: the engine judges the remaining items from the transcriptions alone, text only (judgeSubmission). Skipped when
 //    the program marked every item and the assignment's notes are off; with notes on it always runs (for the notes).
 // The result is the same GradingOutput as before, plus who decided each item (judged_by) and what the reader saw (marks_seen).
+//
+// With a blank worksheet's answer spots (input.answerSpots, src/lib/omr), the marks are read before any AI call: each paper
+// page is lined up with the blank and the ink the student added in each spot is measured. A choice is then read from its
+// marks and a blank spot is blank, without the AI; a written spot is cropped and only the crop is transcribed
+// (transcribeCrops: no question, no answers). Those readings replace the AI's for their items. When every item is read
+// from its spots, the AI reads page 1 only, for the name, section and document check. A paper that can't be lined up is
+// read entirely by the AI, as without spots, and flagged.
 
-/** The two calls an engine provides; the orchestration below is the same for every engine. */
-export type BlindGrader = Pick<Grader, "readSubmission" | "judgeSubmission">;
+/** The calls an engine provides; the orchestration below is the same for every engine. */
+export type BlindGrader = Pick<Grader, "readSubmission" | "judgeSubmission" | "transcribeCrops">;
 
 /** Papers of one scan chunk judged at once (each judge call is a small text-only request). */
 export const PACKET_JUDGE_PARALLEL = 4;
@@ -29,21 +41,67 @@ export async function gradeByReading(
   g: BlindGrader, input: GradeInput, o: CallOptions = {},
 ): Promise<{ output: GradingOutput; refs: string[]; meta: AiCallMeta }> {
   const refs = itemRefs(input.items.length);
+  const pages = Array.from({ length: input.studentPageCount }, (_, i) => i + 1);
+  const detection = input.answerSpots ? await input.answerSpots.read(input.studentPdf, pages, { signal: o.signal }) : null;
+  const detected = detection?.ok ? detection.items : [];
+  // Every item read from its spots (a written one only when this engine can transcribe its crop): page 1 is enough.
+  const identityOnly = detection?.ok === true && refs.length > 0 && refs.every((ref) => coversRef(g, detected, ref));
   const read = await g.readSubmission({
     assignmentTitle: input.assignment.title,
     sections: input.sections,
-    items: blindItems(input.items),
-    studentPdf: input.studentPdf,
-    studentPageCount: input.studentPageCount,
+    items: identityOnly ? [] : blindItems(input.items),
+    studentPdf: identityOnly && detection?.ok ? detection.identityPdf : input.studentPdf,
+    studentPageCount: identityOnly ? 1 : input.studentPageCount,
   }, o);
+  let meta = read.meta;
   let judged: Awaited<ReturnType<typeof markAndJudge>>;
+  let reading: ReadingOutput;
+  let spotItems: Map<string, SpotItem>;
   try {
-    judged = await markAndJudge(g, input, refs, read.output, o);
+    const spots = await readFromSpots(g, input, refs, detection, { signal: o.signal });
+    if (spots.meta) meta = combineMeta(meta, spots.meta);
+    spotItems = spots.items;
+    const own = identityOnly ? { ...read.output, document_check: { ...read.output.document_check, pages_appear_missing: false } } : read.output;
+    reading = withSpotReadings(own, spotItems, refs);
+    judged = await markAndJudge(g, input, refs, reading, o, spotItems);
   } catch (e) {
-    throw withEarlierCost(e, read.meta);
+    throw withEarlierCost(e, meta);
   }
-  const steps = { readMs: read.meta.durationMs, judgeMs: judged.meta?.durationMs ?? null };
-  return { output: judged.output, refs, meta: { ...(judged.meta === null ? read.meta : combineMeta(read.meta, judged.meta)), steps } };
+  const steps = { readMs: meta.durationMs, judgeMs: judged.meta?.durationMs ?? null };
+  const output = { ...judged.output, ...spotsStatus(detection) };
+  return { output, refs, meta: { ...(judged.meta === null ? meta : combineMeta(meta, judged.meta)), steps } };
+}
+
+/** An item mark detection reads entirely: a choice, a blank spot, or a written spot this engine can transcribe. */
+function coversRef(g: BlindGrader, detected: DetectedSpot[], ref: string): boolean {
+  const d = detected.find((x) => x.ref === ref);
+  if (!d) return false;
+  if (d.kind === "choice") return d.choice !== undefined;
+  return d.written !== undefined && (!d.written.written || (d.crop !== undefined && g.transcribeCrops !== undefined));
+}
+
+/** The paper's mark-detection outcome, for reconcile (a paper that couldn't be lined up is flagged). */
+function spotsStatus(detection: SpotDetection | null): Pick<GradingOutput, "answer_spots"> {
+  if (detection === null) return {};
+  return { answer_spots: detection.ok ? { status: "used", note: "" } : { status: "unaligned", note: detection.note } };
+}
+
+/** The spot readings of one paper: its written spots' crops transcribed (one call), then everything as readings. */
+async function readFromSpots(
+  g: BlindGrader, input: Pick<GradeInput, "items" | "guidance" | "teacherNotes">, refs: string[], detection: SpotDetection | null,
+  o: CallOptions,
+): Promise<{ items: Map<string, SpotItem>; meta: AiCallMeta | null }> {
+  if (!detection?.ok) return { items: new Map(), meta: null };
+  const crops = detection.items.flatMap((d) => (d.crop ? [{ id: d.ref, kind: d.kind, ...d.crop }] : []));
+  let transcriptions: CropTranscriptions | null = null;
+  let meta: AiCallMeta | null = null;
+  if (crops.length > 0 && g.transcribeCrops) {
+    const result = await g.transcribeCrops({ crops }, o);
+    transcriptions = result.output;
+    meta = result.meta;
+  }
+  const ruledItemIds = new Set((input.guidance?.lessons ?? []).map((l) => l.itemId));
+  return { items: spotReadings(detection.items, input.items, refs, transcriptions, { ruledItemIds, teacherNotes: input.teacherNotes }), meta };
 }
 
 /**
@@ -78,10 +136,19 @@ export async function gradePacketByReading(
       const index = next++;
       const paper = papers[index];
       try {
+        // Mark detection on this paper's pages of the chunk, when the assignment has answer spots.
+        const pages = Array.from({ length: Math.max(0, paper.last_page - paper.first_page + 1) }, (_, i) => paper.first_page + i);
+        const detection = input.answerSpots ? await input.answerSpots.read(input.chunkPdf, pages, { signal: o.signal }) : null;
+        const spots = await readFromSpots(g, input, refs, detection, { signal: o.signal });
+        if (spots.meta) metas.push(spots.meta);
+        const reading = withSpotReadings(paper, spots.items, refs);
         // The chunk's max_tokens is sized for its reading; each judge call uses the engine's default.
-        const judged = await markAndJudge(g, input, refs, paper, { signal: o.signal });
+        const judged = await markAndJudge(g, input, refs, reading, { signal: o.signal }, spots.items);
         if (judged.meta) metas.push(judged.meta);
-        graded[index] = { ...boundary(paper), ...judged.output, timing: { readMs: readShareMs, judgeMs: judged.meta?.durationMs ?? null } };
+        graded[index] = {
+          ...boundary(paper), ...judged.output, ...spotsStatus(detection),
+          timing: { readMs: readShareMs + (spots.meta?.durationMs ?? 0), judgeMs: judged.meta?.durationMs ?? null },
+        };
       } catch (error) {
         failure ??= { error };
       }
@@ -106,8 +173,9 @@ function boundary(p: PacketReadingOutput["papers"][number]) {
 /** MARK the reading, JUDGE what is left (or skip the call), and combine. `meta` is the judge call's, null when skipped. */
 async function markAndJudge(
   g: BlindGrader, input: GradingContext, refs: string[], reading: ReadingOutput, o: CallOptions,
+  spots: Map<string, SpotItem> = new Map(),
 ): Promise<{ output: GradingOutput; meta: AiCallMeta | null }> {
-  const plan = planMarks(input, refs, reading);
+  const plan = planMarks(input, refs, reading, spots);
   const writeNotes = writesNotes(input);
   if (!needsJudge(plan, writeNotes)) return { output: combineGrading(reading, plan, null, writeNotes), meta: null };
   const judged = await g.judgeSubmission({
@@ -135,7 +203,8 @@ export function needsJudge(plan: PlannedItem[], writeNotes: boolean): boolean {
  */
 export function planMarks(
   input: Pick<GradeInput, "items" | "guidance" | "teacherNotes">, refs: string[], reading: ReadingOutput,
-): PlannedItem[] {
+  spots: Map<string, SpotItem> = new Map(),
+): Array<PlannedItem & { spot?: SpotEvidence }> {
   const byRef = new Map<string, ReadingItem>();
   for (const item of reading.items) {
     const ref = normalizeRef(item.ref);
@@ -146,8 +215,12 @@ export function planMarks(
     const read = byRef.get(ref);
     const keyItem = input.items[index];
     if (!read || !keyItem) return [];
-    const mark: AutoMark | null = autoMark(keyItem, read, { hasRuling: ruled.has(keyItem.id), teacherNotes: input.teacherNotes });
-    return [{ ref, item: { ...read, ref }, mark }];
+    // Read from its answer spot: the marks' own mark when they decide it (a choice, a blank), else compared as usual.
+    const spot = spots.get(ref);
+    const mark: AutoMark | null = spot && spot.mark !== undefined
+      ? spot.mark
+      : autoMark(keyItem, read, { hasRuling: ruled.has(keyItem.id), teacherNotes: input.teacherNotes });
+    return [{ ref, item: { ...read, ref }, mark, ...(spot ? { spot: spot.spot } : {}) }];
   });
 }
 
@@ -161,19 +234,21 @@ const CONFIDENCE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2
  * is left out (reconcile reports it).
  */
 export function combineGrading(
-  reading: ReadingOutput, plan: PlannedItem[], judged: JudgingOutput | null, writeNotes: boolean,
+  reading: ReadingOutput, plan: Array<PlannedItem & { spot?: SpotEvidence }>, judged: JudgingOutput | null, writeNotes: boolean,
 ): GradingOutput {
   const judgedByRef = new Map<string, JudgingOutput["items"][number]>();
   for (const j of judged?.items ?? []) {
     const ref = normalizeRef(j.ref);
     if (!judgedByRef.has(ref)) judgedByRef.set(ref, j);
   }
-  const items = plan.flatMap(({ ref, item: r, mark }): GradingOutput["items"] => {
+  const items = plan.flatMap(({ ref, item: r, mark, spot }): GradingOutput["items"] => {
     const j = judgedByRef.get(ref);
     const notes = writeNotes && j
       ? { what_student_did: j.what_student_did, feedback: j.feedback, teacher_note: j.teacher_note }
       : { what_student_did: "", feedback: "", teacher_note: "" };
-    const read = { ref, pages: r.pages, student_answer: r.student_answer, legibility: r.legibility, marks_seen: r.marks_seen };
+    const read = {
+      ref, pages: r.pages, student_answer: r.student_answer, legibility: r.legibility, marks_seen: r.marks_seen, ...(spot ? { spot } : {}),
+    };
     if (mark) {
       return [{
         ...read, attempt: r.attempt, correctness: mark.correctness, confidence: mark.confidence, review_reason: mark.review_reason,

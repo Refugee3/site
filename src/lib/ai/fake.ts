@@ -23,6 +23,11 @@ export interface FakeGraderOptions {
    * multiple-choice mark that is wrong); undefined keeps the seeded one. "" reads as a blank item.
    */
   transcribe?: (ref: string, item: BlindItem) => string | undefined;
+  /**
+   * Tests: what the fake "reads" in the crop of a written answer spot (mark detection); undefined keeps the default,
+   * "Sample answer for <ref>" (which the fake judge marks like its other sample answers).
+   */
+  transcribeCrop?: (ref: string) => string | undefined;
 }
 
 function seedFor(pdf: Uint8Array): Seed {
@@ -78,6 +83,35 @@ export function createFakeGrader(o: FakeGraderOptions = {}): Grader {
       return { output: fakePacketReading(seed, input, o.transcribe), meta };
     },
     gradePacketChunk: (input, options) => gradePacketByReading(grader, input, options),
+    async transcribeCrops(input, options = {}) {
+      // The fake can't read images: a repeatable placeholder per crop, seeded by the crops themselves.
+      const meta = await simulateCall(seedForText(input.crops.map((c) => sha256Hex(c.png)).join(":")), options);
+      return {
+        output: {
+          crops: input.crops.map((c) => ({
+            id: c.id,
+            text: o.transcribeCrop?.(c.id) ?? (c.kind === "diagram" ? "A labelled drawing" : `Sample answer for ${c.id}`),
+            confidence: "high" as const,
+          })),
+        },
+        meta,
+      };
+    },
+    async proposeSpots(input, options = {}) {
+      // One write-in spot per key item, stacked down the page, for the teacher to move onto the real answer spots.
+      const meta = await simulateCall(seedForText(sha256Hex(input.page.png)), options);
+      const labels = input.itemLabels.length > 0 ? input.itemLabels : ["1"];
+      const step = Math.min(0.12, 0.8 / labels.length);
+      return {
+        output: {
+          questions: input.pageNumber > 1 ? [] : labels.map((label, i) => ({
+            label, kind: "write_in" as const, options: [],
+            answer_box: [0.1 * input.page.width, (0.12 + i * step) * input.page.height, 0.9 * input.page.width, (0.12 + i * step + step * 0.7) * input.page.height],
+          })),
+        },
+        meta,
+      };
+    },
   };
   return grader;
 }

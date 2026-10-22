@@ -6,6 +6,7 @@ import { KeyEditor } from "@/components/teacher/key-editor";
 import { KeyUpload } from "@/components/teacher/key-upload";
 import { EstimatedProgress } from "@/components/teacher/progress-widgets";
 import { RetryExtractionButton } from "@/components/teacher/retry-extraction-button";
+import { BlankWorksheetCard } from "@/components/teacher/worksheet/blank-worksheet-card";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
@@ -16,6 +17,7 @@ import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { isKeyApproved } from "@/lib/grading/key";
 import { getKeyEditorView } from "@/lib/services/views";
+import { getWorksheetView } from "@/lib/services/worksheets";
 import type { Assignment, KeyEditorView } from "@/lib/types";
 
 const PROCESSING_POLL_MS = 3000;
@@ -56,6 +58,7 @@ export default async function AnswerKeyPage(props: PageProps<"/teacher/assignmen
             </Alert>
           )}
           <EditorWithPdf assignment={assignment} view={view} />
+          {key.status === "ready" && <BlankWorksheetCard assignmentId={assignment.id} view={getWorksheetView(assignment)} />}
           {key.status === "ready" && key.sourcePdfPath && <ReplaceKey assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} />}
         </>
       )}

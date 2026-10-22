@@ -4,6 +4,7 @@ import { getAssignment } from "@/lib/db/repos/assignments";
 import { all, encodePatch, isUniqueViolation, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import { statusFromFlags } from "@/lib/flags";
+import type { SpotEvidence } from "@/lib/omr/types";
 import {
   FLAG_CODES,
   SUBMISSION_STATUSES,
@@ -103,6 +104,7 @@ interface SubmissionItemRow {
   teacher_note: string;
   judged_by: JudgedBy | null;
   marks_seen: string;
+  answer_spot_json: string | null;
   override_centi: number | null;
   override_feedback: string | null;
   override_what_student_did: string | null;
@@ -193,6 +195,8 @@ function judgmentFromRow(row: SubmissionItemRow): ItemJudgment | null {
     // Present only for gradings that recorded them (migration 12 and later).
     ...(row.judged_by === null ? {} : { judgedBy: row.judged_by }),
     ...(row.marks_seen === "" ? {} : { marksSeen: row.marks_seen }),
+    // Read by mark detection (migration 14 and later).
+    ...(row.answer_spot_json === null ? {} : { spot: JSON.parse(row.answer_spot_json) as SpotEvidence }),
   };
 }
 
@@ -311,15 +315,15 @@ function withoutVanishedSection(f: GradingWrite["fields"], assignmentId: string)
 function upsertJudgment(submissionId: string, itemId: string, judgment: ItemJudgment | null, at: number): void {
   run(
     `INSERT INTO submission_items (submission_id, item_id, attempt, correctness, legibility, confidence, review_reason,
-       student_answer, pages_json, what_student_did, feedback, teacher_note, judged_by, marks_seen, updated_at)
+       student_answer, pages_json, what_student_did, feedback, teacher_note, judged_by, marks_seen, answer_spot_json, updated_at)
      VALUES (@submission_id, @item_id, @attempt, @correctness, @legibility, @confidence, @review_reason,
-       @student_answer, @pages_json, @what_student_did, @feedback, @teacher_note, @judged_by, @marks_seen, @updated_at)
+       @student_answer, @pages_json, @what_student_did, @feedback, @teacher_note, @judged_by, @marks_seen, @answer_spot_json, @updated_at)
      ON CONFLICT (submission_id, item_id) DO UPDATE SET
        attempt = excluded.attempt, correctness = excluded.correctness, legibility = excluded.legibility,
        confidence = excluded.confidence, review_reason = excluded.review_reason, student_answer = excluded.student_answer,
        pages_json = excluded.pages_json, what_student_did = excluded.what_student_did, feedback = excluded.feedback,
        teacher_note = excluded.teacher_note, judged_by = excluded.judged_by, marks_seen = excluded.marks_seen,
-       updated_at = excluded.updated_at`,
+       answer_spot_json = excluded.answer_spot_json, updated_at = excluded.updated_at`,
     {
       submission_id: submissionId,
       item_id: itemId,
@@ -335,6 +339,7 @@ function upsertJudgment(submissionId: string, itemId: string, judgment: ItemJudg
       teacher_note: judgment?.teacherNote ?? "",
       judged_by: judgment?.judgedBy ?? null,
       marks_seen: judgment?.marksSeen ?? "",
+      answer_spot_json: judgment?.spot ? JSON.stringify(judgment.spot) : null,
       updated_at: at,
     },
   );

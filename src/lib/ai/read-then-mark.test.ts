@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { AiError } from "./errors";
-import type { AiCallMeta, GradeInput, Grader, JudgeInput, PacketChunkInput, PacketReadInput, ReadInput } from "./grader";
+import type {
+  AiCallMeta, AnswerSpots, DetectedSpot, GradeInput, Grader, JudgeInput, PacketChunkInput, PacketReadInput, ReadInput, SpotDetection,
+  TranscribeInput,
+} from "./grader";
 import { combineGrading, gradeByReading, gradePacketByReading, needsJudge, planMarks } from "./read-then-mark";
 import type { JudgingOutput, PacketReadingOutput, ReadingItem, ReadingOutput } from "./schemas";
 import { makeKeyItem, makeSection } from "./test-utils";
@@ -224,5 +227,86 @@ describe("gradePacketByReading", () => {
     const err = await gradePacketByReading(grader, chunkInput()).catch((e: unknown) => e as AiError);
     expect(calls).toBe(1);
     expect(err).toMatchObject({ code: "overloaded", o: { billed: { usage: { inputTokens: 1000 } } } });
+  });
+});
+
+describe("with a blank worksheet's answer spots", () => {
+  const evidence = { kind: "choice" as const, page: 1, crop: { x: 0, y: 0, w: 1, h: 1 }, map: { a: 1, b: 0, c: 0, d: 0, e: 1, f: 0 } };
+  const choiceSpot = (ref: string, marked: string[]): DetectedSpot => ({
+    ref, kind: "choice", values: ["A", "B", "C"], multi: false, evidence,
+    choice: { marked, confidence: "high", review: "none", marksSeen: `${marked.join(", ")}: strong mark` },
+  });
+  const writtenSpot = (ref: string, written: boolean): DetectedSpot => ({
+    ref, kind: "write_in", values: [], multi: false, evidence: { ...evidence, kind: "write_in" },
+    written: { written, confidence: "high", marksSeen: written ? "ink in the answer spot" : "answer spot empty" },
+    ...(written ? { crop: { png: new Uint8Array([7]), width: 10, height: 5 } } : {}),
+  });
+  const spots = (detect: (pages: number[]) => SpotDetection): AnswerSpots & { calls: number[][] } => {
+    const calls: number[][] = [];
+    return { refs: ["Q1", "Q2"], calls, read: async (_pdf, pages) => (calls.push(pages), detect(pages)) };
+  };
+
+  it("reads the choice from its marks, not the AI's reading, and the AI only reads page 1 when every item is covered", async () => {
+    const { g, reads } = scripted(reading([]));
+    const transcribed: TranscribeInput[] = [];
+    const grader = {
+      ...g,
+      transcribeCrops: async (input: TranscribeInput) => {
+        transcribed.push(input);
+        return { output: { crops: [{ id: "Q2", text: "Green light bounces off.", confidence: "medium" as const }] }, meta: META(5) };
+      },
+    };
+    const answerSpots = spots(() => ({ ok: true, items: [choiceSpot("Q1", ["C"]), writtenSpot("Q2", true)], identityPdf: new Uint8Array([1]) }));
+    const { output, meta } = await gradeByReading(grader, gradeInput({ answerSpots, studentPageCount: 2 }));
+    expect(answerSpots.calls).toEqual([[1, 2]]);
+    expect(reads[0]).toMatchObject({ items: [], studentPageCount: 1, studentPdf: new Uint8Array([1]) });
+    expect(transcribed[0].crops.map((c) => c.id)).toEqual(["Q2"]);
+    expect(output.items[0]).toMatchObject({ student_answer: "C", correctness: "correct", judged_by: "program", spot: { marked: ["C"] } });
+    expect(output.items[1]).toMatchObject({ student_answer: "Green light bounces off.", judged_by: "ai", spot: { kind: "write_in" } });
+    expect(output.answer_spots).toEqual({ status: "used", note: "" });
+    expect(meta.usage.inputTokens).toBe(100 + 5 + 10);
+  });
+
+  it("a blank spot is no answer without any AI call for it; uncovered items keep the AI's full reading", async () => {
+    const { g, reads, judged } = scripted(reading([readItem("Q1", "B"), readItem("Q2", "Some words")]));
+    const answerSpots = spots(() => ({ ok: true, items: [choiceSpot("Q1", [])], identityPdf: new Uint8Array([1]) }));
+    const { output } = await gradeByReading(g, gradeInput({ answerSpots }));
+    expect(reads[0].items).toHaveLength(2);
+    expect(output.items.map((i) => [i.student_answer, i.correctness, i.judged_by])).toEqual([["", "no_answer", "program"], ["Some words", "correct", "ai"]]);
+    expect(judged[0].reading.map((r) => r.ref)).toEqual(["Q1", "Q2"]);
+  });
+
+  it("a paper that can't be lined up is read by the AI entirely and says so", async () => {
+    const { g, reads } = scripted(reading([readItem("Q1", "B"), readItem("Q2", "words")]));
+    const answerSpots = spots(() => ({ ok: false, reason: "unaligned", note: "Couldn't line up this paper." }));
+    const { output } = await gradeByReading(g, gradeInput({ answerSpots }));
+    expect(reads[0].items).toHaveLength(2);
+    expect(output.items[0]).toMatchObject({ student_answer: "B", correctness: "incorrect" });
+    expect(output.items[0].spot).toBeUndefined();
+    expect(output.answer_spots).toEqual({ status: "unaligned", note: "Couldn't line up this paper." });
+  });
+
+  it("one pass: each paper's spots are read on its own pages of the chunk", async () => {
+    const chunkInput = (o: Partial<PacketChunkInput>): PacketChunkInput => {
+      const base = gradeInput();
+      return {
+        assignment: base.assignment, teacherNotes: "", sections: base.sections, items: base.items, writeNotes: false,
+        chunkPdf: new Uint8Array([9]), firstPage: 1, chunkPageCount: 4, totalPages: 4, keyPageCount: 2, ...o,
+      };
+    };
+    const paper = (first: number) => ({
+      first_page: first, last_page: first + 1, continues_from_previous_chunk: false, may_continue_after_chunk: false,
+      boundary_confidence: "high" as const, ...reading([readItem("Q1", "B", { pages: [first] }), readItem("Q2", "words", { pages: [first + 1] })]),
+    });
+    const { g } = scripted(reading([]));
+    const grader = { ...g, readPacketChunk: async () => ({ output: { papers: [paper(1), paper(3)], skipped_pages: [] }, meta: META(1000) }) };
+    const answerSpots = spots((pages) => (pages[0] === 1
+      ? { ok: true, items: [choiceSpot("Q1", ["C"])], identityPdf: new Uint8Array([1]) }
+      : { ok: false, reason: "unaligned", note: "no" }));
+    const { output } = await gradePacketByReading(grader, chunkInput({ answerSpots }));
+    expect(answerSpots.calls).toEqual([[1, 2], [3, 4]]);
+    expect(output.papers.map((p) => [p.items[0].student_answer, p.items[0].correctness, p.answer_spots?.status])).toEqual([
+      ["C", "correct", "used"], ["B", "incorrect", "unaligned"],
+    ]);
   });
 });

@@ -12,8 +12,8 @@ import type { AppConfig } from "@/lib/config";
 import type { AiModel, AiUsage, Effort } from "@/lib/types";
 import { AiError, classifySdkError } from "./errors";
 import {
-  type AiCallMeta, type ExtractKeyInput, type Grader, type JudgeInput, type PacketReadInput, type ReadInput, type ReadScanInput,
-  writesNotes,
+  type AiCallMeta, type ExtractKeyInput, type Grader, type JudgeInput, type PacketReadInput, type ProposeSpotsInput, type ReadInput,
+  type ReadScanInput, type TranscribeInput, writesNotes,
 } from "./grader";
 import {
   extractionTask,
@@ -35,9 +35,10 @@ import {
 } from "./prompts";
 import { gradeByReading, gradePacketByReading } from "./read-then-mark";
 import {
-  JudgingOutputSchema, JudgingOutputWithoutNotesSchema, judgingWithEmptyNotes, KeyExtractionSchema, outputFormat,
-  PacketReadingOutputSchema, ReadingOutputSchema, ScanPagesSchema,
+  CropTranscriptionSchema, JudgingOutputSchema, JudgingOutputWithoutNotesSchema, judgingWithEmptyNotes, KeyExtractionSchema, outputFormat,
+  PacketReadingOutputSchema, ReadingOutputSchema, ScanPagesSchema, SpotProposalSchema,
 } from "./schemas";
+import { cropLabel, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask } from "./spot-prompts";
 
 export type MessageRunner = (params: BetaMessageStreamParams, o: { signal?: AbortSignal }) => Promise<BetaMessage>;
 
@@ -238,6 +239,50 @@ export function buildScanSplitParams(i: ReadScanInput, cfg: DirectAiConfig, maxT
   };
 }
 
+/** Output room per crop transcribed (a short answer, or a few sentences). */
+const TOKENS_PER_CROP = 400;
+
+/**
+ * Mark detection: transcribe crops of written answer spots, on the model chosen in Settings at low effort. Only the crops are
+ * sent, each labelled with its id: no question, no options, no key.
+ */
+export function buildTranscribeParams(i: TranscribeInput, cfg: DirectAiConfig): BetaMessageStreamParams {
+  const maxTokens = Math.min(cfg.maxTokens, 1_000 + TOKENS_PER_CROP * i.crops.length) + 2_000;
+  return {
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(CropTranscriptionSchema), "low"),
+    system: TRANSCRIBE_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: [
+        ...i.crops.flatMap((c) => [
+          { type: "text" as const, text: cropLabel(c.id, c.kind) },
+          { type: "image" as const, source: pngSource(c.png) },
+        ]),
+        { type: "text", text: transcribeTask(i.crops.map((c) => c.id)) },
+      ],
+    }],
+  };
+}
+
+/** A scanned blank worksheet page: where its answer spots are (the teacher confirms them). */
+export function buildProposeSpotsParams(i: ProposeSpotsInput, cfg: DirectAiConfig): BetaMessageStreamParams {
+  return {
+    ...commonParams(cfg, cfg.model, Math.max(cfg.maxTokens, 8_000), outputFormat(SpotProposalSchema), "low"),
+    system: PROPOSE_SPOTS_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: pngSource(i.page.png) },
+        { type: "text", text: proposeSpotsTask({ width: i.page.width, height: i.page.height, pageNumber: i.pageNumber, itemLabels: i.itemLabels }) },
+      ],
+    }],
+  };
+}
+
+function pngSource(bytes: Uint8Array) {
+  return { type: "base64", media_type: "image/png", data: Buffer.from(bytes).toString("base64") } as const;
+}
+
 /** Turns a finished message into validated output. The stop reason is checked before any content is read. */
 export function interpretMessage<T>(
   msg: BetaMessage,
@@ -307,6 +352,12 @@ export function createClaudeGrader(runner: MessageRunner, cfg: DirectAiConfig): 
       return call(params, PacketReadingOutputSchema, o.signal);
     },
     gradePacketChunk: (input, o) => gradePacketByReading(grader, input, o),
+    async transcribeCrops(input, o = {}) {
+      return call(buildTranscribeParams(input, cfg), CropTranscriptionSchema, o.signal);
+    },
+    async proposeSpots(input, o = {}) {
+      return call(buildProposeSpotsParams(input, cfg), SpotProposalSchema, o.signal);
+    },
   };
   return grader;
 }

@@ -28,6 +28,7 @@ import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { formatPageRanges } from "@/lib/scan-layout";
 import { loadGuidance } from "@/lib/services/guidance";
 import { rescoreSubmission } from "@/lib/services/submissions";
+import { answerSpotsFor } from "@/lib/services/worksheets";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { CutTooLargeError, extractPageSets } from "@/lib/storage/pdf";
@@ -115,7 +116,9 @@ export async function handleOnePassScan(
   // Loaded once: every chunk of this run is sent the same guidance, so they all share one cached prefix.
   const guidance = loadGuidance(assignment, items);
   const sections = listSections(assignment.id);
-  // Each chunk is read without the answer key (no key PDF either), then each paper is marked and judged (gradePacketByReading).
+  // Each chunk is read without the answer key (no key PDF either), then each paper is marked and judged (gradePacketByReading),
+  // its marks read from the blank worksheet's answer spots first when the teacher saved them.
+  const spots = answerSpotsFor(assignment.id, items);
   const chunkByteLimit = Math.min(SCAN_CHUNK_MAX_BYTES, PDF_BYTE_BUDGET);
 
   let progress: OnePassProgress = scan.onePass ?? emptyProgress();
@@ -140,7 +143,7 @@ export async function handleOnePassScan(
     const input: PacketChunkInput = {
       assignment, teacherNotes: key.teacherNotes, sections, items, guidance: guidance.guidance, writeNotes: assignment.writeNotes,
       chunkPdf: chunk.pdf, firstPage: chunk.firstPage, chunkPageCount: chunkPages, totalPages: scan.pageCount,
-      keyPageCount: ctx.keyPageCount,
+      keyPageCount: ctx.keyPageCount, answerSpots: spots,
     };
     let result: Awaited<ReturnType<NonNullable<Grader["gradePacketChunk"]>>>;
     try {

@@ -31,8 +31,8 @@ describe("migrate", () => {
     migrate(db);
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(tableNames(db)).toEqual([
-      "answer_keys", "app_settings", "assignments", "jobs", "key_items", "key_questions", "lessons", "scans", "sections", "sessions",
-      "submission_items", "submissions", "teachers",
+      "answer_keys", "app_settings", "assignments", "blank_worksheets", "jobs", "key_items", "key_questions", "lessons", "scans", "sections",
+      "sessions", "submission_items", "submissions", "teachers",
     ]);
     db.close();
   });
@@ -780,7 +780,7 @@ describe("migration 13 on a version-12 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(13);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ollama_image_max_edge: null, ollama_papers_at_a_time: null });
     expect(db.prepare("SELECT id, grader_engine, read_ms, judge_ms FROM submissions").get())
       .toEqual({ id: "s1", grader_engine: "ollama", read_ms: null, judge_ms: null });
@@ -796,6 +796,51 @@ describe("migration 13 on a version-12 database", () => {
     ]) {
       expect(() => db.prepare(sql).run(), sql).toThrow(/constraint/i);
     }
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+});
+
+describe("migration 14 on a version-13 database", () => {
+  it("adds the blank worksheet table and each item's answer spot (none for earlier gradings), keeping everything else", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 13)) db.exec(migration.sql);
+      db.pragma("user_version = 13");
+    })();
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO answer_keys (assignment_id, updated_at) VALUES ('a1', 1);
+      INSERT INTO key_items (id, assignment_id, position, label, answer_type, points_centi, partial_credit, answer_source)
+        VALUES ('k1', 'a1', 0, '1', 'multiple_choice', 100, 0, 'key');
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, created_at, updated_at, queued_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 1, 1, 1);
+      INSERT INTO submission_items (submission_id, item_id, attempt, correctness, student_answer, judged_by, marks_seen, updated_at)
+        VALUES ('s1', 'k1', 'complete', 'correct', 'B', 'program', 'B circled', 1);
+    `);
+    const item = db.prepare("SELECT * FROM submission_items").get() as Record<string, unknown>;
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(14);
+    expect(db.prepare("SELECT * FROM submission_items").get()).toEqual({ ...item, answer_spot_json: null });
+    db.exec(`INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, status,
+      created_at, updated_at) VALUES ('a1', 'files/x/blank/y.pdf', 'blank.pdf', 'sha', 10, 2, 'ready', 1, 1)`);
+    expect(db.prepare("SELECT spots_json, spots_source, confirmed_at, has_text FROM blank_worksheets").get())
+      .toEqual({ spots_json: "[]", spots_source: null, confirmed_at: null, has_text: 0 });
+    for (const sql of [
+      "UPDATE blank_worksheets SET status = 'failed'",
+      "UPDATE blank_worksheets SET spots_source = 'magic'",
+      "UPDATE blank_worksheets SET page_count = 0",
+    ]) {
+      expect(() => db.prepare(sql).run(), sql).toThrow(/constraint/i);
+    }
+    // Deleting the assignment deletes its blank worksheet.
+    db.exec("DELETE FROM assignments WHERE id = 'a1'");
+    expect(count(db, "blank_worksheets")).toBe(0);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
   });

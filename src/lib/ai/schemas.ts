@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { SPOT_KINDS } from "@/lib/omr/types";
 import {
   ANSWER_TYPES,
   ATTEMPTS,
@@ -94,12 +95,28 @@ export function judgingWithEmptyNotes(o: JudgingOutputWithoutNotes): JudgingOutp
 // The combined grading of one paper. Never sent to the model as a schema (the model only ever answers ReadingOutputSchema,
 // PacketReadingOutputSchema or a JudgingOutput schema), so it may carry optional fields: judged_by and marks_seen are absent in
 // gradings stored before papers were read without the key.
+const box = z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() });
+/** Where mark detection read an item (src/lib/omr/types.ts SpotEvidence); absent for items the AI read. */
+export const SpotEvidenceSchema = z.object({
+  kind: z.enum(SPOT_KINDS),
+  page: z.number(),
+  crop: box,
+  map: z.object({ a: z.number(), b: z.number(), c: z.number(), d: z.number(), e: z.number(), f: z.number() }),
+  options: z.array(z.object({ value: z.string(), box, ink: z.number() })).optional(),
+  marked: z.array(z.string()).optional(),
+  boxes: z.array(box).optional(),
+  ink: z.number().optional(),
+});
+
 const itemWithNotes = z.object({
   ref: z.string(), pages: z.array(z.number()), student_answer: z.string(), legibility: z.enum(LEGIBILITY),
   attempt: z.enum(ATTEMPTS), correctness: z.enum(CORRECTNESS), confidence: conf, review_reason: z.enum(ITEM_REVIEW_REASONS),
   what_student_did: z.string(), feedback: z.string(), teacher_note: z.string(),
-  judged_by: z.enum(JUDGED_BY).optional(), marks_seen: z.string().optional(),
+  judged_by: z.enum(JUDGED_BY).optional(), marks_seen: z.string().optional(), spot: SpotEvidenceSchema.optional(),
 });
+
+/** How mark detection went for a paper: used, or skipped because the paper couldn't be lined up with the blank worksheet. */
+const answerSpotsStatus = z.object({ status: z.enum(["used", "unaligned"]), note: z.string() });
 
 export const GradingOutputSchema = z.object({
   student: gradingStudent,
@@ -109,6 +126,7 @@ export const GradingOutputSchema = z.object({
   unmatched_work: z.string(),
   overall_feedback: z.string(),
   teacher_summary: z.string(),
+  answer_spots: answerSpotsStatus.optional(),
 });
 export type GradingOutput = z.infer<typeof GradingOutputSchema>;
 
@@ -147,6 +165,7 @@ export const PacketOutputSchema = z.object({
     unmatched_work: z.string(),
     overall_feedback: z.string(),
     teacher_summary: z.string(),
+    answer_spots: answerSpotsStatus.optional(),
   })),
   skipped_pages: z.array(skippedPage),
 });
@@ -167,6 +186,26 @@ export const ScanPagesSchema = z.object({
   })),
 });
 export type ScanPages = z.infer<typeof ScanPagesSchema>;
+
+// Mark detection (src/lib/omr): the AI only transcribes crops of written answer spots, and proposes the spots of a scanned
+// blank worksheet.
+
+/** The transcription of each crop, by its id. */
+export const CropTranscriptionSchema = z.object({
+  crops: z.array(z.object({ id: z.string(), text: z.string(), confidence: conf })),
+});
+export type CropTranscriptions = z.infer<typeof CropTranscriptionSchema>;
+
+/** The answer spots the AI sees on one blank page, in the image's pixels: [x0, y0, x1, y1]. */
+export const SpotProposalSchema = z.object({
+  questions: z.array(z.object({
+    label: z.string(),
+    kind: z.enum(["choice", "write_in"]),
+    options: z.array(z.object({ label: z.string(), box: z.array(z.number()) })),
+    answer_box: z.array(z.number()).nullable(),
+  })),
+});
+export type SpotProposal = z.infer<typeof SpotProposalSchema>;
 
 export interface JsonSchemaOutputFormat {
   type: "json_schema";

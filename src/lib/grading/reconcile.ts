@@ -75,6 +75,7 @@ export function reconcileGrading(i: ReconcileInput): Reconciled {
     ...(output.integrity.grader_directed_text_found ? ["grader_directed_text" as const] : []),
     ...(repairs.length > 0 ? ["output_repaired" as const] : []),
     ...(i.fallbackUsed ? ["fallback_model" as const] : []),
+    ...(output.answer_spots?.status === "unaligned" ? ["worksheet_unaligned" as const] : []),
   ]);
 
   return {
@@ -88,6 +89,7 @@ export function reconcileGrading(i: ReconcileInput): Reconciled {
       teacherSummary: joinLines(
         cap(output.teacher_summary, CAPS.teacherSummary),
         cap(output.document_check.note, CAPS.documentNote),
+        output.answer_spots?.status === "unaligned" ? cap(output.answer_spots.note, CAPS.documentNote) : "",
         repairs.length > 0 ? cap(`Automatic corrections: ${repairs.join("; ")}.`, CAPS.repairs) : "",
       ),
       integrityNote: output.integrity.grader_directed_text_found ? cap(output.integrity.excerpt, CAPS.excerpt) : "",
@@ -171,6 +173,7 @@ function toJudgment(o: OutputItem, label: string, pageCount: number, repairs: st
     teacherNote: cap(o.teacher_note, CAPS.itemNote),
     ...(o.judged_by ? { judgedBy: o.judged_by } : {}),
     ...(o.marks_seen?.trim() ? { marksSeen: cap(o.marks_seen, CAPS.marksSeen) } : {}),
+    ...(o.spot ? { spot: o.spot } : {}),
   };
 }
 

@@ -27,6 +27,12 @@ import {
 export interface AgentGraderDeps extends ProvisionDeps {
   /** JUDGE: judges a paper's transcriptions against the key, text only (the direct engine's judgeSubmission). */
   judge: Grader["judgeSubmission"];
+  /**
+   * Mark detection: transcribing crops of written answer spots and proposing a scanned blank's spots need no workspace, so
+   * they are the direct engine's Messages API calls too (absent in tests: the AI then reads those items).
+   */
+  transcribe?: Grader["transcribeCrops"];
+  propose?: Grader["proposeSpots"];
   /** Called once, after the first task that succeeds (confirms a saved key, like confirmKeyOnSuccess). */
   onFirstSuccess?: () => void;
   /**
@@ -164,6 +170,8 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
         check: (out) => pageProblems(out, input.chunkPageCount),
       }, o);
     },
+    ...(d.transcribe ? { transcribeCrops: d.transcribe } : {}),
+    ...(d.propose ? { proposeSpots: d.propose } : {}),
   };
   return grader;
 }

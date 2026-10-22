@@ -18,6 +18,7 @@ import { getAiModel, setGradingEngine, setOllamaSpeedSettings } from "@/lib/db/r
 import { getSubmission, listItems, requeueForRegrade } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
+import { sha256Hex } from "@/lib/ids";
 import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY, resumeWorker } from "@/lib/jobs/queue";
 import { answeringGrader, deferred, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
 import { concurrencyFor, createWorker, startWorker } from "@/lib/jobs/worker";
@@ -919,16 +920,30 @@ describe("API key changes", () => {
 });
 
 describe("rate limits", () => {
-  /** A grader whose calls wait until the test settles them: `settle(i, err?)` answers call i like the fake grader, or throws `err`. */
+  /**
+   * A grader whose calls wait until the test settles them: `settle(i, err?)` answers call i like the fake grader, or throws
+   * `err`; `called(n)` resolves once n calls have been made (no polling, no real-time waits).
+   */
   function controlledGrader() {
-    const calls: Array<{ resolve: () => void; reject: (err: AiError) => void }> = [];
+    const calls: Array<{ resolve: () => void; reject: (err: AiError) => void; pdfSha: string }> = [];
+    const waiting: Array<{ n: number; resolve: () => void }> = [];
     const grader = scriptedGrader({
       gradeSubmission: (input, options) => new Promise((resolve, reject) => {
-        calls.push({ resolve: () => resolve(instantFake.gradeSubmission(input, options)), reject });
+        calls.push({ resolve: () => resolve(instantFake.gradeSubmission(input, options)), reject, pdfSha: sha256Hex(input.studentPdf) });
+        for (const w of waiting.filter((x) => calls.length >= x.n)) {
+          waiting.splice(waiting.indexOf(w), 1);
+          w.resolve();
+        }
       }),
     });
     const settle = (i: number, err?: AiError) => (err ? calls[i].reject(err) : calls[i].resolve());
-    return { grader, calls, settle };
+    const called = (n: number) => new Promise<void>((resolve) => {
+      if (calls.length >= n) resolve();
+      else waiting.push({ n, resolve });
+    });
+    /** The paper call i grades (calls start in whatever order their files are read). */
+    const paperOf = (i: number, ids: string[]) => ids.find((id) => getSubmission(id)!.contentSha256 === calls[i].pdfSha)!;
+    return { grader, calls, settle, called, paperOf };
   }
 
   it("retries a rate-limited paper after retry-after without using up an attempt, also on its last one", async () => {
@@ -995,60 +1010,73 @@ describe("rate limits", () => {
     expect([limitedId, other].map((id) => getSubmission(id)!.status)).not.toContain("queued");
   });
 
-  /** Real-time waits; generous because the full suite runs files in parallel on few CPUs. */
-  const LOADED_WAIT = { timeout: 5_000 };
+  // These drive the worker with runOnce() (each claims one job and runs it to its end), several at once as the running
+  // worker would launch them, and settle the AI calls by hand: every step is awaited, nothing waits on real time.
 
   it("halves once when many calls are rejected together, and never below one", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ids: string[] = [];
     for (const label of ["a", "b", "c", "d"]) ids.push(await uploadPaper(label));
-    const { grader, calls, settle } = controlledGrader();
+    const { grader, calls, settle, called } = controlledGrader();
     const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
 
-    worker.start();
-    await vi.waitFor(() => expect(calls).toHaveLength(4), LOADED_WAIT);
+    const first = ids.map(() => worker.runOnce());
+    await called(4);
     for (let i = 0; i < 4; i++) settle(i, rateLimited(5_000));
-    await vi.waitFor(() => expect(ids.map((id) => jobRows(id)[0].status)).toEqual(["queued", "queued", "queued", "queued"]), LOADED_WAIT);
+    expect(await Promise.all(first)).toEqual([true, true, true, true]);
+    expect(ids.map((id) => jobRows(id)[0].status)).toEqual(["queued", "queued", "queued", "queued"]);
     expect(worker.status()).toMatchObject({ effectiveConcurrency: 2, throttledUntil: T0 + 5_000 });
     expect(ids.map((id) => jobRows(id)[0].attempts)).toEqual([0, 0, 0, 0]);
 
     // After the hold, two run; both are rate-limited again: 2 → 1, and it stays at 1.
     clock = T0 + 5_000;
-    worker.kick();
-    await vi.waitFor(() => expect(calls).toHaveLength(6), LOADED_WAIT);
+    const second = [worker.runOnce(), worker.runOnce()];
+    await called(6);
+    expect(calls).toHaveLength(6);
     settle(4, rateLimited(5_000));
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(1), LOADED_WAIT);
-    settle(5, rateLimited(5_000));
-    await vi.waitFor(() => expect(ids.filter((id) => jobRows(id)[0].status === "queued")).toHaveLength(4), LOADED_WAIT);
+    await Promise.race(second);
     expect(worker.status().effectiveConcurrency).toBe(1);
-    await worker.stop();
+    settle(5, rateLimited(5_000));
+    await Promise.all(second);
+    expect(ids.filter((id) => jobRows(id)[0].status === "queued")).toHaveLength(4);
+    expect(worker.status().effectiveConcurrency).toBe(1);
   });
 
   it("does not count papers started before the cut towards climbing back", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ids: string[] = [];
     for (const label of ["a", "b", "c", "d", "e"]) ids.push(await uploadPaper(label));
-    const { grader, calls, settle } = controlledGrader();
+    const { grader, calls, settle, called, paperOf } = controlledGrader();
     const worker = createWorker({ grader, concurrency: 4, pollMs: 1000 });
 
-    worker.start();
-    await vi.waitFor(() => expect(calls).toHaveLength(4), LOADED_WAIT);
+    // Four papers in flight at once, as the running worker starts them at concurrency 4.
+    const first = [0, 1, 2, 3].map(() => worker.runOnce());
+    await called(4);
     settle(0, rateLimited(1_000));
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(2), LOADED_WAIT);
+    await Promise.race(first); // only the rate-limited run can finish: the others still wait for their AI call
+    expect(worker.status()).toMatchObject({ effectiveConcurrency: 2, throttledUntil: T0 + 1_000 });
     // Started before the cut: finishing cleanly does not raise it.
     for (const i of [1, 2, 3]) settle(i);
-    await vi.waitFor(() => expect(ids.slice(1, 4).every((id) => jobRows(id)[0].status === "done")).toBe(true), LOADED_WAIT);
+    expect(await Promise.all(first)).toEqual([true, true, true, true]);
+    const limited = paperOf(0, ids);
+    const startedBefore = [1, 2, 3].map((i) => paperOf(i, ids));
+    expect(startedBefore.map((id) => jobRows(id)[0].status)).toEqual(["done", "done", "done"]);
+    expect(jobRows(limited)).toMatchObject([{ status: "queued", attempts: 0 }]);
     expect(worker.status().effectiveConcurrency).toBe(2);
+    // Nothing new starts before the retry time.
+    expect(await worker.runOnce()).toBe(false);
 
     clock = T0 + 1_000;
-    worker.kick();
-    await vi.waitFor(() => expect(calls).toHaveLength(6), LOADED_WAIT);
+    const second = [worker.runOnce(), worker.runOnce()];
+    await called(6);
+    expect(calls).toHaveLength(6);
     settle(4);
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(3), LOADED_WAIT);
+    await Promise.race(second);
+    expect(worker.status().effectiveConcurrency).toBe(3);
     settle(5);
-    await vi.waitFor(() => expect(worker.status().effectiveConcurrency).toBe(4), LOADED_WAIT);
+    expect(await Promise.all(second)).toEqual([true, true]);
+    expect(worker.status().effectiveConcurrency).toBe(4);
     expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true);
-    await worker.stop();
   });
 
   it("resume() (a new API key) ends the hold and restores the full concurrency", async () => {

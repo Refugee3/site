@@ -135,6 +135,9 @@ function graderFromConfig(): Grader | null {
     onFirstSuccess: resolved.source === "app" ? () => markStoredApiKeyVerified(resolved.ciphertext) : undefined,
     currentModel: getAiModel,
     judge: (input, o) => createClaudeGrader(judgeRunner, { ...cfg, model: getAiModel() }).judgeSubmission(input, o),
+    // Mark detection's crops and a scanned blank's spots: the same text-and-image Messages API calls as the direct engine.
+    transcribe: (input, o) => createClaudeGrader(judgeRunner, { ...cfg, model: getAiModel() }).transcribeCrops!(input, o),
+    propose: (input, o) => createClaudeGrader(judgeRunner, { ...cfg, model: getAiModel() }).proposeSpots!(input, o),
   });
 }
 

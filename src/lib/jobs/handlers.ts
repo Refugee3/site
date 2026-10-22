@@ -27,6 +27,7 @@ import { handleOnePassScan } from "@/lib/jobs/one-pass";
 import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
 import { autoGradeCleanSplit } from "@/lib/services/scans";
 import { rescoreSubmission } from "@/lib/services/submissions";
+import { answerSpotsFor } from "@/lib/services/worksheets";
 import { removeDataFile } from "@/lib/storage/files";
 import { extractPageSets } from "@/lib/storage/pdf";
 import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReading, Section } from "@/lib/types";
@@ -101,6 +102,8 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
         studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
         // Off, the grader returns every note as "" (the scoring, lessons and views are unaffected).
         writeNotes: assignment.writeNotes,
+        // The blank worksheet's answer spots, once the teacher saved them: marks are read there before any AI call.
+        answerSpots: answerSpotsFor(assignment.id, ctx.items),
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );

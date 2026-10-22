@@ -36,7 +36,10 @@ async function readBody(req: Request, maxBytes: number): Promise<Uint8Array<Arra
     for (let chunk = await next(); !chunk.done; chunk = await next()) {
       total += chunk.value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined); // the client may already be gone; nothing to do about it
+        // Stop reading and let go rather than cancel(): on Node 24, cancelling a request body that undici is
+        // still filling makes undici enqueue into the closed stream, an unhandled rejection. The rest of the
+        // body is never read or buffered.
+        reader.releaseLock();
         throw tooLarge();
       }
       chunks.push(chunk.value);

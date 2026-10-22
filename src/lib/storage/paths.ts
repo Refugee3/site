@@ -2,7 +2,7 @@ import path from "node:path";
 import { getConfig } from "@/lib/config";
 
 // Stored paths are built only from server-generated UUIDs; anything else is refused before it reaches the filesystem.
-const DATA_FILE_PATH = /^files\/[0-9a-f-]{36}\/(key|submissions|scans)\/[0-9a-f-]{36}\.pdf$/;
+const DATA_FILE_PATH = /^files\/[0-9a-f-]{36}\/(key|submissions|scans|blank)\/[0-9a-f-]{36}\.pdf$/;
 
 export function dataDir(): string {
   return getConfig().dataDir;
@@ -27,4 +27,9 @@ export function keyPdfRel(assignmentId: string, fileId: string): string {
 
 export function scanPdfRel(assignmentId: string, scanId: string): string {
   return `files/${assignmentId}/scans/${scanId}.pdf`;
+}
+
+/** The blank (unanswered) worksheet used for mark detection. */
+export function blankWorksheetPdfRel(assignmentId: string, fileId: string): string {
+  return `files/${assignmentId}/blank/${fileId}.pdf`;
 }

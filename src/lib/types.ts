@@ -1,4 +1,5 @@
 import type { OllamaSettings } from "@/lib/ollama-settings";
+import type { SpotEvidence } from "@/lib/omr/types";
 
 export const ASSIGNMENT_STATUSES = ["draft", "open", "closed"] as const;
 export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
@@ -33,7 +34,7 @@ export const DOCUMENT_MATCHES = ["matches", "uncertain", "different_assignment",
 export type DocumentMatch = (typeof DOCUMENT_MATCHES)[number];
 export const FLAG_CODES = ["name_missing", "name_unclear", "name_uncertain", "section_unmatched", "section_inferred", "multiple_students",
   "wrong_assignment", "blank_submission", "pages_missing", "paper_boundary", "low_confidence", "illegible", "item_review", "grader_directed_text",
-  "output_repaired", "ai_refused", "manual_grading", "fallback_model"] as const;
+  "output_repaired", "ai_refused", "manual_grading", "fallback_model", "worksheet_unaligned"] as const;
 export type FlagCode = (typeof FLAG_CODES)[number];
 export type JobKind = "extract_key" | "grade_submission" | "split_scan";
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -77,7 +78,9 @@ export interface ItemJudgment { attempt: Attempt; correctness: Correctness; legi
   /** Absent for gradings stored before the paper was read without the key (and for judgments that never had one). */
   judgedBy?: JudgedBy;
   /** What the reader saw of the student's marks ("B circled, A crossed out"); absent or "" when there was nothing to add. */
-  marksSeen?: string }
+  marksSeen?: string;
+  /** Read by mark detection from the blank worksheet's answer spot (the review page shows its crop); absent otherwise. */
+  spot?: SpotEvidence }
 export interface SubmissionItem { submissionId: string; itemId: string; judgment: ItemJudgment | null; overrideCenti: number | null;
   overrideFeedback: string | null; overrideWhatStudentDid: string | null; updatedAt: number }
 export interface Submission { id: string; assignmentId: string; source: "student" | "teacher"; receiptToken: string; pdfPath: string;

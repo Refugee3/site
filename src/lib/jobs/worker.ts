@@ -12,6 +12,7 @@ import {
 import { listProcessingKeysWithoutJob } from "@/lib/db/repos/keys";
 import { listSplittingScansWithoutJob, resetCreatingScans } from "@/lib/db/repos/scans";
 import { deleteExpiredSessions } from "@/lib/db/repos/sessions";
+import { resetDetectingWorksheets } from "@/lib/db/repos/worksheets";
 import { listQueuedWithoutJob, resetGradingToQueued } from "@/lib/db/repos/submissions";
 import { nextRunAfter } from "@/lib/jobs/backoff";
 import { failTarget, handleExtractKey, handleGradeSubmission, handleSplitScan, type HandlerResult } from "@/lib/jobs/handlers";
@@ -414,6 +415,8 @@ function recoverOrphanedWork(): void {
     const unqueuedScans = listSplittingScansWithoutJob();
     for (const scan of unqueuedScans) enqueueSplitScan(scan.id, scan.assignmentId);
     releasePausedJobs(now());
+    const worksheets = resetDetectingWorksheets();
+    if (worksheets > 0) console.info(`[worker] ${worksheets} blank worksheets were waiting for the AI's answer spots; asked to try again`);
     if (jobs + papers + scans + unqueuedPapers.length + unqueuedKeys.length + unqueuedScans.length > 0) {
       console.info(`[worker] recovered ${jobs} jobs, ${papers} papers and ${scans} scans; `
         + `re-queued ${unqueuedPapers.length} papers, ${unqueuedKeys.length} keys and ${unqueuedScans.length} scans`);

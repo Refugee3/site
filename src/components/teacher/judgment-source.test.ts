@@ -14,3 +14,16 @@ describe("judgmentSourceText", () => {
     expect(judgmentSourceText({ correctness: "correct" })).toBeNull();
   });
 });
+
+describe("judgmentSourceText with mark detection", () => {
+  const choice = { kind: "choice" as const, page: 1, crop: { x: 0, y: 0, w: 1, h: 1 }, map: { a: 1, b: 0, c: 0, d: 0, e: 1, f: 0 } };
+  it("says the marks decided it", () => {
+    expect(judgmentSourceText({ judgedBy: "program", correctness: "correct", spot: choice })).toBe("Marked by mark detection (matches the key)");
+    expect(judgmentSourceText({ judgedBy: "program", correctness: "incorrect", spot: choice })).toBe("Marked by mark detection (doesn't match the key)");
+    expect(judgmentSourceText({ judgedBy: "program", correctness: "no_answer", spot: choice })).toBe("Marked by mark detection (nothing marked)");
+    expect(judgmentSourceText({ judgedBy: "program", correctness: "no_answer", spot: { ...choice, kind: "write_in" } }))
+      .toBe("Marked by mark detection (answer spot empty)");
+    expect(judgmentSourceText({ judgedBy: "ai", correctness: "correct", spot: { ...choice, kind: "write_in" } }))
+      .toBe("Read from the answer spot's crop; judged by the AI");
+  });
+});

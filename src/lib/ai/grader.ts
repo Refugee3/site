@@ -1,8 +1,11 @@
 import type { AutoMark } from "@/lib/grading/auto-mark";
+import type { ChoiceReading, WriteInReading } from "@/lib/omr/decide";
+import type { SpotEvidence, SpotKind } from "@/lib/omr/types";
 import type { AiUsage, AnswerType, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
 import type { AgentCallCost } from "./errors";
 import type {
-  GradingOutput, JudgingOutput, KeyExtraction, PacketOutput, PacketReadingOutput, ReadingOutput, ScanPages,
+  CropTranscriptions, GradingOutput, JudgingOutput, KeyExtraction, PacketOutput, PacketReadingOutput, ReadingOutput, ScanPages,
+  SpotProposal,
 } from "./schemas";
 
 export interface AiCallMeta {
@@ -48,6 +51,49 @@ export interface GradeInput {
    * grading's notes are "".
    */
   writeNotes?: boolean;
+  /** Mark detection against the blank worksheet, when the assignment has answer spots (see src/lib/omr). */
+  answerSpots?: AnswerSpots | null;
+}
+
+/**
+ * Mark detection for one assignment: reads the answer spots of a paper's pages against the blank worksheet, without any AI.
+ * `refs` are the items it covers.
+ */
+export interface AnswerSpots {
+  refs: string[];
+  /** `pages`: the paper's pages within `pdf` (1-based, in order). */
+  read(pdf: Uint8Array, pages: number[], o: { signal?: AbortSignal }): Promise<SpotDetection>;
+}
+
+/** What mark detection found on one paper; `ok: false` when it can't be used (the AI then reads every item). */
+export type SpotDetection =
+  | { ok: true; items: DetectedSpot[]; identityPdf: Uint8Array }
+  | { ok: false; reason: "page_count" | "unaligned"; note: string };
+
+export interface DetectedSpot {
+  ref: string;
+  kind: SpotKind;
+  /** Choice: the options' values in printed order. */
+  values: string[];
+  multi: boolean;
+  evidence: SpotEvidence;
+  choice?: ChoiceReading;
+  written?: WriteInReading;
+  /** Something was written: the crop to transcribe (PNG). */
+  crop?: { png: Uint8Array; width: number; height: number };
+}
+
+/** Crops of answer spots to transcribe: only the student's handwriting, never the question or the key. */
+export interface TranscribeInput {
+  crops: Array<{ id: string; kind: SpotKind; png: Uint8Array; width: number; height: number }>;
+}
+
+/** One blank worksheet page as an image, for the AI to find its answer spots. */
+export interface ProposeSpotsInput {
+  page: { png: Uint8Array; width: number; height: number };
+  pageNumber: number;
+  /** The key's item labels, so the AI knows which questions to look for. */
+  itemLabels: string[];
 }
 
 /** The assignment's notes setting; a GradeInput without one writes notes. */
@@ -177,4 +223,8 @@ export interface Grader {
    * is split first and each paper graded on its own.
    */
   gradePacketChunk?(i: PacketChunkInput, o?: CallOptions): Promise<{ output: PacketOutput; refs: string[]; meta: AiCallMeta }>;
+  /** Mark detection: transcribes crops of written answer spots (no question, no answers). Absent: the AI reads those items. */
+  transcribeCrops?(i: TranscribeInput, o?: CallOptions): Promise<{ output: CropTranscriptions; meta: AiCallMeta }>;
+  /** A scanned blank worksheet: proposes the answer spots of one page (the teacher confirms them). */
+  proposeSpots?(i: ProposeSpotsInput, o?: CallOptions): Promise<{ output: SpotProposal; meta: AiCallMeta }>;
 }
