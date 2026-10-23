@@ -82,14 +82,19 @@ export async function findSpotsAgain(a: Assignment, o: { ai: boolean }): Promise
   return detecting;
 }
 
-/** The teacher's answer spots (checked, moved, drawn): saved and confirmed, so papers are read from them. */
+/**
+ * The teacher's answer spots (checked, moved, drawn): saved and confirmed, so papers are read from them. Each save is a new
+ * spots revision: papers graded with an earlier one (or without spots) can then be regraded (regradeWithSpots).
+ */
 export function saveSpots(a: Assignment, spots: QuestionSpots[]): BlankWorksheet {
-  const ws = requireWorksheet(a.id);
-  if (ws.status === "detecting") throw new AppError("invalid_state", "Wait until the AI has found the answer spots.");
-  const clean = spots.slice(0, 300).map((s, i) => sanitizeSpot(s, i, ws.pageCount));
-  return updated(updateWorksheet(a.id, ws.contentSha256, {
-    spots: clean, spotsSource: ws.spotsSource ?? "manual", confirmedAt: now(), note: null,
-  }));
+  return tx(() => {
+    const ws = requireWorksheet(a.id);
+    if (ws.status === "detecting") throw new AppError("invalid_state", "Wait until the AI has found the answer spots.");
+    const clean = spots.slice(0, 300).map((s, i) => sanitizeSpot(s, i, ws.pageCount));
+    return updated(updateWorksheet(a.id, ws.contentSha256, {
+      spots: clean, spotsSource: ws.spotsSource ?? "manual", confirmedAt: now(), note: null, spotsRevision: ws.spotsRevision + 1,
+    }));
+  });
 }
 
 export async function removeBlankWorksheet(a: Assignment): Promise<void> {
@@ -98,16 +103,32 @@ export async function removeBlankWorksheet(a: Assignment): Promise<void> {
 }
 
 /**
- * Mark detection for grading the assignment's papers now, or null: no blank, its spots not saved yet, or none linked to a
- * key item.
+ * Mark detection for grading the assignment's papers now, with the spots revision it reads with (stored with the grading), or
+ * null: no blank, its spots not saved yet, or none linked to a key item.
  */
+export function spotsForGrading(assignmentId: string, items: KeyItem[]): { answerSpots: AnswerSpots; spotRevision: number } | null {
+  const active = activeSpots(assignmentId, items);
+  if (!active) return null;
+  const { ws, plan } = active;
+  return { answerSpots: answerSpots({ blankPdf: () => readDataFile(ws.pdfPath), sha: ws.contentSha256, plan }), spotRevision: ws.spotsRevision };
+}
+
+/** spotsForGrading's mark detection alone. */
 export function answerSpotsFor(assignmentId: string, items: KeyItem[]): AnswerSpots | null {
+  return spotsForGrading(assignmentId, items)?.answerSpots ?? null;
+}
+
+/** The spots revision papers are graded with now, or null when they are read without spots (as for spotsForGrading). */
+export function activeSpotRevision(assignmentId: string, items: KeyItem[] = listKeyItems(assignmentId)): number | null {
+  return activeSpots(assignmentId, items)?.ws.spotsRevision ?? null;
+}
+
+function activeSpots(assignmentId: string, items: KeyItem[]) {
   const ws = getWorksheet(assignmentId);
   if (!ws || ws.status !== "ready" || ws.confirmedAt === null) return null;
   const refs = itemRefs(items.length);
   const plan = [...planSpots(ws.spots, items).entries()].sort((x, y) => x[0] - y[0]).map(([index, spot]) => ({ ref: refs[index], spot }));
-  if (plan.length === 0) return null;
-  return answerSpots({ blankPdf: () => readDataFile(ws.pdfPath), sha: ws.contentSha256, plan });
+  return plan.length === 0 ? null : { ws, plan };
 }
 
 function requireWorksheet(assignmentId: string): BlankWorksheet {

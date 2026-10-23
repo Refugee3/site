@@ -548,6 +548,19 @@ CREATE TABLE blank_worksheets (
 ALTER TABLE submission_items ADD COLUMN answer_spot_json TEXT;
 `,
   },
+  {
+    version: 15,
+    name: "spot_revision",
+    sql: `
+-- Which saved answer spots a paper was graded with, so papers graded before the latest "Save answer spots" can be regraded in
+-- one click. blank_worksheets.spots_revision counts the teacher's saves (kept when the blank is replaced, so a paper graded
+-- with an earlier map never matches a later one); spots already saved count as revision 1. submissions.graded_spot_revision
+-- is the revision the stored grading read the marks with; NULL when it was graded without saved spots (or before this version).
+ALTER TABLE blank_worksheets ADD COLUMN spots_revision INTEGER NOT NULL DEFAULT 0 CHECK (spots_revision >= 0);
+UPDATE blank_worksheets SET spots_revision = 1 WHERE confirmed_at IS NOT NULL;
+ALTER TABLE submissions ADD COLUMN graded_spot_revision INTEGER CHECK (graded_spot_revision IS NULL OR graded_spot_revision >= 0);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

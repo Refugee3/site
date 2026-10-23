@@ -28,7 +28,7 @@ import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { formatPageRanges } from "@/lib/scan-layout";
 import { loadGuidance } from "@/lib/services/guidance";
 import { rescoreSubmission } from "@/lib/services/submissions";
-import { answerSpotsFor } from "@/lib/services/worksheets";
+import { spotsForGrading } from "@/lib/services/worksheets";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { CutTooLargeError, extractPageSets } from "@/lib/storage/pdf";
@@ -118,7 +118,7 @@ export async function handleOnePassScan(
   const sections = listSections(assignment.id);
   // Each chunk is read without the answer key (no key PDF either), then each paper is marked and judged (gradePacketByReading),
   // its marks read from the blank worksheet's answer spots first when the teacher saved them.
-  const spots = answerSpotsFor(assignment.id, items);
+  const spots = spotsForGrading(assignment.id, items);
   const chunkByteLimit = Math.min(SCAN_CHUNK_MAX_BYTES, PDF_BYTE_BUDGET);
 
   let progress: OnePassProgress = scan.onePass ?? emptyProgress();
@@ -143,7 +143,7 @@ export async function handleOnePassScan(
     const input: PacketChunkInput = {
       assignment, teacherNotes: key.teacherNotes, sections, items, guidance: guidance.guidance, writeNotes: assignment.writeNotes,
       chunkPdf: chunk.pdf, firstPage: chunk.firstPage, chunkPageCount: chunkPages, totalPages: scan.pageCount,
-      keyPageCount: ctx.keyPageCount, answerSpots: spots,
+      keyPageCount: ctx.keyPageCount, answerSpots: spots?.answerSpots ?? null,
     };
     let result: Awaited<ReturnType<NonNullable<Grader["gradePacketChunk"]>>>;
     try {
@@ -168,6 +168,7 @@ export async function handleOnePassScan(
       items: items.map((item) => ({ id: item.id, label: item.label })),
       keyRevision: key.revision,
       guidanceFingerprint: guidance.fingerprint,
+      spotRevision: spots?.spotRevision ?? null,
       servedModel: result.meta.servedModel,
       fallbackUsed: result.meta.fallbackUsed,
       engine: grader.engine,
@@ -369,6 +370,7 @@ function saveGrading(submission: Submission, paper: ChunkPaper, pending: OnePass
     generation: submission.gradingGeneration,
     keyRevision: pending.keyRevision,
     guidanceFingerprint: pending.guidanceFingerprint,
+    spotRevision: pending.spotRevision ?? null,
     items: reconciled.items,
     fields: {
       ...reconciled.fields, flags, teacherSummary, status: statusFromFlags(flags, null),

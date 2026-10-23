@@ -85,7 +85,9 @@ export interface SubmissionItem { submissionId: string; itemId: string; judgment
   overrideFeedback: string | null; overrideWhatStudentDid: string | null; updatedAt: number }
 export interface Submission { id: string; assignmentId: string; source: "student" | "teacher"; receiptToken: string; pdfPath: string;
   originalFilename: string; contentSha256: string; clientUploadId: string | null; byteSize: number; pageCount: number; status: SubmissionStatus; statusNote: string | null;
-  gradingGeneration: number; gradedKeyRevision: number | null; gradedGuidanceFp: string | null; aiName: string | null; aiNameConfidence: Confidence | null;
+  gradingGeneration: number; gradedKeyRevision: number | null; gradedGuidanceFp: string | null;
+  /** The blank worksheet's spots revision the stored grading read the marks with; null when graded without saved spots. */
+  gradedSpotRevision: number | null; aiName: string | null; aiNameConfidence: Confidence | null;
   aiSectionRaw: string | null; aiSectionMatch: string | null; studentName: string | null; nameSource: "ai" | "teacher" | null;
   nameKey: string | null; nameSortKey: string; sectionId: string | null; sectionKey: string | null; sectionSource: "ai" | "teacher" | null;
   documentMatch: DocumentMatch | null; flags: FlagCode[]; overallFeedback: string; overallFeedbackEdited: boolean; teacherSummary: string;
@@ -203,7 +205,9 @@ export interface BoardRow { submissionId: string; displayName: string; status: S
  */
 export type ItemOutcome = "correct" | "partly" | "wrong" | "blank" | "unreadable";
 export interface BoardView { groups: Array<{ key: string; label: string; rows: BoardRow[] }>; counts: StatusCounts;
-  scans: PendingScans; staleCount: number; guidanceStaleCount: number; active: boolean;
+  scans: PendingScans; staleCount: number; guidanceStaleCount: number;
+  /** Current graded papers read without the blank worksheet's latest saved answer spots (see spotsStaleIds). */
+  spotsStaleCount: number; active: boolean;
   /** The answer key is approved, so papers can be uploaded. */
   keyApproved: boolean;
   /**
@@ -290,6 +294,8 @@ export interface OnePassPendingChunk {
   items: Array<{ id: string; label: string }>;
   keyRevision: number;
   guidanceFingerprint: string;
+  /** The blank worksheet's spots revision the chunk was read with; null or absent (chunks stored before v15): none. */
+  spotRevision?: number | null;
   servedModel: string;
   fallbackUsed: boolean;
   engine: GraderEngine;

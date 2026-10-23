@@ -10,6 +10,7 @@ import { Select } from "@/components/ui/select";
 import { defaultKindFor } from "@/lib/omr/map-key";
 import { type QuestionSpots, SPOT_KINDS, type SpotBox, type SpotKind } from "@/lib/omr/types";
 import type { AnswerType } from "@/lib/types";
+import { RegradeSpotsButton } from "../regrade-spots-button";
 import { useActionRunner } from "../use-action-runner";
 import { useSyncedState } from "../use-synced-state";
 import {
@@ -23,6 +24,8 @@ export interface SpotEditorProps {
   spots: QuestionSpots[];
   items: Array<{ label: string; answerType: AnswerType; prompt: string }>;
   confirmed: boolean;
+  /** Papers graded before the latest saved spots: offered a regrade with mark detection once the spots are saved. */
+  regradeCount: number;
 }
 
 /** Where a box being dragged lives in a question: an option (choice) or an area. */
@@ -58,7 +61,7 @@ function sameSpots(a: QuestionSpots[], b: QuestionSpots[]): boolean {
  * The blank worksheet's pages with the answer spots drawn over them: drag a box to move it, drag a corner to resize it, draw
  * a new spot, and change the selected question's key item, kind and options in the panel. Saving confirms the spots.
  */
-export function SpotEditor({ assignmentId, pages, spots: serverSpots, items, confirmed }: SpotEditorProps) {
+export function SpotEditor({ assignmentId, pages, spots: serverSpots, items, confirmed, regradeCount }: SpotEditorProps) {
   const editable = useEditable();
   const [spots, setSpots, expectSave] = useSyncedState(serverSpots, sameSpots);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -178,6 +181,8 @@ export function SpotEditor({ assignmentId, pages, spots: serverSpots, items, con
         </div>
       )}
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
+      {/* Saving refreshes the page, so the count of papers graded before these spots arrives with the save. */}
+      {confirmed && <RegradeSpotsButton assignmentId={assignmentId} count={regradeCount} />}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(16rem,1fr)]">
         <div className="flex flex-col gap-4">

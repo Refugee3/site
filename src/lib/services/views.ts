@@ -31,7 +31,7 @@ import { decryptSecret } from "@/lib/secrets";
 import { isGuidanceStale, loadGuidance } from "@/lib/services/guidance";
 import { isKeyLocked, loadKeyState, requireKey } from "@/lib/services/key-state";
 import { getGradingCounts, getGradingProgress, getSplitProgress, typicalExtractionMs, typicalPaperMs } from "@/lib/services/progress";
-import { currentOnly } from "@/lib/services/submissions";
+import { currentOnly, spotsStaleIds } from "@/lib/services/submissions";
 import type {
   AiUsage, Assignment, AssignmentHeader, BoardFilter, BoardRow, BoardView, DashboardView, KeyEditorView, KeyItem, LessonsView,
   LessonView, OllamaSpeedView, ReviewView, Scan, ScanReviewView, ScanSummary, ScoreResult, SettingsView, StatusCounts, Submission,
@@ -154,6 +154,7 @@ export function getBoardView(a: Assignment, filter: BoardFilter, missedItemId: s
     scans,
     staleCount: listStaleIds(a.id, revision).filter((id) => current.has(id)).length,
     guidanceStaleCount: listGuidanceStaleIds(a.id, revision, loadGuidance(a).fingerprint).filter((id) => current.has(id)).length,
+    spotsStaleCount: spotsStaleIds(a).length,
     // Polls while anything is being graded, including a regraded earlier attempt, or a scan is being split.
     active: submissions.some((s) => s.status === "queued" || s.status === "grading") || scans.splitting > 0,
     keyApproved,

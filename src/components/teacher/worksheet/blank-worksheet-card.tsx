@@ -15,7 +15,12 @@ const DETECTING_POLL_MS = 3000;
  * The Answer key page's "Blank worksheet" card: upload an unanswered copy of the worksheet, check the answer spots found on
  * it, save them. Optional: the key is approved without it, and papers without saved spots are read by the AI as before.
  */
-export function BlankWorksheetCard({ assignmentId, view }: { assignmentId: string; view: WorksheetView }) {
+export function BlankWorksheetCard({ assignmentId, view, regradeCount }: {
+  assignmentId: string;
+  view: WorksheetView;
+  /** Papers graded before the latest saved answer spots, offered a regrade with mark detection. */
+  regradeCount: number;
+}) {
   const uploadUrl = `/api/teacher/assignments/${assignmentId}/worksheet`;
   const ws = view.worksheet;
   return (
@@ -45,13 +50,17 @@ export function BlankWorksheetCard({ assignmentId, view }: { assignmentId: strin
             <AutoRefresh intervalMs={DETECTING_POLL_MS} maxDurationMs={15 * 60_000} />
           </div>
         )}
-        {ws?.status === "ready" && <ReadyWorksheet assignmentId={assignmentId} view={view} uploadUrl={uploadUrl} />}
+        {ws?.status === "ready" && (
+          <ReadyWorksheet assignmentId={assignmentId} view={view} uploadUrl={uploadUrl} regradeCount={regradeCount} />
+        )}
       </div>
     </Card>
   );
 }
 
-function ReadyWorksheet({ assignmentId, view, uploadUrl }: { assignmentId: string; view: WorksheetView; uploadUrl: string }) {
+function ReadyWorksheet({ assignmentId, view, uploadUrl, regradeCount }: {
+  assignmentId: string; view: WorksheetView; uploadUrl: string; regradeCount: number;
+}) {
   const ws = view.worksheet!;
   const counts = summarize(ws.spots, view.items.map((item) => item.label));
   const source = ws.spotsSource === "text" ? "from the PDF's text" : ws.spotsSource === "ai" ? "by the AI" : "drawn by you";
@@ -96,6 +105,7 @@ function ReadyWorksheet({ assignmentId, view, uploadUrl }: { assignmentId: strin
         spots={ws.spots}
         items={view.items}
         confirmed={ws.confirmedAt !== null}
+        regradeCount={regradeCount}
       />
       <WorksheetActions assignmentId={assignmentId} hasText={ws.hasText} canAskAi={view.canAskAi} uploadUrl={uploadUrl} />
     </>

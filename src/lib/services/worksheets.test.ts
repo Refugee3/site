@@ -6,10 +6,10 @@ import { getSubmission, listItems } from "@/lib/db/repos/submissions";
 import { getWorksheet } from "@/lib/db/repos/worksheets";
 import { drainQueue, scriptedGrader } from "@/lib/jobs/test-utils";
 import { type FixtureMark, makeMarkedPaper, makeWorksheet, PLANTS_QUIZ, type ScanWarp } from "@/lib/omr/fixtures";
-import { ingestTeacherUpload } from "@/lib/services/submissions";
+import { ingestTeacherUpload, regradeWithSpots, saveItemOverride, spotsStaleIds } from "@/lib/services/submissions";
 import type { Assignment, KeyItem } from "@/lib/types";
 import { seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
-import { answerSpotsFor, findSpotsAgain, ingestBlankWorksheet, removeBlankWorksheet, saveSpots } from "./worksheets";
+import { activeSpotRevision, answerSpotsFor, findSpotsAgain, ingestBlankWorksheet, removeBlankWorksheet, saveSpots } from "./worksheets";
 
 // The whole path: a blank worksheet made with pdf-lib, its spots found from the text layer and saved, then "scanned" papers
 // graded by the worker with a practice grader that records what the AI was asked to read.
@@ -104,6 +104,40 @@ describe("blank worksheet", () => {
     expect(ws.note).toMatch(/draw them yourself/);
   });
 
+  it("each save is a new spots revision; papers are read with the saved revision only", async () => {
+    const ws = await uploadBlank();
+    expect(ws.spotsRevision).toBe(0);
+    expect(activeSpotRevision(assignment.id)).toBeNull();
+    expect(saveSpots(assignment, ws.spots).spotsRevision).toBe(1);
+    expect(activeSpotRevision(assignment.id)).toBe(1);
+    expect(saveSpots(assignment, ws.spots).spotsRevision).toBe(2);
+    expect(activeSpotRevision(assignment.id)).toBe(2);
+    await findSpotsAgain(assignment, { ai: false }); // unconfirmed: read without spots until saved again
+    expect(activeSpotRevision(assignment.id)).toBeNull();
+    expect(saveSpots(assignment, getWorksheet(assignment.id)!.spots).spotsRevision).toBe(3);
+  });
+
+  it("a paper graded before the spots were saved is regraded with mark detection in one click, keeping overrides", async () => {
+    const ws = await uploadBlank();
+    const early = await gradePaper([{ q: "1", circle: "B" }, { q: "5", write: "Chlorophyll" }], { label: "early" });
+    expect(early.submission.gradedSpotRevision).toBeNull();
+    expect(early.judgments["1"].spot).toBeUndefined();
+    saveItemOverride(early.submission, items.find((item) => item.label === "5")!.id, { pointsCenti: 50, feedback: "Say more." });
+    expect(spotsStaleIds(assignment)).toEqual([]); // spots not saved yet
+
+    saveSpots(assignment, ws.spots);
+    expect(spotsStaleIds(assignment)).toEqual([early.submission.id]);
+    expect(regradeWithSpots(assignment)).toBe(1);
+    await drainQueue(recordingGrader({ Q6: "Chlorophyll" }).grader);
+
+    const byLabel = new Map(items.map((item) => [item.id, item.label]));
+    const rows = new Map(listItems(early.submission.id).map((row) => [byLabel.get(row.itemId)!, row]));
+    expect(rows.get("1")!.judgment).toMatchObject({ studentAnswer: "B", correctness: "correct", judgedBy: "program" });
+    expect(rows.get("5")).toMatchObject({ overrideCenti: 50, overrideFeedback: "Say more." });
+    expect(getSubmission(early.submission.id)!.gradedSpotRevision).toBe(1);
+    expect(spotsStaleIds(assignment)).toEqual([]);
+  });
+
   it("finds the spots again from the text, and can be removed", async () => {
     const ws = await uploadBlank();
     saveSpots(assignment, ws.spots.slice(0, 2));
@@ -131,6 +165,7 @@ describe("grading with mark detection", () => {
     expect(judgments["1"].spot).toMatchObject({ kind: "choice", page: 1, marked: [] });
     expect(judgments["1"].marksSeen).toBe("no marks; every option clean");
     expect(submission.flags).not.toContain("worksheet_unaligned");
+    expect(submission.gradedSpotRevision).toBe(1);
   });
 
   it("a circle on B is B, and correct; written answers are cropped and transcribed without the question", async () => {

@@ -27,7 +27,7 @@ import { handleOnePassScan } from "@/lib/jobs/one-pass";
 import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
 import { autoGradeCleanSplit } from "@/lib/services/scans";
 import { rescoreSubmission } from "@/lib/services/submissions";
-import { answerSpotsFor } from "@/lib/services/worksheets";
+import { spotsForGrading } from "@/lib/services/worksheets";
 import { removeDataFile } from "@/lib/storage/files";
 import { extractPageSets } from "@/lib/storage/pdf";
 import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReading, Section } from "@/lib/types";
@@ -53,6 +53,8 @@ interface GradingContext {
   guidance: AssignmentGuidance;
   /** The engine of the grader the job runs on, stored with the grading. */
   engine: Grader["engine"];
+  /** The blank worksheet's saved answer spots as they were when the job started (null: none); the grading records their revision. */
+  spots: ReturnType<typeof spotsForGrading>;
 }
 
 type Billed = NonNullable<AiError["o"]["billed"]>;
@@ -77,7 +79,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
   const items = listKeyItems(assignment.id);
   const ctx: GradingContext = {
     job, submissionId: submission.id, generation, assignment, key, items, sections: listSections(assignment.id),
-    guidance: loadGuidance(assignment, items), engine: grader.engine,
+    guidance: loadGuidance(assignment, items), engine: grader.engine, spots: spotsForGrading(assignment.id, items),
   };
 
   if (!isKeyApproved(key, ctx.items.length)) {
@@ -103,7 +105,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
         // Off, the grader returns every note as "" (the scoring, lessons and views are unaffected).
         writeNotes: assignment.writeNotes,
         // The blank worksheet's answer spots, once the teacher saved them: marks are read there before any AI call.
-        answerSpots: answerSpotsFor(assignment.id, ctx.items),
+        answerSpots: ctx.spots?.answerSpots ?? null,
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
@@ -153,6 +155,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
     generation: ctx.generation,
     keyRevision: ctx.key.revision,
     guidanceFingerprint: ctx.guidance.fingerprint,
+    spotRevision: ctx.spots?.spotRevision ?? null,
     items: reconciled.items,
     fields: { ...reconciled.fields, status: reconciled.status, ...ai, aiEngine: ctx.engine },
   });

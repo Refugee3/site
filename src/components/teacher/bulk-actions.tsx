@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/ui/link-button";
 import { Spinner } from "@/components/ui/spinner";
 import { RegradeGuidanceButton } from "./regrade-guidance-button";
+import { RegradeSpotsButton } from "./regrade-spots-button";
 import { plural } from "./text";
 import { useActionRunner } from "./use-action-runner";
 
@@ -16,15 +17,17 @@ export interface BulkActionsProps {
   staleCount: number;
   /** Unreviewed papers graded before the latest lessons or grading preferences. */
   guidanceStaleCount: number;
+  /** Papers whose circled answers weren't read from the blank worksheet's latest saved answer spots. */
+  spotsStaleCount: number;
   failedCount: number;
   hasPapers: boolean;
 }
 
 /**
- * Whole-assignment actions above the board: regrade stale papers or those graded before the latest
- * corrections, retry failed ones, export grades.
+ * Whole-assignment actions above the board: regrade stale papers, those graded before the blank worksheet's answer spots
+ * were saved or before the latest corrections, retry failed ones, export grades.
  */
-export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, failedCount, hasPapers }: BulkActionsProps) {
+export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, spotsStaleCount, failedCount, hasPapers }: BulkActionsProps) {
   const runner = useActionRunner();
   const [message, setMessage] = useState<string | null>(null);
 
@@ -81,6 +84,7 @@ export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, fail
         </p>
       </div>
       {runner.error && <Alert tone="danger">{runner.error}</Alert>}
+      <RegradeSpotsButton assignmentId={assignmentId} count={spotsStaleCount} />
       <RegradeGuidanceButton assignmentId={assignmentId} count={guidanceStaleCount} />
     </div>
   );

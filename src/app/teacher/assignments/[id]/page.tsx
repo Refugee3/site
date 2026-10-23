@@ -46,6 +46,7 @@ export default async function WorkspacePage(props: PageProps<"/teacher/assignmen
               assignmentId={assignment.id}
               staleCount={view.staleCount}
               guidanceStaleCount={view.guidanceStaleCount}
+              spotsStaleCount={view.spotsStaleCount}
               failedCount={view.counts.failed}
               hasPapers={view.counts.total > 0}
             />

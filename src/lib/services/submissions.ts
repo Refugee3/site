@@ -6,7 +6,7 @@ import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { listKeyItems } from "@/lib/db/repos/keys";
 import {
   countSubmissions, deleteSubmissionRow, findBySha, getSubmission, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems,
-  listItemsForAssignment, listStaleIds, listSubmissions, requeueForRegrade, setItemOverride, updateSubmission,
+  listItemsForAssignment, listSpotsStaleIds, listStaleIds, listSubmissions, requeueForRegrade, setItemOverride, updateSubmission,
 } from "@/lib/db/repos/submissions";
 import { AppError, isAppError } from "@/lib/errors";
 import { IDENTITY_FLAGS, statusFromFlags } from "@/lib/flags";
@@ -22,6 +22,7 @@ import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { loadGuidance } from "@/lib/services/guidance";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { readLessonReason, syncLessonForItem } from "@/lib/services/lessons";
+import { activeSpotRevision } from "@/lib/services/worksheets";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, uploadName, type UploadedFile } from "@/lib/storage/pdf";
@@ -273,6 +274,24 @@ export function regradeWithGuidance(a: Assignment): number {
     const ids = listGuidanceStaleIds(a.id, requireKey(a.id).revision, loadGuidance(a).fingerprint);
     return requeueAll(a.id, currentOnly(a.id, ids));
   });
+}
+
+/**
+ * The current papers (graded or needing review, reviewed and corrected ones too) whose circled answers were not read from the
+ * blank worksheet's latest saved answer spots: graded before the spots were saved, or with an earlier save. None while papers
+ * are read without spots (no blank, its spots not saved, or none linked to a key item).
+ */
+export function spotsStaleIds(a: Pick<Assignment, "id">): string[] {
+  const revision = activeSpotRevision(a.id);
+  return revision === null ? [] : currentOnly(a.id, listSpotsStaleIds(a.id, revision));
+}
+
+/**
+ * Regrades the spots-stale papers (spotsStaleIds) so their marks are read from the latest answer spots; returns how many.
+ * Reviewed and corrected papers are included (fixing misread circles is the point); the teacher's overrides and edits are kept.
+ */
+export function regradeWithSpots(a: Assignment): number {
+  return tx(() => requeueAll(a.id, spotsStaleIds(a)));
 }
 
 /** Retries every current paper whose grading failed; returns how many. */

@@ -9,15 +9,18 @@ import { updateKey } from "@/lib/db/repos/keys";
 import { listLessons } from "@/lib/db/repos/lessons";
 import { countSubmissions, getSubmission, listItems, updateSubmission } from "@/lib/db/repos/submissions";
 import { setGradingPreferences } from "@/lib/db/repos/teachers";
+import { getWorksheet, putWorksheet } from "@/lib/db/repos/worksheets";
 import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { sha256Hex } from "@/lib/ids";
 import { PRIORITY } from "@/lib/jobs/queue";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
+import type { QuestionSpots } from "@/lib/omr/types";
 import { loadGuidance } from "@/lib/services/guidance";
 import {
   deleteSubmission, gradeManually, ingestTeacherUpload, markReviewed, regradeStale, regradeSubmission,
-  regradeWithGuidance, retryFailed, saveItemOverride, setOverallFeedback, setTotalOverride, storeTeacherPaper, updateIdentity,
+  regradeWithGuidance, regradeWithSpots, retryFailed, spotsStaleIds, saveItemOverride, setOverallFeedback, setTotalOverride, storeTeacherPaper, updateIdentity,
 } from "@/lib/services/submissions";
+import { saveSpots } from "@/lib/services/worksheets";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, Submission } from "@/lib/types";
 import {
@@ -406,5 +409,100 @@ describe("a regrade overwrites AI judgments only", () => {
     })));
 
     expect(getSubmission(s.id)).toMatchObject({ overallFeedback: "Teacher's words.", status: "graded", scoreEarnedCenti: 300 });
+  });
+});
+
+describe("regrading with the blank worksheet's answer spots", () => {
+  /** A choice spot on item 1 (two options), as the teacher would save it. */
+  const SPOTS: QuestionSpots[] = [{
+    id: "s1", label: "1", itemLabel: "1", kind: "choice", multi: false, enabled: true, page: 1, boxes: [],
+    options: [{ value: "A", box: { x: 0.1, y: 0.1, w: 0.05, h: 0.03 } }, { value: "B", box: { x: 0.2, y: 0.1, w: 0.05, h: 0.03 } }],
+  }];
+
+  /** A blank worksheet (the PDF itself is never read here) with SPOTS found but not saved yet. */
+  function uploadBlank(): void {
+    putWorksheet({
+      assignmentId: assignment.id, pdfPath: `files/${assignment.id}/worksheet/blank.pdf`, originalFilename: "blank.pdf",
+      contentSha256: "blank-sha", byteSize: 100, pageCount: 1, pageSizes: [{ width: 612, height: 792 }], hasText: true,
+      status: "ready", spotsSource: "text", spots: SPOTS, note: null, confirmedAt: null,
+    });
+  }
+
+  function setSpotRevision(id: string, revision: number | null): void {
+    getDb().prepare("UPDATE submissions SET graded_spot_revision = ? WHERE id = ?").run(revision, id);
+  }
+
+  it("each save of the spots is a new revision, kept when the blank is replaced", () => {
+    uploadBlank();
+    expect(getWorksheet(assignment.id)!.spotsRevision).toBe(0);
+    expect(saveSpots(assignment, SPOTS).spotsRevision).toBe(1);
+    expect(saveSpots(assignment, SPOTS).spotsRevision).toBe(2);
+    uploadBlank(); // a different blank: unconfirmed, but a paper graded with revision 2 must not match its first save
+    expect(getWorksheet(assignment.id)).toMatchObject({ spotsRevision: 2, confirmedAt: null });
+    expect(saveSpots(assignment, SPOTS).spotsRevision).toBe(3);
+  });
+
+  it("nothing is spots-stale while papers are read without saved spots", async () => {
+    const s = await gradedPaper();
+    expect(s.gradedSpotRevision).toBeNull();
+    expect(spotsStaleIds(assignment)).toEqual([]); // no blank
+    uploadBlank();
+    expect(spotsStaleIds(assignment)).toEqual([]); // spots not saved yet
+    saveSpots(assignment, SPOTS.map((spot) => ({ ...spot, itemLabel: "9" }))); // saved, but linked to no key item
+    expect(spotsStaleIds(assignment)).toEqual([]);
+    expect(regradeWithSpots(assignment)).toBe(0);
+    expect(getSubmission(s.id)).toMatchObject({ status: "graded", gradingGeneration: 1 });
+  });
+
+  it("counts the current graded papers, reviewed ones too, not read with the latest saved spots", () => {
+    const earlier = mariaLopezPaper("graded", 1);
+    const current = mariaLopezPaper("graded", 2);
+    const named = (name: string, status: "graded" | "needs_review" | "failed" | "queued") => {
+      const { id } = seedSubmission(assignment.id);
+      return updateSubmission(id, { status, studentName: name, nameKey: name.toLowerCase(), nameSortKey: name.toLowerCase() }).id;
+    };
+    const reviewed = named("Ben Ode", "graded");
+    updateSubmission(reviewed, { reviewedAt: T0 });
+    const flagged = named("Cy Moss", "needs_review");
+    const withLatest = named("Dee Park", "graded");
+    const failed = named("Eve Lund", "failed");
+    named("Fay Ng", "queued");
+
+    uploadBlank();
+    saveSpots(assignment, SPOTS);
+    setSpotRevision(withLatest, 1);
+    setSpotRevision(failed, null);
+    expect(spotsStaleIds(assignment).sort()).toEqual([current, reviewed, flagged].sort());
+    expect(spotsStaleIds(assignment)).not.toContain(earlier);
+
+    // A later save makes the paper graded with the first one stale too.
+    saveSpots(assignment, SPOTS);
+    expect(spotsStaleIds(assignment).sort()).toEqual([current, reviewed, flagged, withLatest].sort());
+  });
+
+  it("regradeWithSpots requeues them at regrade priority, keeps the teacher's overrides, and they are then current", async () => {
+    const s = await gradedPaper("maria");
+    const other = await gradedPaper("ben");
+    // Both are read with the same name: as two students, each is a current paper on the board.
+    updateIdentity(s, { studentName: "Maria Lopez", sectionId: null });
+    updateIdentity(other, { studentName: "Ben Ode", sectionId: null });
+    saveItemOverride(s, items[0].id, { pointsCenti: 40, feedback: "Teacher feedback." });
+    setTotalOverride(other, 250);
+    markReviewed(getSubmission(s.id)!);
+
+    uploadBlank();
+    saveSpots(assignment, SPOTS);
+    expect(regradeWithSpots(assignment)).toBe(2);
+    for (const id of [s.id, other.id]) {
+      expect(getSubmission(id)).toMatchObject({ status: "queued", gradingGeneration: 2, reviewedAt: null });
+      expect(jobRows(id).at(-1)).toMatchObject({ status: "queued", priority: PRIORITY.regrade });
+    }
+    expect(spotsStaleIds(assignment)).toEqual([]); // queued papers aren't counted again
+
+    await drainQueue(answeringGrader((refs) => makeGradingOutput(refs)));
+    expect(getSubmission(s.id)).toMatchObject({ status: "graded", gradedSpotRevision: 1 });
+    expect(listItems(s.id)[0]).toMatchObject({ overrideCenti: 40, overrideFeedback: "Teacher feedback." });
+    expect(getSubmission(other.id)).toMatchObject({ gradedSpotRevision: 1, totalOverrideCenti: 250 });
+    expect(regradeWithSpots(assignment)).toBe(0);
   });
 });

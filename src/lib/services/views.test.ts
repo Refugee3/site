@@ -129,7 +129,7 @@ describe("teacher views", () => {
       earlier: [{ submissionId: first.id, createdAt: first.createdAt, status: "graded" }],
     });
     // Counts cover the rows the board shows: the folded earlier attempt is not counted.
-    expect(board).toMatchObject({ counts: { graded: 1, needs_review: 1, total: 2 }, active: false, keyApproved: true, staleCount: 0 });
+    expect(board).toMatchObject({ counts: { graded: 1, needs_review: 1, total: 2 }, active: false, keyApproved: true, staleCount: 0, spotsStaleCount: 0 });
     expect(getBoardView(assignment, "needs_review").groups[0].rows.map((row) => row.submissionId)).toEqual([flagged.id]);
     expect(getBoardView(assignment, "failed").groups).toEqual([]);
   });

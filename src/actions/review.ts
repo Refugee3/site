@@ -9,7 +9,7 @@ import { MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { parseInput } from "@/lib/http/validation";
 import {
-  deleteSubmission, gradeManually, markReviewed, regradeStale, regradeSubmission, regradeWithGuidance, retryFailed,
+  deleteSubmission, gradeManually, markReviewed, regradeStale, regradeSubmission, regradeWithGuidance, regradeWithSpots, retryFailed,
   saveItemOverride, setOverallFeedback, setTotalOverride, updateIdentity,
 } from "@/lib/services/submissions";
 import type { ActionResult } from "@/lib/types";
@@ -114,6 +114,14 @@ export async function regradeStaleAction(assignmentId: string): Promise<ActionRe
 export async function regradeWithGuidanceAction(assignmentId: string): Promise<ActionResult<{ count: number }>> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
   const result = await attemptWithData(() => ({ count: regradeWithGuidance(assignment) }));
+  if (result.ok) refresh();
+  return result;
+}
+
+/** Regrades the papers graded before the blank worksheet's latest saved answer spots, reading their marks from them. */
+export async function regradeWithSpotsAction(assignmentId: string): Promise<ActionResult<{ count: number }>> {
+  const { assignment } = await requireOwnedAssignment(assignmentId);
+  const result = await attemptWithData(() => ({ count: regradeWithSpots(assignment) }));
   if (result.ok) refresh();
   return result;
 }

@@ -22,6 +22,8 @@ export interface GradingWrite {
   keyRevision: number;
   /** guidanceFingerprint() of the guidance this grading was sent ("" = none). */
   guidanceFingerprint: string;
+  /** The blank worksheet's spots revision the marks were read with; omitted or null: graded without saved spots. */
+  spotRevision?: number | null;
   items: Array<{ itemId: string; judgment: ItemJudgment | null }>;
   fields: Pick<Submission, "aiName" | "aiNameConfidence" | "aiSectionRaw" | "aiSectionMatch" | "studentName" | "nameSource" | "nameKey"
     | "nameSortKey" | "sectionId" | "sectionKey" | "sectionSource" | "documentMatch" | "flags" | "status" | "teacherSummary"
@@ -48,6 +50,7 @@ interface SubmissionRow {
   grading_generation: number;
   graded_key_revision: number | null;
   graded_guidance_fp: string | null;
+  graded_spot_revision: number | null;
   ai_name: string | null;
   ai_name_confidence: Confidence | null;
   ai_section_raw: string | null;
@@ -136,6 +139,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     gradingGeneration: row.grading_generation,
     gradedKeyRevision: row.graded_key_revision,
     gradedGuidanceFp: row.graded_guidance_fp,
+    gradedSpotRevision: row.graded_spot_revision,
     aiName: row.ai_name,
     aiNameConfidence: row.ai_name_confidence,
     aiSectionRaw: row.ai_section_raw,
@@ -371,7 +375,8 @@ export function saveGradingResult(w: GradingWrite): boolean {
          ai_model = @ai_model, ai_engine = @ai_engine, grader_engine = @grader_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
          read_ms = @read_ms, judge_ms = @judge_ms,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
-         graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp, graded_at = @at, updated_at = @at,
+         graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp,
+         graded_spot_revision = @graded_spot_revision, graded_at = @at, updated_at = @at,
          status_note = NULL, error_code = NULL, error_message = NULL, reviewed_at = NULL
        WHERE id = @id AND grading_generation = @generation`,
       {
@@ -405,6 +410,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
         overall_feedback: f.overallFeedback,
         graded_key_revision: w.keyRevision,
         guidance_fp: w.guidanceFingerprint,
+        graded_spot_revision: w.spotRevision ?? null,
       },
     );
 
@@ -558,6 +564,20 @@ export function listStaleIds(assignmentId: string, revision: number): string[] {
      WHERE assignment_id = ? AND status IN ('graded', 'needs_review') AND graded_key_revision < ?
      ORDER BY created_at, rowid`,
     assignmentId, revision,
+  ).map((row) => row.id);
+}
+
+/**
+ * Graded papers (reviewed and corrected ones too: overrides survive a regrade) whose marks were not read with the blank
+ * worksheet's spots revision `spotRevision`: graded with an earlier one, or without saved spots.
+ */
+export function listSpotsStaleIds(assignmentId: string, spotRevision: number): string[] {
+  return all<{ id: string }>(
+    `SELECT id FROM submissions
+     WHERE assignment_id = ? AND status IN ('graded', 'needs_review')
+       AND (graded_spot_revision IS NULL OR graded_spot_revision <> ?)
+     ORDER BY created_at, rowid`,
+    assignmentId, spotRevision,
   ).map((row) => row.id);
 }
 

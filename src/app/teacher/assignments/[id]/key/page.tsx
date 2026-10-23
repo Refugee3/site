@@ -16,6 +16,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { isKeyApproved } from "@/lib/grading/key";
+import { spotsStaleIds } from "@/lib/services/submissions";
 import { getKeyEditorView } from "@/lib/services/views";
 import { getWorksheetView } from "@/lib/services/worksheets";
 import type { Assignment, KeyEditorView } from "@/lib/types";
@@ -58,7 +59,13 @@ export default async function AnswerKeyPage(props: PageProps<"/teacher/assignmen
             </Alert>
           )}
           <EditorWithPdf assignment={assignment} view={view} />
-          {key.status === "ready" && <BlankWorksheetCard assignmentId={assignment.id} view={getWorksheetView(assignment)} />}
+          {key.status === "ready" && (
+            <BlankWorksheetCard
+              assignmentId={assignment.id}
+              view={getWorksheetView(assignment)}
+              regradeCount={spotsStaleIds(assignment).length}
+            />
+          )}
           {key.status === "ready" && key.sourcePdfPath && <ReplaceKey assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} />}
         </>
       )}

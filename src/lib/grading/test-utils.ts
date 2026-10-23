@@ -66,6 +66,7 @@ export function makeSubmission(o: Partial<Submission> = {}): Submission {
     gradingGeneration: 1,
     gradedKeyRevision: 1,
     gradedGuidanceFp: null,
+    gradedSpotRevision: null,
     aiName: null,
     aiNameConfidence: null,
     aiSectionRaw: null,

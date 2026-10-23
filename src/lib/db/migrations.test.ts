@@ -217,9 +217,11 @@ describe("migration 4 on a version-3 database", () => {
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
       ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS,
     }]);
-    // Migration 6 adds the timing columns: queued_at starts as the upload time. Migration 13's grading times start empty.
+    // Migration 6 adds the timing columns: queued_at starts as the upload time. Migration 13's grading times start empty,
+    // and migration 15's spots revision too (graded without saved answer spots).
     expect(db.prepare("SELECT * FROM submissions").get()).toEqual({
       ...submission, ai_engine: null, grader_engine: null, grading_started_at: null, queued_at: 1, read_ms: null, judge_ms: null,
+      graded_spot_revision: null,
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -319,7 +321,10 @@ describe("migration 5 on a version-4 database", () => {
     expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS });
     // The papers keep the model and engine they were graded with (migration 6 only adds its timing columns).
     expect(db.prepare("SELECT * FROM submissions").get())
-      .toEqual({ ...submission, grading_started_at: null, queued_at: 1, grader_engine: submission.ai_engine, read_ms: null, judge_ms: null });
+      .toEqual({
+        ...submission, grading_started_at: null, queued_at: 1, grader_engine: submission.ai_engine, read_ms: null, judge_ms: null,
+        graded_spot_revision: null,
+      });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
@@ -825,7 +830,7 @@ describe("migration 14 on a version-13 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(14);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT * FROM submission_items").get()).toEqual({ ...item, answer_spot_json: null });
     db.exec(`INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, status,
       created_at, updated_at) VALUES ('a1', 'files/x/blank/y.pdf', 'blank.pdf', 'sha', 10, 2, 'ready', 1, 1)`);
@@ -841,6 +846,41 @@ describe("migration 14 on a version-13 database", () => {
     // Deleting the assignment deletes its blank worksheet.
     db.exec("DELETE FROM assignments WHERE id = 'a1'");
     expect(count(db, "blank_worksheets")).toBe(0);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+});
+
+describe("migration 15 on a version-14 database", () => {
+  it("counts spots already saved as revision 1 and records no spots revision for earlier gradings", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 14)) db.exec(migration.sql);
+      db.pragma("user_version = 14");
+    })();
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a2', 't1', 'Test', 'GHIJKL', 1, 1);
+      INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, status,
+        confirmed_at, created_at, updated_at) VALUES ('a1', 'p1', 'blank.pdf', 'sha1', 10, 1, 'ready', 5, 1, 1);
+      INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, status,
+        confirmed_at, created_at, updated_at) VALUES ('a2', 'p2', 'blank.pdf', 'sha2', 10, 1, 'ready', NULL, 1, 1);
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, created_at, updated_at, queued_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 1, 1, 1);
+    `);
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
+    expect(db.prepare("SELECT assignment_id, spots_revision FROM blank_worksheets ORDER BY assignment_id").all())
+      .toEqual([{ assignment_id: "a1", spots_revision: 1 }, { assignment_id: "a2", spots_revision: 0 }]);
+    expect(db.prepare("SELECT graded_spot_revision FROM submissions").get()).toEqual({ graded_spot_revision: null });
+    for (const sql of ["UPDATE blank_worksheets SET spots_revision = -1", "UPDATE submissions SET graded_spot_revision = -1"]) {
+      expect(() => db.prepare(sql).run(), sql).toThrow(/constraint/i);
+    }
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
   });
