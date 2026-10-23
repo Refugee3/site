@@ -31,8 +31,8 @@ describe("migrate", () => {
     migrate(db);
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(tableNames(db)).toEqual([
-      "answer_keys", "app_settings", "assignments", "blank_worksheets", "jobs", "key_items", "key_questions", "lessons", "scans", "sections",
-      "sessions", "submission_items", "submissions", "teachers",
+      "answer_keys", "app_settings", "assignment_rosters", "assignments", "blank_worksheets", "jobs", "key_items", "key_questions", "lessons",
+      "scans", "sections", "sessions", "submission_items", "submissions", "teachers",
     ]);
     db.close();
   });
@@ -221,7 +221,7 @@ describe("migration 4 on a version-3 database", () => {
     // and migration 15's spots revision too (graded without saved answer spots).
     expect(db.prepare("SELECT * FROM submissions").get()).toEqual({
       ...submission, ai_engine: null, grader_engine: null, grading_started_at: null, queued_at: 1, read_ms: null, judge_ms: null,
-      graded_spot_revision: null,
+      graded_spot_revision: null, fast_lane: 0, roster_name: null,
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -323,7 +323,7 @@ describe("migration 5 on a version-4 database", () => {
     expect(db.prepare("SELECT * FROM submissions").get())
       .toEqual({
         ...submission, grading_started_at: null, queued_at: 1, grader_engine: submission.ai_engine, read_ms: null, judge_ms: null,
-        graded_spot_revision: null,
+        graded_spot_revision: null, fast_lane: 0, roster_name: null,
       });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -881,6 +881,39 @@ describe("migration 15 on a version-14 database", () => {
     for (const sql of ["UPDATE blank_worksheets SET spots_revision = -1", "UPDATE submissions SET graded_spot_revision = -1"]) {
       expect(() => db.prepare(sql).run(), sql).toThrow(/constraint/i);
     }
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+});
+
+describe("migration 16 on a version-15 database", () => {
+  it("adds the identity spots, the fast-lane and class-list columns and the class lists, keeping every row", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 15)) db.exec(migration.sql);
+      db.pragma("user_version = 15");
+    })();
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, status,
+        spots_json, confirmed_at, created_at, updated_at) VALUES ('a1', 'p1', 'blank.pdf', 'sha1', 10, 1, 'ready', '[]', 5, 1, 1);
+      INSERT INTO submissions (id, assignment_id, source, receipt_token, pdf_path, original_filename, content_sha256, byte_size,
+        page_count, status, created_at, updated_at, queued_at)
+        VALUES ('s1', 'a1', 'teacher', 'r1', 'p', 'f.pdf', 'sha', 1, 1, 'graded', 1, 1, 1);
+    `);
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect(db.prepare("SELECT spots_json, identity_spots_json FROM blank_worksheets").get()).toEqual({ spots_json: "[]", identity_spots_json: null });
+    expect(db.prepare("SELECT fast_lane, roster_name FROM submissions").get()).toEqual({ fast_lane: 0, roster_name: null });
+    db.exec("INSERT INTO assignment_rosters (assignment_id, roster_text, updated_at) VALUES ('a1', 'Maria Lopez | Period 3', 2)");
+    expect(() => db.prepare("UPDATE submissions SET fast_lane = 2").run()).toThrow(/constraint/i);
+    // A class list goes with its assignment.
+    db.exec("DELETE FROM assignments WHERE id = 'a1'");
+    expect(count(db, "assignment_rosters")).toBe(0);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
   });

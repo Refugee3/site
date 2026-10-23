@@ -17,13 +17,17 @@ export function modelName(aiModel: string): string {
   return aiModel.startsWith(OLLAMA_MODEL_PREFIX) ? aiModel.slice(OLLAMA_MODEL_PREFIX.length) : aiModel;
 }
 
+/** A paper the fast lane cut from a class scan: its pages were matched to the blank worksheet and only crops were read. */
+export const FAST_LANE_TIME_TEXT = "Fast lane: matched pages to the blank worksheet";
+
 /**
  * "Read: 48 s · Checked: 12 s · Model: gemma3:27b" for a paper whose grading recorded its times; "Checked: not needed" when
  * the program marked every item (and notes are off), so no judge call was made. null when no time was recorded.
  */
-export function gradingTimeText(s: Pick<Submission, "readMs" | "judgeMs" | "aiModel">): string | null {
+export function gradingTimeText(s: Pick<Submission, "readMs" | "judgeMs" | "aiModel"> & Partial<Pick<Submission, "fastLane">>): string | null {
   if (s.readMs === null) return null;
   return [
+    ...(s.fastLane ? [FAST_LANE_TIME_TEXT] : []),
     `Read: ${formatStepDuration(s.readMs)}`,
     `Checked: ${s.judgeMs === null ? "not needed" : formatStepDuration(s.judgeMs)}`,
     ...(s.aiModel ? [`Model: ${modelName(s.aiModel)}`] : []),

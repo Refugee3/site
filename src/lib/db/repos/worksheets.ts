@@ -19,6 +19,11 @@ export interface BlankWorksheet {
   status: "detecting" | "ready";
   spotsSource: SpotSource | null;
   spots: QuestionSpots[];
+  /**
+   * Where the name and the class are written (spots of kind "name" and "section", read from crops); null until they were
+   * looked for (a blank stored before they existed).
+   */
+  identitySpots: QuestionSpots[] | null;
   /** Why the spots are as they are ("No AI is set up: draw the answer spots yourself."). */
   note: string | null;
   /** When the teacher last saved the spots; papers are only read from confirmed spots. */
@@ -44,6 +49,7 @@ interface Row {
   status: "detecting" | "ready";
   spots_source: SpotSource | null;
   spots_json: string;
+  identity_spots_json: string | null;
   note: string | null;
   confirmed_at: number | null;
   spots_revision: number;
@@ -64,6 +70,7 @@ function fromRow(row: Row): BlankWorksheet {
     status: row.status,
     spotsSource: row.spots_source,
     spots: JSON.parse(row.spots_json) as QuestionSpots[],
+    identitySpots: row.identity_spots_json === null ? null : (JSON.parse(row.identity_spots_json) as QuestionSpots[]),
     note: row.note,
     confirmedAt: row.confirmed_at,
     spotsRevision: row.spots_revision,
@@ -77,7 +84,8 @@ export function getWorksheet(assignmentId: string): BlankWorksheet | null {
   return row ? fromRow(row) : null;
 }
 
-export type NewWorksheet = Omit<BlankWorksheet, "spotsRevision" | "createdAt" | "updatedAt">;
+export type NewWorksheet = Omit<BlankWorksheet, "spotsRevision" | "createdAt" | "updatedAt" | "identitySpots">
+  & { identitySpots?: QuestionSpots[] | null };
 
 /**
  * Stores the assignment's blank worksheet, replacing any earlier one (whose spots revision carries over); returns the replaced
@@ -89,13 +97,14 @@ export function putWorksheet(w: NewWorksheet): { worksheet: BlankWorksheet; repl
   run("DELETE FROM blank_worksheets WHERE assignment_id = ?", w.assignmentId);
   run(
     `INSERT INTO blank_worksheets (assignment_id, pdf_path, original_filename, content_sha256, byte_size, page_count, page_sizes_json,
-       has_text, status, spots_source, spots_json, note, confirmed_at, spots_revision, created_at, updated_at)
+       has_text, status, spots_source, spots_json, identity_spots_json, note, confirmed_at, spots_revision, created_at, updated_at)
      VALUES (@assignment_id, @pdf_path, @original_filename, @content_sha256, @byte_size, @page_count, @page_sizes_json,
-       @has_text, @status, @spots_source, @spots_json, @note, @confirmed_at, @spots_revision, @created_at, @updated_at)`,
+       @has_text, @status, @spots_source, @spots_json, @identity_spots_json, @note, @confirmed_at, @spots_revision, @created_at, @updated_at)`,
     {
       assignment_id: w.assignmentId, pdf_path: w.pdfPath, original_filename: w.originalFilename.slice(0, 300),
       content_sha256: w.contentSha256, byte_size: w.byteSize, page_count: w.pageCount, page_sizes_json: JSON.stringify(w.pageSizes),
       has_text: toBit(w.hasText), status: w.status, spots_source: w.spotsSource, spots_json: JSON.stringify(w.spots),
+      identity_spots_json: w.identitySpots === undefined || w.identitySpots === null ? null : JSON.stringify(w.identitySpots),
       note: w.note === null ? null : w.note.slice(0, 500), confirmed_at: w.confirmedAt, spots_revision: previous?.spotsRevision ?? 0,
       created_at: at, updated_at: at,
     },
@@ -103,12 +112,13 @@ export function putWorksheet(w: NewWorksheet): { worksheet: BlankWorksheet; repl
   return { worksheet: getWorksheet(w.assignmentId)!, replacedPdfPath: previous && previous.pdfPath !== w.pdfPath ? previous.pdfPath : null };
 }
 
-type Patch = Pick<BlankWorksheet, "status" | "spotsSource" | "spots" | "note" | "confirmedAt" | "spotsRevision">;
+type Patch = Pick<BlankWorksheet, "status" | "spotsSource" | "spots" | "identitySpots" | "note" | "confirmedAt" | "spotsRevision">;
 
 const COLUMNS: ColumnMap<Patch> = {
   status: "status",
   spotsSource: "spots_source",
   spots: ["spots_json", (spots) => JSON.stringify(spots)],
+  identitySpots: ["identity_spots_json", (spots) => (spots === null ? null : JSON.stringify(spots))],
   note: ["note", (note) => (note === null ? null : note.slice(0, 500))],
   confirmedAt: "confirmed_at",
   spotsRevision: "spots_revision",

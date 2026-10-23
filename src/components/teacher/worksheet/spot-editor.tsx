@@ -8,7 +8,7 @@ import { cx } from "@/components/ui/cx";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { defaultKindFor } from "@/lib/omr/map-key";
-import { type QuestionSpots, SPOT_KINDS, type SpotBox, type SpotKind } from "@/lib/omr/types";
+import { isIdentityKind, type QuestionSpots, SPOT_KINDS, type SpotBox, type SpotKind } from "@/lib/omr/types";
 import type { AnswerType } from "@/lib/types";
 import { RegradeSpotsButton } from "../regrade-spots-button";
 import { useActionRunner } from "../use-action-runner";
@@ -267,7 +267,8 @@ function SpotShapes(props: {
   const { spot, h, selected, editable, onBoxDown } = props;
   const boxes = spotBoxes(spot);
   const color = KIND_COLOR[spot.kind];
-  const muted = !spot.enabled || spot.itemLabel === null;
+  const identity = isIdentityKind(spot.kind);
+  const muted = !spot.enabled || (spot.itemLabel === null && !identity);
   const union = unionOf(boxes);
   const handleSize = 9;
   return (
@@ -301,7 +302,7 @@ function SpotShapes(props: {
       ))}
       {union && (() => {
         // Beside the spots when the page has room there (it rarely holds printed text), else just above them.
-        const title = `${spotTitle(spot)}${spot.itemLabel === null ? " (not linked)" : !spot.enabled ? " (off)" : ""}`;
+        const title = `${spotTitle(spot)}${spot.itemLabel === null && !identity ? " (not linked)" : !spot.enabled ? " (off)" : ""}`;
         const room = 1000 - (union.x + union.w) * 1000;
         const beside = room >= title.length * 7.5 + 10;
         return (
@@ -321,7 +322,7 @@ function SpotShapes(props: {
 function QuestionList({ spots, onSelect, editable }: { spots: QuestionSpots[]; onSelect: (id: string) => void; editable: boolean }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-line bg-subtle p-3 text-sm">
-      <p className="font-semibold">Questions with answer spots</p>
+      <p className="font-semibold">Answer spots (and where the name goes)</p>
       {spots.length === 0 ? (
         <p className="text-muted">None yet. {editable ? "Use “Draw a new answer spot”, then drag a box on the page." : ""}</p>
       ) : (
@@ -330,7 +331,7 @@ function QuestionList({ spots, onSelect, editable }: { spots: QuestionSpots[]; o
             <li key={s.id}>
               <button type="button" onClick={() => onSelect(s.id)} className="w-full rounded px-2 py-1 text-left hover:bg-surface">
                 <span className="font-medium" style={{ color: KIND_COLOR[s.kind] }}>{spotTitle(s)}</span>
-                <span className="text-muted"> · page {s.page}{s.itemLabel === null ? " · not linked" : ""}{!s.enabled ? " · off" : ""}</span>
+                <span className="text-muted"> · page {s.page}{s.itemLabel === null && !isIdentityKind(s.kind) ? " · not linked" : ""}{!s.enabled ? " · off" : ""}</span>
               </button>
             </li>
           ))}
@@ -357,6 +358,12 @@ function QuestionPanel(props: {
         <span className="font-medium">Question label</span>
         <Input id={`${id}-label`} value={spot.label} disabled={!editable} onChange={(e) => onChange((s) => ({ ...s, label: e.target.value }))} />
       </label>
+      {isIdentityKind(spot.kind) ? (
+        <p className="text-muted">
+          {spot.kind === "name" ? "Where the student writes their name" : "Where the student writes their class, period or section"}:
+          only this crop is read for it (no full page).
+        </p>
+      ) : (
       <label className="flex flex-col gap-1" htmlFor={`${id}-item`}>
         <span className="font-medium">Key item</span>
         <Select
@@ -373,6 +380,7 @@ function QuestionPanel(props: {
           ))}
         </Select>
       </label>
+      )}
       <label className="flex flex-col gap-1" htmlFor={`${id}-kind`}>
         <span className="font-medium">How it is answered</span>
         <Select id={`${id}-kind`} value={spot.kind} disabled={!editable} onChange={(e) => onChange((s) => withKind(s, e.target.value as SpotKind))}>

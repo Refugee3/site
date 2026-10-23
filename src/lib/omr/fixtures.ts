@@ -74,6 +74,24 @@ export const MIXED_WORKSHEET: FixtureQuestion[] = [
   { label: "6", text: "Explain how a seed grows.", room: 1.4 },
 ];
 
+/**
+ * A three-page class packet (the fast lane's tests and timings): choices, blanks and written answers on every page, so each
+ * page can be told from the others by its print.
+ */
+export const CLASS_PACKET: FixtureQuestion[] = [
+  { label: "1", text: "Which process do plants use to make food from sunlight?", options: { kind: "letters", items: ["respiration", "photosynthesis", "digestion", "erosion"] } },
+  { label: "2", text: "Solve 3/x = 9/12.   x =", blank: true },
+  { label: "3", text: "The sun is a star.", options: { kind: "words", words: ["True", "False"] } },
+  { label: "4", text: "Explain why leaves look green.", room: 3.2 },
+  { label: "5", text: "Name the gas that plants give off.", blank: true },
+  { label: "6", text: "Do plants need light?", options: { kind: "boxes", items: ["Yes", "No"] } },
+  { label: "7", text: "Which part of the plant takes in water?", options: { kind: "letters", items: ["leaf", "root", "flower", "seed"] } },
+  { label: "8", text: "Describe what happens to a seed after it is planted.", room: 3.4 },
+  { label: "9", text: "Water boils at", blank: true },
+  { label: "10", text: "Circle the correct word:", options: { kind: "slash", before: "The leaves", words: ["is", "are"], after: "green." } },
+  { label: "11", text: "Explain how the water cycle works, in your own words.", room: 4.2 },
+];
+
 export async function makeWorksheet(
   questions: FixtureQuestion[], o: { title?: string } = {},
 ): Promise<{ pdf: Uint8Array; layout: FixtureLayout }> {
@@ -271,4 +289,40 @@ function placeWarped(page: PDFPage, embedded: Parameters<PDFPage["drawPage"]>[0]
   const x = cx + (w.dx ?? 0) - s * (Math.cos(theta) * cx - Math.sin(theta) * cy);
   const y = cy + (w.dy ?? 0) - s * (Math.sin(theta) * cx + Math.cos(theta) * cy);
   page.drawPage(embedded, { x, y, xScale: s, yScale: s, rotate: degrees(w.rotate ?? 0) });
+}
+
+export interface ClassScanStudent {
+  name?: string;
+  marks: FixtureMark[];
+  warp?: ScanWarp;
+  /** Worksheet pages (1-based) left out of the scan, as if lost. */
+  drop?: number[];
+  /** Worksheet pages in the order they were scanned (default 1, 2, …). */
+  order?: number[];
+  /** A blank page scanned after this student's pages (a blank back). */
+  blankAfter?: boolean;
+}
+
+/**
+ * A whole-class scan: each student's marked paper (makeMarkedPaper), one after another, with any pages left out, reordered
+ * or blank pages between them; `cover` puts a cover page (other print) first.
+ */
+export async function makeClassScan(
+  worksheet: { pdf: Uint8Array; layout: FixtureLayout }, students: ClassScanStudent[], o: { cover?: boolean } = {},
+): Promise<Uint8Array> {
+  const out = await PDFDocument.create();
+  const font = await out.embedFont(StandardFonts.HelveticaBold);
+  if (o.cover) {
+    const cover = out.addPage(PAGE);
+    cover.drawText("Period 3 - Science homework", { x: 120, y: 500, size: 28, font });
+    cover.drawText("Collected Friday", { x: 200, y: 450, size: 20, font });
+  }
+  for (const student of students) {
+    const paper = await PDFDocument.load(await makeMarkedPaper(worksheet, student.marks, { warp: student.warp, name: student.name }));
+    const order = (student.order ?? paper.getPageIndices().map((i) => i + 1)).filter((p) => !(student.drop ?? []).includes(p));
+    const pages = await out.copyPages(paper, order.map((p) => p - 1));
+    for (const page of pages) out.addPage(page);
+    if (student.blankAfter) out.addPage(PAGE);
+  }
+  return out.save();
 }

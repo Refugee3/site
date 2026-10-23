@@ -100,6 +100,8 @@ export function makeSubmission(o: Partial<Submission> = {}): Submission {
     gradingStartedAt: null,
     queuedAt: 1_000,
     readMs: null,
+    fastLane: false,
+    rosterName: null,
     judgeMs: null,
     createdAt: 1_000,
     updatedAt: 1_000,

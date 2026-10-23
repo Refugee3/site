@@ -21,6 +21,20 @@ export interface Registration {
   map: Affine;
   angleDeg: number;
   scale: number;
+  /** The shift found (student pixels), with angleDeg and scale enough to start another registration from it. */
+  shiftX: number;
+  shiftY: number;
+}
+
+/**
+ * Where to start: a registration found on smaller renders of the same pages (its angle and scale, its shift in pixels of
+ * `student`). The exhaustive coarse search is then skipped: only the refinements run.
+ */
+export interface RegistrationStart {
+  angleDeg: number;
+  scale: number;
+  shiftX: number;
+  shiftY: number;
 }
 
 /** Below this, the student's page is not taken to be the blank worksheet's page (another worksheet, a blank page…). */
@@ -65,17 +79,20 @@ interface Scored extends Params {
 }
 
 /** Registers `student` to the prepared blank page. Both are rendered at the same pixel density. */
-export function registerPage(blank: PreparedPage, student: GrayImage): Registration {
+export function registerPage(blank: PreparedPage, student: GrayImage, o: { start?: RegistrationStart } = {}): Registration {
   const studentInk = inkMask(student, INK_THRESHOLD);
   if (blank.inkCount < 50) return result(blank, student, { theta: 0, scale: 1, tx: 0, ty: 0, score: 0 });
   const targets = new Map<number, Mask>();
   // The coarse map is already forgiving (each pixel is an 8×8 block); finer maps allow a pixel of slack.
   for (const f of LEVELS) targets.set(f, f === 8 ? orDownscale(studentInk, f) : dilate(orDownscale(studentInk, f), 1));
 
-  // Coarse: every rotation, scale and shift on the 1/8 maps; the best few go on.
-  const coarse = searchCoarse(blank, targets.get(8)!, student, 0);
+  // Coarse: every rotation, scale and shift on the 1/8 maps; the best few go on (or the start given).
+  const start = o.start;
+  const coarse = start
+    ? [{ theta: start.angleDeg * DEG, scale: start.scale, tx: start.shiftX / 8, ty: start.shiftY / 8, score: 0 }]
+    : searchCoarse(blank, targets.get(8)!, student, 0);
   let candidates = coarse;
-  if (coarse[0].score < 0.5) {
+  if (!start && coarse[0].score < 0.5) {
     // Maybe upside down.
     candidates = [...coarse, ...searchCoarse(blank, targets.get(8)!, student, Math.PI)].sort((a, b) => b.score - a.score).slice(0, KEEP);
   }
@@ -106,6 +123,8 @@ function result(blank: PreparedPage, student: GrayImage, p: Scored): Registratio
     },
     angleDeg: (p.theta * 180) / Math.PI,
     scale: p.scale,
+    shiftX: p.tx,
+    shiftY: p.ty,
   };
 }
 
@@ -149,7 +168,7 @@ const KEEP = 4;
 
 /** A small penalty that only decides between near-equal fits: prefer the simpler transform. */
 function prior(deg: number, scale: number, shiftX: number, shiftY: number): number {
-  return 0.002 * Math.abs(deg) + 0.05 * Math.abs(scale - 1) + 0.02 * (Math.abs(shiftX) + Math.abs(shiftY));
+  return 0.002 * Math.abs(deg) + 0.4 * Math.abs(scale - 1) + 0.02 * (Math.abs(shiftX) + Math.abs(shiftY));
 }
 
 function searchCoarse(blank: PreparedPage, target: Mask, student: GrayImage, baseTheta: number): Scored[] {

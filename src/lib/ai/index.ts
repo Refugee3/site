@@ -159,6 +159,7 @@ function ollamaGrader(cfg: AppConfig): Grader {
       timeoutMs: cfg.ollamaTimeoutMs,
       maxPages: Math.max(cfg.maxPages, cfg.maxScanPages),
       concurrency: speed.papersAtATime ?? cfg.ollamaConcurrency,
+      cropsPerCall: cfg.ollamaCropsPerCall,
     },
   });
 }

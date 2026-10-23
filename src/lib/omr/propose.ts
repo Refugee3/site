@@ -32,8 +32,13 @@ export function proposalToSpots(
       options = options.map((opt) => ({ ...opt, value: opt.value === "F" ? "False" : "True" }));
     }
     const answerBox = toBox(q.answer_box);
-    const wanted = keyItem ? defaultKindFor(keyItem.answerType) : q.kind;
     const id = `s${o.firstId + spots.length}`;
+    if (q.kind === "name" || q.kind === "section") {
+      // Where the name or class is written: an identity spot, never linked to a key item.
+      if (answerBox) spots.push({ id, label, itemLabel: null, kind: q.kind, multi: false, enabled: true, page: o.page, options: [], boxes: [answerBox] });
+      continue;
+    }
+    const wanted = keyItem ? defaultKindFor(keyItem.answerType) : q.kind;
     const common = { id, label, itemLabel: keyItem?.label ?? null, multi: false, enabled: true, page: o.page };
     if ((wanted === "choice" || !answerBox) && options.length >= 2) {
       spots.push({ ...common, kind: "choice", options, boxes: [] });

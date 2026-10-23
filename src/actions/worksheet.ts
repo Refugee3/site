@@ -28,7 +28,8 @@ const SpotsSchema: z.ZodType<QuestionSpots[]> = z.array(z.object({
 
 export async function saveSpotsAction(assignmentId: string, spots: QuestionSpots[]): Promise<ActionResult> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
-  const result = await attempt(() => saveSpots(assignment, parseInput(SpotsSchema, spots)));
+  // The editor sends every spot, the name and class spots included: one it left out was removed.
+  const result = await attempt(() => saveSpots(assignment, parseInput(SpotsSchema, spots), { identityComplete: true }));
   if (result.ok) refresh();
   return result;
 }

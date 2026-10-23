@@ -1,4 +1,4 @@
-import type { QuestionSpots, SpotBox, SpotKind } from "@/lib/omr/types";
+import { isIdentityKind, type QuestionSpots, type SpotBox, type SpotKind } from "@/lib/omr/types";
 
 // The answer-spot editor's pure helpers: labels, colours, dragging and resizing boxes in normalized page coordinates, and
 // the edits the side panel makes to one question's spots.
@@ -8,6 +8,8 @@ export const KIND_LABEL: Record<SpotKind, string> = {
   write_in: "Written answer",
   matching: "Matching (letters in blanks)",
   diagram: "Drawing",
+  name: "Student's name",
+  section: "Class / period / section",
 };
 
 /** SVG stroke colours by kind (theme tokens where there is one). */
@@ -16,6 +18,8 @@ export const KIND_COLOR: Record<SpotKind, string> = {
   write_in: "var(--color-success-600)",
   matching: "var(--color-warning-500)",
   diagram: "#7c3aed",
+  name: "#0e7490",
+  section: "#0e7490",
 };
 
 /** "Q3: A B C D", "Q5: write-in", "Q4: drawing" (Q + the question label as printed). */
@@ -30,6 +34,10 @@ export function spotTitle(s: Pick<QuestionSpots, "label" | "kind" | "options">):
       return `${name}: matching`;
     case "diagram":
       return `${name}: drawing`;
+    case "name":
+      return "Student's name";
+    case "section":
+      return `${s.label || "Class"}: class / period`;
   }
 }
 
@@ -81,6 +89,11 @@ export function boxFromDrag(a: { x: number; y: number }, b: { x: number; y: numb
 /** The kind changed: a choice keeps its options' area as one answer area, an area becomes two options side by side. */
 export function withKind(s: QuestionSpots, kind: SpotKind): QuestionSpots {
   if (kind === s.kind) return s;
+  // An identity spot (the name, the class) is never linked to a key item.
+  if (isIdentityKind(kind)) {
+    const area = s.kind === "choice" ? (unionOf(s.options.map((o) => o.box)) ?? { x: 0.1, y: 0.05, w: 0.4, h: 0.04 }) : (unionOf(s.boxes) ?? { x: 0.1, y: 0.05, w: 0.4, h: 0.04 });
+    return { ...s, kind, itemLabel: null, multi: false, options: [], boxes: [area], label: kind === "name" ? "Name" : "Class" };
+  }
   if (kind === "choice") {
     const area = unionOf(s.boxes) ?? { x: 0.1, y: 0.1, w: 0.3, h: 0.04 };
     const half = area.w / 2;

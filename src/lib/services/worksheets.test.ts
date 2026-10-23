@@ -156,12 +156,14 @@ describe("grading with mark detection", () => {
     saveSpots(assignment, ws.spots);
   });
 
-  it("an unanswered paper: every item blank, from the marks alone; the AI only reads page 1 for the name", async () => {
+  it("an unanswered paper: every item blank, from the marks alone; the name is read from its crop, no page goes to the AI", async () => {
     const { judgments, reads, crops, submission } = await gradePaper([], { label: "blank" });
     expect(Object.values(judgments).map((j) => [j.correctness, j.judgedBy])).toEqual(Array(6).fill(["no_answer", "program"]));
-    expect(reads).toHaveLength(1);
-    expect(reads[0]).toMatchObject({ items: [], studentPageCount: 1 });
-    expect(crops).toHaveLength(0);
+    // The name spot found on the blank ("Name: ____") is cropped and transcribed; nothing else is sent to the AI.
+    expect(reads).toHaveLength(0);
+    expect(crops).toHaveLength(1);
+    expect(crops[0].crops.map((c) => [c.id, c.kind])).toEqual([["NAME", "name"]]);
+    expect(submission.aiName).toBe("Sample answer for NAME");
     expect(judgments["1"].spot).toMatchObject({ kind: "choice", page: 1, marked: [] });
     expect(judgments["1"].marksSeen).toBe("no marks; every option clean");
     expect(submission.flags).not.toContain("worksheet_unaligned");
@@ -180,11 +182,25 @@ describe("grading with mark detection", () => {
     expect(judgments["3b"]).toMatchObject({ correctness: "no_answer", judgedBy: "program" });
     expect(judgments["4"]).toMatchObject({ confidence: "low", reviewReason: "ambiguous_reading" });
     expect(judgments["5"]).toMatchObject({ correctness: "no_answer" });
-    // One call with the three written spots, each only a crop.
-    expect(crops).toHaveLength(1);
-    expect(crops[0].crops.map((c) => [c.id, c.kind])).toEqual([["Q2", "write_in"], ["Q3", "write_in"], ["Q5", "diagram"]]);
-    expect(Object.keys(crops[0])).toEqual(["crops"]);
-    expect(Object.keys(crops[0].crops[0]).sort()).toEqual(["height", "id", "kind", "png", "width"]);
+    // One call for the name, then one with the three written spots, each only a crop (and no class list with answers).
+    expect(crops).toHaveLength(2);
+    expect(crops[0].crops.map((c) => [c.id, c.kind])).toEqual([["NAME", "name"]]);
+    expect(crops[1].crops.map((c) => [c.id, c.kind])).toEqual([["Q2", "write_in"], ["Q3", "write_in"], ["Q5", "diagram"]]);
+    expect(Object.keys(crops[1])).toEqual(["crops"]);
+    expect(Object.keys(crops[1].crops[0]).sort()).toEqual(["height", "id", "kind", "png", "width"]);
+  });
+
+  it("a paper uploaded on its own: the name crop is read with the class list as hints, the answers without; the list's spelling wins", async () => {
+    const { saveRoster } = await import("./rosters");
+    saveRoster(assignment, "Ada Lovelace | Period 2\nAlan Turing");
+    const { crops, reads, submission } = await gradePaper([{ q: "2", write: "4" }], { label: "Ada Lovelace", transcribe: { NAME: "Ada Lovelase", Q2: "4" } });
+    expect(reads).toHaveLength(0);
+    expect(crops).toHaveLength(2);
+    expect(crops[0]).toMatchObject({ nameHints: ["Ada Lovelace", "Alan Turing"] });
+    expect(crops[0].crops.map((c) => c.kind)).toEqual(["name"]);
+    expect(crops[1].nameHints).toBeUndefined();
+    expect(submission).toMatchObject({ studentName: "Ada Lovelace", aiName: "Ada Lovelase", rosterName: "Ada Lovelace", fastLane: false });
+    expect(submission.flags).not.toContain("name_uncertain");
   });
 
   it("a circle on B where the key says C is incorrect", async () => {

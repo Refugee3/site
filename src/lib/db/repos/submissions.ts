@@ -31,7 +31,11 @@ export interface GradingWrite {
     /** The engine that produced this grading; omitted = unknown (NULL). */
     aiEngine?: GraderEngine | null;
     /** How long reading and judging took (ms); omitted = not recorded (NULL). judgeMs null: no judge call was needed. */
-    readMs?: number | null; judgeMs?: number | null };
+    readMs?: number | null; judgeMs?: number | null;
+    /** Cut from a scan by the fast lane (omitted = no). */
+    fastLane?: boolean;
+    /** The class list's spelling the name was matched to (omitted or null: not matched). */
+    rosterName?: string | null };
 }
 
 interface SubmissionRow {
@@ -88,6 +92,8 @@ interface SubmissionRow {
   queued_at: number;
   read_ms: number | null;
   judge_ms: number | null;
+  fast_lane: 0 | 1;
+  roster_name: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -174,6 +180,8 @@ function submissionFromRow(row: SubmissionRow): Submission {
     queuedAt: row.queued_at,
     readMs: row.read_ms,
     judgeMs: row.judge_ms,
+    fastLane: row.fast_lane === 1,
+    rosterName: row.roster_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -373,7 +381,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          section_source = @section_source, document_match = @document_match, flags_json = @flags_json, status = @status,
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
          ai_model = @ai_model, ai_engine = @ai_engine, grader_engine = @grader_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
-         read_ms = @read_ms, judge_ms = @judge_ms,
+         read_ms = @read_ms, judge_ms = @judge_ms, fast_lane = @fast_lane, roster_name = @roster_name,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
          graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp,
          graded_spot_revision = @graded_spot_revision, graded_at = @at, updated_at = @at,
@@ -407,6 +415,8 @@ export function saveGradingResult(w: GradingWrite): boolean {
         ai_output_json: f.aiOutputJson,
         read_ms: msOrNull(f.readMs),
         judge_ms: f.readMs === undefined || f.readMs === null ? null : msOrNull(f.judgeMs),
+        fast_lane: toBit(f.fastLane === true),
+        roster_name: f.rosterName ?? null,
         overall_feedback: f.overallFeedback,
         graded_key_revision: w.keyRevision,
         guidance_fp: w.guidanceFingerprint,

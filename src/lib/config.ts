@@ -54,6 +54,10 @@ export interface AppConfig {
   ollamaPagesPerCall: number;
   /** Ollama engine: wall-clock limit of one call to Ollama (queued calls wait in this process first, not against it). */
   ollamaTimeoutMs: number;
+  /** Ollama engine: crops of written answers (and names) read per call; a class scan's fast lane sends them in batches of this. */
+  ollamaCropsPerCall: number;
+  /** Claude engines: crops of written answers (and names) read per call by a class scan's fast lane. */
+  cropsPerCall: number;
   /** Logged once when the server starts: settings it ignores (ANTHROPIC_MODEL). */
   startupWarnings: string[];
 }
@@ -132,6 +136,8 @@ const EnvSchema = z.object({
   OLLAMA_IMAGE_MAX_EDGE: z.coerce.number().int().min(512).max(4096).optional(),
   OLLAMA_PAGES_PER_CALL: intVar(1, 8, 4),
   OLLAMA_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
+  OLLAMA_CROPS_PER_CALL: intVar(1, 16, 8),
+  CROPS_PER_CALL: intVar(1, 60, 30),
 });
 
 type EnvVar = keyof typeof EnvSchema.shape;
@@ -188,6 +194,8 @@ function parseConfig(): AppConfig {
     ollamaImageMaxEdge: env.OLLAMA_IMAGE_MAX_EDGE ?? null,
     ollamaPagesPerCall: env.OLLAMA_PAGES_PER_CALL,
     ollamaTimeoutMs: env.OLLAMA_TIMEOUT_MS,
+    ollamaCropsPerCall: env.OLLAMA_CROPS_PER_CALL,
+    cropsPerCall: env.CROPS_PER_CALL,
     startupWarnings: env.ANTHROPIC_MODEL === undefined ? [] : [ANTHROPIC_MODEL_RETIRED],
     ...CONSTANTS,
   };

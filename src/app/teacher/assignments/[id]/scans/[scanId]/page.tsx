@@ -143,6 +143,9 @@ function Done({ assignmentId, view }: { assignmentId: string; view: ScanReviewVi
 // ---------------------------------------------------------------------------------------------
 // Graded in one pass
 
+/** Shown on the scan page and in each paper's time line when the fast lane graded the scan. */
+const FAST_LANE_TEXT = "Fast lane: matched pages to the blank worksheet";
+
 const SKIPPED_REASON: Record<SkippedPageReason, string> = {
   blank: "blank",
   cover_or_separator: "cover or separator pages",
@@ -170,16 +173,26 @@ function GradingInOnePass({ assignmentId, view }: { assignmentId: string; view: 
           <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <p className="text-lg font-semibold">Grading the papers in one pass…</p>
+            {onePass?.fastLane && <p className="font-medium">{FAST_LANE_TEXT}</p>}
             {splitProgress ? (
               <ScanSplitProgressBar split={splitProgress} serverNow={now()} />
             ) : (
               <p className="text-muted">Graded {scan.pagesRead} of {plural(scan.pageCount, "page")}.</p>
             )}
-            <p className="text-sm text-muted">
-              This page updates by itself. The AI reads each page once, finds whose paper it is and grades it; papers it
-              isn&apos;t sure about are flagged for your review. Graded papers appear on the{" "}
-              <Link href={boardHref(assignmentId, "all")}>Submissions board</Link> as they&apos;re done.
-            </p>
+            {onePass?.fastLane ? (
+              <p className="text-sm text-muted">
+                This page updates by itself. Each page is matched to your blank worksheet to find where each paper starts;
+                only the names and the written answers are read by the AI, from small crops, never whole pages. Papers to check
+                are flagged. Graded papers appear on the <Link href={boardHref(assignmentId, "all")}>Submissions board</Link>{" "}
+                as they&apos;re done.
+              </p>
+            ) : (
+              <p className="text-sm text-muted">
+                This page updates by itself. The AI reads each page once, finds whose paper it is and grades it; papers it
+                isn&apos;t sure about are flagged for your review. Graded papers appear on the{" "}
+                <Link href={boardHref(assignmentId, "all")}>Submissions board</Link> as they&apos;re done.
+              </p>
+            )}
             {scan.statusNote && <p className="whitespace-pre-wrap text-sm text-muted">{scan.statusNote}</p>}
           </div>
         </div>
@@ -234,6 +247,7 @@ function OnePassDone({ assignmentId, view }: { assignmentId: string; view: ScanR
           Graded {plural(graded, "paper")} in one pass.{" "}
           <Link href={boardHref(assignmentId, "all")}>See them on the Workspace tab</Link>
         </p>
+        {onePass?.fastLane && <p>{FAST_LANE_TEXT}: no page was sent to the AI whole.</p>}
         {duplicates > 0 && (
           <p>
             {duplicates} {duplicates === 1 ? "paper was already uploaded and was skipped" : "papers were already uploaded and were skipped"}.
@@ -242,7 +256,8 @@ function OnePassDone({ assignmentId, view }: { assignmentId: string; view: ScanR
       </Alert>
       {flagged > 0 && (
         <Alert tone="warning">
-          The AI wasn&apos;t sure where {flagged === 1 ? "1 paper starts or ends" : `${flagged} papers start or end`}: check{" "}
+          {onePass?.fastLane ? "The pages didn't line up cleanly for" : "The AI wasn't sure where"}{" "}
+          {flagged === 1 ? "1 paper" : `${flagged} papers`}{onePass?.fastLane ? "" : flagged === 1 ? " starts or ends" : " start or end"}: check{" "}
           {flagged === 1 ? "its" : "their"} pages when you review {flagged === 1 ? "it" : "them"} (flag &ldquo;Check the paper&apos;s
           pages&rdquo;).
         </Alert>

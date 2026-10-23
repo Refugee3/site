@@ -45,6 +45,15 @@ describe("answer-spot editor helpers", () => {
     expect(withBox(written(), box).boxes).toHaveLength(2);
   });
 
+  it("turns a spot into where the name or class goes: one area, never linked to a key item, not counted as a question", () => {
+    const name = withKind(choice, "name");
+    expect(name).toMatchObject({ kind: "name", itemLabel: null, label: "Name", options: [] });
+    expect(name.boxes).toHaveLength(1);
+    expect(spotTitle(name)).toBe("Student's name");
+    expect(spotTitle(withKind(written(), "section"))).toBe("Class: class / period");
+    expect(summarize([choice, name], ["3"])).toEqual({ used: 1, choice: 1, written: 0, missing: [] });
+  });
+
   it("links a new spot to the first key item without one", () => {
     const s = newSpot([choice], 2, box, [{ label: "3", kind: "choice" }, { label: "4", kind: "write_in" }]);
     expect(s).toMatchObject({ label: "4", itemLabel: "4", kind: "write_in", page: 2, boxes: [box] });

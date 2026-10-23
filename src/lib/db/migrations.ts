@@ -561,6 +561,25 @@ UPDATE blank_worksheets SET spots_revision = 1 WHERE confirmed_at IS NOT NULL;
 ALTER TABLE submissions ADD COLUMN graded_spot_revision INTEGER CHECK (graded_spot_revision IS NULL OR graded_spot_revision >= 0);
 `,
   },
+  {
+    version: 16,
+    name: "fast_lane_and_roster",
+    sql: `
+-- The fast lane (a whole-class scan split by matching its pages to the blank worksheet, names and written answers read from
+-- crops). blank_worksheets.identity_spots_json: where the name and the class are written on the blank (spots of kind 'name'
+-- and 'section'); NULL until they were looked for. submissions.fast_lane: the paper was cut from a scan by the fast lane.
+ALTER TABLE blank_worksheets ADD COLUMN identity_spots_json TEXT;
+ALTER TABLE submissions ADD COLUMN fast_lane INTEGER NOT NULL DEFAULT 0 CHECK (fast_lane IN (0,1));
+-- The class list a name was matched to: submissions.roster_name is the list's spelling when the name read on the paper was
+-- matched to it (ai_name keeps the reading); NULL otherwise.
+ALTER TABLE submissions ADD COLUMN roster_name TEXT CHECK (roster_name IS NULL OR length(roster_name) <= 120);
+CREATE TABLE assignment_rosters (
+  assignment_id TEXT PRIMARY KEY REFERENCES assignments(id) ON DELETE CASCADE,
+  roster_text TEXT NOT NULL CHECK (length(roster_text) <= 40000),
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

@@ -2,7 +2,7 @@ import { type AutoMark, normalizeAnswerText, parseChoiceLetters, parseTrueFalse 
 import type { AnswerType, KeyItem } from "@/lib/types";
 import type { ChoiceReading } from "./decide";
 import { normalizeLabel } from "./text-zones";
-import type { QuestionSpots, SpotKind } from "./types";
+import { isIdentityKind, type QuestionSpots, type SpotKind } from "./types";
 
 // Linking answer spots to the key (pure): which key item each question's spots answer, which printed option the key's answer
 // is, and the program's mark for a choice read from the marks.
@@ -16,7 +16,7 @@ export function planSpots(spots: QuestionSpots[], items: Array<Pick<KeyItem, "la
   });
   const plan = new Map<number, QuestionSpots>();
   for (const spot of spots) {
-    if (!spot.enabled || spot.itemLabel === null || !isUsable(spot)) continue;
+    if (!spot.enabled || spot.itemLabel === null || isIdentityKind(spot.kind) || !isUsable(spot)) continue;
     const index = indexByLabel.get(normalizeLabel(spot.itemLabel));
     if (index !== undefined && !plan.has(index)) plan.set(index, spot);
   }

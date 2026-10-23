@@ -15,7 +15,9 @@ import {
   type CropTranscriptions, CropTranscriptionSchema, judgingWithEmptyNotes, type KeyExtraction, KeyExtractionSchema, outputFormat,
   type PacketReadingOutput, type ReadingOutput, type ScanPages, ScanPagesSchema, SpotProposalSchema,
 } from "../schemas";
-import { cropLabel, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask } from "../spot-prompts";
+import {
+  cropLabel, nameHintsFor, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask,
+} from "../spot-prompts";
 import type { OllamaChatResponse, OllamaClient, OllamaMessage } from "./client";
 import {
   type CompactJudging, CompactJudgingSchema, type CompactJudgingWithoutNotes, CompactJudgingWithoutNotesSchema, type CompactPacket,
@@ -61,6 +63,8 @@ export interface OllamaGraderConfig {
    * OLLAMA_CONCURRENCY): the worker grades that many papers at once (Grader.parallel), each making one call at a time.
    */
   concurrency: number;
+  /** Crops of written spots per transcription call (OLLAMA_CROPS_PER_CALL); absent: OLLAMA_CROPS_PER_CALL's default. */
+  cropsPerCall?: number;
 }
 
 export interface OllamaGraderDeps {
@@ -69,8 +73,8 @@ export interface OllamaGraderDeps {
   render?: PdfRenderer;
 }
 
-/** Crops of written answer spots transcribed per call (mark detection). */
-export const OLLAMA_CROPS_PER_CALL = 6;
+/** Crops of written answer spots transcribed per call (mark detection), unless configured (OLLAMA_CROPS_PER_CALL). */
+export const OLLAMA_CROPS_PER_CALL = 8;
 
 /** How long Ollama keeps the model loaded between calls. */
 export const OLLAMA_KEEP_ALIVE = "30m";
@@ -105,6 +109,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
   const render = d.render ?? renderPdfPages;
   const modelId = `${OLLAMA_MODEL_PREFIX}${cfg.model}`;
   const parallel = Math.max(1, Math.floor(cfg.concurrency));
+  const cropsPerCall = Math.max(1, Math.floor(cfg.cropsPerCall ?? OLLAMA_CROPS_PER_CALL));
   const acquire = semaphore(parallel);
 
   async function pagesOf(pdf: Uint8Array, o: CallOptions): Promise<RenderedPage[]> {
@@ -250,6 +255,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     mode: "claude",
     engine: "ollama",
     parallel,
+    cropsPerCall,
 
     async extractKey(input, o = {}) {
       const startedAt = performance.now();
@@ -380,14 +386,14 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
       const startedAt = performance.now();
       const crops: CropTranscriptions["crops"] = [];
       let usage = NO_USAGE;
-      for (let k = 0; k < input.crops.length; k += OLLAMA_CROPS_PER_CALL) {
-        const batch = input.crops.slice(k, k + OLLAMA_CROPS_PER_CALL);
+      for (let k = 0; k < input.crops.length; k += cropsPerCall) {
+        const batch = input.crops.slice(k, k + cropsPerCall);
         const ids = batch.map((c) => c.id);
         const result = await call({
           system: TRANSCRIBE_SYSTEM_PROMPT,
           text: [
             batch.map((c, n) => `Image ${n + 1}: ${cropLabel(c.id, c.kind).replace(/:$/, "")}.`).join("\n"),
-            transcribeTask(ids),
+            transcribeTask(ids, { nameHints: nameHintsFor(batch, input.nameHints) }),
           ].join("\n\n"),
           images: batch.map((c) => ({ png: c.png, width: c.width, height: c.height })),
           schema: CropTranscriptionSchema,

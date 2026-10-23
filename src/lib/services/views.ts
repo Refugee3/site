@@ -328,7 +328,7 @@ export function getUploadPageView(a: Assignment): UploadPageView {
     maxPages: cfg.maxPages,
     maxScanMb: cfg.maxScanBytes / MIB,
     maxScanPages: cfg.maxScanPages,
-    onePassAvailable: onePassAvailable(),
+    onePassAvailable: onePassAvailable(a.id),
   };
 }
 
@@ -364,6 +364,7 @@ function onePassSummary(s: Scan): NonNullable<ScanReviewView["onePass"]> {
     flagged: graded.filter((paper) => paper.flagged).length,
     pagesDone: s.onePass ? s.onePass.nextPage - 1 : 0,
     skipped: s.onePass?.skipped ?? [],
+    ...(s.onePass?.fastLane ? { fastLane: true as const } : {}),
   };
 }
 

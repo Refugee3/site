@@ -55,7 +55,8 @@ export const FLAG_DEFS: Record<FlagCode, FlagDef> = {
   paper_boundary: {
     severity: "review",
     label: "Check the paper's pages",
-    description: "This paper was cut from a whole-class scan graded in one pass, and the AI wasn't sure where it starts or ends; check its pages.",
+    description: "This paper was cut from a whole-class scan graded in one pass, and where it starts or ends is uncertain (the AI wasn't sure, "
+      + "or its pages didn't match the blank worksheet cleanly: one missing, out of order or without a name); check its pages.",
   },
   low_confidence: {
     severity: "review",

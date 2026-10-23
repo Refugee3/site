@@ -3,6 +3,7 @@ import type { GradingOutput } from "@/lib/ai/schemas";
 import type { GradingWrite } from "@/lib/db/repos/submissions";
 import { statusFromFlags } from "@/lib/flags";
 import { cleanName, nameKey, nameSortKey } from "@/lib/grading/names";
+import { matchRoster, type RosterEntry } from "@/lib/grading/roster";
 import { canonicalSectionKey, resolveSection, type SectionMatch } from "@/lib/grading/sections";
 import { truncateChars } from "@/lib/grading/text";
 import { FLAG_CODES, type FlagCode, type ItemJudgment, type KeyItem, type Section, type Submission } from "@/lib/types";
@@ -16,6 +17,11 @@ export interface ReconcileInput {
   pageCount: number;
   current: Pick<Submission, "studentName" | "nameSource" | "nameKey" | "nameSortKey" | "sectionId" | "sectionSource">;
   fallbackUsed: boolean;
+  /**
+   * The assignment's class list: a name read on the paper that clearly is one of its students takes the list's spelling (and
+   * section); one that could be two students, or matches none, keeps the reading and is flagged. Empty or absent: no list.
+   */
+  roster?: RosterEntry[];
 }
 
 export interface Reconciled {
@@ -27,7 +33,7 @@ export interface Reconciled {
 
 type OutputItem = GradingOutput["items"][number];
 type IdentityFields = Pick<Reconciled["fields"], "aiName" | "aiNameConfidence" | "aiSectionRaw" | "aiSectionMatch" | "sectionKey"
-  | "studentName" | "nameSource" | "nameKey" | "nameSortKey" | "sectionId" | "sectionSource">;
+  | "studentName" | "nameSource" | "nameKey" | "nameSortKey" | "sectionId" | "sectionSource"> & { rosterName?: string | null };
 
 // Silent caps on AI text, in characters; truncation is not recorded as a repair.
 const CAPS = {
@@ -89,6 +95,7 @@ export function reconcileGrading(i: ReconcileInput): Reconciled {
       teacherSummary: joinLines(
         cap(output.teacher_summary, CAPS.teacherSummary),
         cap(output.document_check.note, CAPS.documentNote),
+        identity.rosterNote,
         output.answer_spots?.status === "unaligned" ? cap(output.answer_spots.note, CAPS.documentNote) : "",
         repairs.length > 0 ? cap(`Automatic corrections: ${repairs.join("; ")}.`, CAPS.repairs) : "",
       ),
@@ -189,16 +196,31 @@ function normalizePages(pages: number[], pageCount: number): { pages: number[]; 
   return { pages: [...new Set(clamped)].sort((a, b) => a - b), outOfRange };
 }
 
-function resolveIdentity(i: ReconcileInput): { fields: IdentityFields; sectionMatch: SectionMatch["kind"] | "teacher" } {
+function resolveIdentity(i: ReconcileInput): {
+  fields: IdentityFields; sectionMatch: SectionMatch["kind"] | "teacher"; rosterNote: string;
+} {
   const { student } = i.output;
   const aiName = capOrNull(student.name, CAPS.name);
-  const aiSectionRaw = capOrNull(student.section_raw, CAPS.section);
+  let aiSectionRaw = capOrNull(student.section_raw, CAPS.section);
   const aiSectionMatch = capOrNull(student.section_match, CAPS.section);
   const { current } = i;
 
+  // The class list, when there is one: the reading becomes the list's spelling only when it clearly is one student.
+  const roster = i.roster ?? [];
+  const match = roster.length > 0 && current.nameSource !== "teacher" && aiName !== null ? matchRoster(aiName, roster) : null;
+  const matched = match?.kind === "match" ? match.entry : null;
+  let rosterNote = "";
+  if (match?.kind === "ambiguous") {
+    rosterNote = cap(`The name read, “${aiName}”, could be ${match.candidates.map((c) => c.name).join(" or ")} on your class list.`, CAPS.documentNote);
+  } else if (match?.kind === "none") {
+    rosterNote = cap(`The name read, “${aiName}”, matches no one on your class list.`, CAPS.documentNote);
+  }
+  // The list's section, when the paper's own section wasn't read.
+  if (matched?.section && aiSectionRaw === null) aiSectionRaw = capOrNull(matched.section, CAPS.section);
+
   const name = current.nameSource === "teacher"
     ? { studentName: current.studentName, nameSource: current.nameSource, nameKey: current.nameKey, nameSortKey: current.nameSortKey }
-    : aiNameFields(aiName);
+    : aiNameFields(matched ? matched.name : aiName);
 
   let section: Pick<IdentityFields, "sectionId" | "sectionSource">;
   let sectionMatch: SectionMatch["kind"] | "teacher";
@@ -206,23 +228,33 @@ function resolveIdentity(i: ReconcileInput): { fields: IdentityFields; sectionMa
     section = { sectionId: current.sectionId, sectionSource: current.sectionSource };
     sectionMatch = "teacher";
   } else {
-    const match = resolveSection(aiSectionRaw, aiSectionMatch, i.sections);
-    const sectionId = "sectionId" in match ? match.sectionId : null;
+    let resolved = resolveSection(aiSectionRaw, aiSectionMatch, i.sections);
+    // The class list's section decides when the paper's doesn't match one of the assignment's sections.
+    if (matched?.section && !("sectionId" in resolved)) {
+      const fromList = resolveSection(matched.section, null, i.sections);
+      if ("sectionId" in fromList) resolved = fromList;
+    }
+    const sectionId = "sectionId" in resolved ? resolved.sectionId : null;
     section = { sectionId, sectionSource: sectionId ? "ai" : null };
-    sectionMatch = match.kind;
+    sectionMatch = resolved.kind;
   }
 
+  // A reading the list doesn't confirm is never above "medium": the teacher is asked to check it (name_uncertain).
+  const confidence = match && match.kind !== "match" && student.name_confidence === "high" ? "medium" : student.name_confidence;
   return {
     fields: {
       aiName,
-      aiNameConfidence: student.name_confidence,
+      aiNameConfidence: confidence,
       aiSectionRaw,
       aiSectionMatch,
       sectionKey: canonicalSectionKey(aiSectionRaw),
       ...name,
       ...section,
+      // Only with a class list: without one the field is left as it is (and stored as no match).
+      ...(i.roster ? { rosterName: matched && current.nameSource !== "teacher" ? matched.name : null } : {}),
     },
     sectionMatch,
+    rosterNote,
   };
 }
 
@@ -252,15 +284,18 @@ function judgmentFlags(judgments: ItemJudgment[]): FlagCode[] {
  * flags, and the name-reading flags only apply when there is a name.
  */
 export function identityFlags(
-  s: Pick<Submission, "studentName" | "nameSource" | "aiNameConfidence" | "aiSectionRaw" | "sectionId" | "sectionSource">,
+  s: Pick<Submission, "studentName" | "nameSource" | "aiNameConfidence" | "aiSectionRaw" | "sectionId" | "sectionSource">
+    & Partial<Pick<Submission, "rosterName">>,
   sectionMatch: SectionMatch["kind"] | "teacher",
   hasSections: boolean,
 ): FlagCode[] {
   const flags: FlagCode[] = [];
   if (s.nameSource !== "teacher") {
+    // Matched to the class list: the list's spelling is the name, however hard the handwriting was to read.
+    const confirmed = Boolean(s.rosterName);
     if (s.studentName === null) flags.push("name_missing");
-    else if (s.aiNameConfidence === "low") flags.push("name_unclear");
-    else if (s.aiNameConfidence === "medium") flags.push("name_uncertain");
+    else if (!confirmed && s.aiNameConfidence === "low") flags.push("name_unclear");
+    else if (!confirmed && s.aiNameConfidence === "medium") flags.push("name_uncertain");
   }
   if (s.sectionSource !== "teacher") {
     if (hasSections && s.sectionId === null) flags.push("section_unmatched");

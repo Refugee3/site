@@ -32,7 +32,7 @@ export default async function WorkspacePage(props: PageProps<"/teacher/assignmen
 
   return (
     <div className="flex flex-col gap-5">
-      <LiveWorkspace initial={live} keyPageCount={keyPageCount} onePassAvailable={onePassAvailable()} />
+      <LiveWorkspace initial={live} keyPageCount={keyPageCount} onePassAvailable={onePassAvailable(assignment.id)} />
 
       {view.counts.total > 0 && (
         <section aria-labelledby="results-heading" className="flex flex-col gap-5">

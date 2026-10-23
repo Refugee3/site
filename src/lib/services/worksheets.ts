@@ -13,12 +13,13 @@ import { AppError } from "@/lib/errors";
 import { keyPageCountHint } from "@/lib/grading/split";
 import { newId } from "@/lib/ids";
 import { recordUsage } from "@/lib/jobs/handler-shared";
-import { answerSpots } from "@/lib/omr/detect";
+import { answerSpots, type IdentitySpotsPlan, type SpotPlanEntry } from "@/lib/omr/detect";
+import { detectIdentitySpots } from "@/lib/omr/identity-zones";
 import { isUsable, planSpots } from "@/lib/omr/map-key";
 import { grayToPng, openPdf } from "@/lib/omr/pdf-raster";
 import { proposalToSpots } from "@/lib/omr/propose";
 import { clampBox, detectSpotsFromText, type KeyItemOutline, type TextPage } from "@/lib/omr/text-zones";
-import { type QuestionSpots, type GrayImage } from "@/lib/omr/types";
+import { type GrayImage, isIdentityKind, type QuestionSpots } from "@/lib/omr/types";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { blankWorksheetPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, uploadName, type UploadedFile } from "@/lib/storage/pdf";
@@ -41,6 +42,8 @@ export async function ingestBlankWorksheet(a: Assignment, upload: UploadedFile |
   const read = await readText(bytes);
   const spots = read.hasText ? detectSpotsFromText(read.pages, outline(listKeyItems(a.id))) : [];
   const propose = spots.length === 0 && canPropose();
+  // Where the name and class go: from the text too; a scanned blank's are proposed by the AI with its other spots.
+  const identitySpots = read.hasText ? detectIdentitySpots(read.pages) : propose ? null : [];
   const pdfPath = blankWorksheetPdfRel(a.id, newId());
   await writeFileAtomic(pdfPath, bytes);
   let stored: ReturnType<typeof putWorksheet>;
@@ -51,6 +54,7 @@ export async function ingestBlankWorksheet(a: Assignment, upload: UploadedFile |
       status: propose ? "detecting" : "ready",
       spotsSource: spots.length > 0 ? "text" : propose ? null : "manual",
       spots,
+      identitySpots,
       note: spots.length > 0 || propose ? null : read.hasText ? NOTHING_FOUND : NO_ENGINE_NOTE,
       confirmedAt: null,
     }));
@@ -71,7 +75,8 @@ export async function findSpotsAgain(a: Assignment, o: { ai: boolean }): Promise
     const read = await readText(await readDataFile(ws.pdfPath));
     const spots = detectSpotsFromText(read.pages, outline(listKeyItems(a.id)));
     return updated(updateWorksheet(a.id, ws.contentSha256, {
-      spots, spotsSource: spots.length > 0 ? "text" : "manual", note: spots.length > 0 ? null : NOTHING_FOUND, confirmedAt: null,
+      spots, identitySpots: detectIdentitySpots(read.pages), spotsSource: spots.length > 0 ? "text" : "manual",
+      note: spots.length > 0 ? null : NOTHING_FOUND, confirmedAt: null,
     }));
   }
   if (!canPropose()) {
@@ -84,15 +89,24 @@ export async function findSpotsAgain(a: Assignment, o: { ai: boolean }): Promise
 
 /**
  * The teacher's answer spots (checked, moved, drawn): saved and confirmed, so papers are read from them. Each save is a new
- * spots revision: papers graded with an earlier one (or without spots) can then be regraded (regradeWithSpots).
+ * spots revision: papers graded with an earlier one (or without spots) can then be regraded (regradeWithSpots). The list is
+ * the editor's whole list: its identity spots (where the name and class go) replace the stored ones, and when it has none
+ * the stored ones are kept unless `identity` says the list is complete.
  */
-export function saveSpots(a: Assignment, spots: QuestionSpots[]): BlankWorksheet {
+export function saveSpots(a: Assignment, spots: QuestionSpots[], o: { identityComplete?: boolean } = {}): BlankWorksheet {
   return tx(() => {
     const ws = requireWorksheet(a.id);
     if (ws.status === "detecting") throw new AppError("invalid_state", "Wait until the AI has found the answer spots.");
-    const clean = spots.slice(0, 300).map((s, i) => sanitizeSpot(s, i, ws.pageCount));
+    const questions = spots.filter((s) => !isIdentityKind(s.kind));
+    const identity = spots.filter((s) => isIdentityKind(s.kind));
+    const clean = questions.slice(0, 300).map((s, i) => sanitizeSpot(s, i, ws.pageCount));
+    const keepIdentity = identity.length === 0 && !o.identityComplete;
+    const identitySpots = keepIdentity
+      ? ws.identitySpots
+      : identity.slice(0, 4).map((s, i) => ({ ...sanitizeSpot(s, i, ws.pageCount), id: `id${i + 1}`, itemLabel: null }));
     return updated(updateWorksheet(a.id, ws.contentSha256, {
-      spots: clean, spotsSource: ws.spotsSource ?? "manual", confirmedAt: now(), note: null, spotsRevision: ws.spotsRevision + 1,
+      spots: clean, identitySpots, spotsSource: ws.spotsSource ?? "manual", confirmedAt: now(), note: null,
+      spotsRevision: ws.spotsRevision + 1,
     }));
   });
 }
@@ -110,7 +124,46 @@ export function spotsForGrading(assignmentId: string, items: KeyItem[]): { answe
   const active = activeSpots(assignmentId, items);
   if (!active) return null;
   const { ws, plan } = active;
-  return { answerSpots: answerSpots({ blankPdf: () => readDataFile(ws.pdfPath), sha: ws.contentSha256, plan }), spotRevision: ws.spotsRevision };
+  return {
+    answerSpots: answerSpots({ blankPdf: () => readDataFile(ws.pdfPath), sha: ws.contentSha256, plan, identity: () => identitySpotsFor(ws) }),
+    spotRevision: ws.spotsRevision,
+  };
+}
+
+/** What the fast lane needs to grade a class scan from the blank worksheet; null when the assignment has no saved spots. */
+export interface FastLaneSpots {
+  sha: string;
+  blankPdf: () => Promise<Uint8Array>;
+  plan: SpotPlanEntry[];
+  /** Where the name and class are written ([]: the top of page 1 is read for the name). */
+  identity: () => Promise<IdentitySpotsPlan>;
+  spotRevision: number;
+}
+
+export function fastLaneSpots(assignmentId: string, items: KeyItem[]): FastLaneSpots | null {
+  const active = activeSpots(assignmentId, items);
+  if (!active) return null;
+  const { ws, plan } = active;
+  return {
+    sha: ws.contentSha256, blankPdf: () => readDataFile(ws.pdfPath), plan, identity: () => identitySpotsFor(ws), spotRevision: ws.spotsRevision,
+  };
+}
+
+/**
+ * The blank's identity spots. A digital blank stored before they existed has them found from its text now (and stored); a
+ * scanned one without any reads the top of page 1 ([]).
+ */
+async function identitySpotsFor(ws: BlankWorksheet): Promise<IdentitySpotsPlan> {
+  if (ws.identitySpots !== null) return ws.identitySpots.filter((s) => s.enabled);
+  if (!ws.hasText) return [];
+  try {
+    const found = detectIdentitySpots((await readText(await readDataFile(ws.pdfPath))).pages);
+    updateWorksheet(ws.assignmentId, ws.contentSha256, { identitySpots: found });
+    return found;
+  } catch (e) {
+    console.error(`[worksheets] couldn't find where the name goes on the blank of assignment ${ws.assignmentId}`, e);
+    return [];
+  }
 }
 
 /** spotsForGrading's mark detection alone. */
@@ -230,7 +283,8 @@ async function proposeSpots(assignmentId: string, sha: string): Promise<void> {
       await doc.close();
     }
     updateWorksheet(assignmentId, sha, {
-      status: "ready", spotsSource: "ai", spots, confirmedAt: null,
+      status: "ready", spotsSource: "ai", spots: spots.filter((s) => !isIdentityKind(s.kind)),
+      identitySpots: spots.filter((s) => isIdentityKind(s.kind)).map((s, i) => ({ ...s, id: `id${i + 1}` })), confirmedAt: null,
       note: spots.length > 0 ? null : "The AI found no answer spots on this blank. Draw them yourself.",
     });
   } catch (e) {
@@ -295,7 +349,8 @@ export function getWorksheetView(a: Assignment): WorksheetView {
       pageSizes: ws.pageSizes,
       hasText: ws.hasText,
       spotsSource: ws.spotsSource,
-      spots: ws.spots,
+      // The editor shows the question spots and where the name and class go, and saves them together.
+      spots: [...ws.spots, ...(ws.identitySpots ?? [])],
       note: ws.note,
       confirmedAt: ws.confirmedAt,
       pageUrls: Array.from({ length: ws.pageCount }, (_, i) => `/api/teacher/assignments/${a.id}/worksheet/pages/${i + 1}?v=${ws.contentSha256.slice(0, 16)}`),

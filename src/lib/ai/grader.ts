@@ -1,6 +1,6 @@
 import type { AutoMark } from "@/lib/grading/auto-mark";
 import type { ChoiceReading, WriteInReading } from "@/lib/omr/decide";
-import type { SpotEvidence, SpotKind } from "@/lib/omr/types";
+import type { IdentityCrop, SpotEvidence, SpotKind } from "@/lib/omr/types";
 import type { AiUsage, AnswerType, Assignment, GradingGuidance, KeyItem, ScanPageKind, Section } from "@/lib/types";
 import type { AgentCallCost } from "./errors";
 import type {
@@ -53,6 +53,8 @@ export interface GradeInput {
   writeNotes?: boolean;
   /** Mark detection against the blank worksheet, when the assignment has answer spots (see src/lib/omr). */
   answerSpots?: AnswerSpots | null;
+  /** The class list's names: hints for the AI when it transcribes a name crop (never sent with answers). */
+  nameHints?: string[];
 }
 
 /**
@@ -67,7 +69,11 @@ export interface AnswerSpots {
 
 /** What mark detection found on one paper; `ok: false` when it can't be used (the AI then reads every item). */
 export type SpotDetection =
-  | { ok: true; items: DetectedSpot[]; identityPdf: Uint8Array }
+  | {
+    ok: true; items: DetectedSpot[]; identityPdf: Uint8Array;
+    /** The paper's identity spots (name, class) as read, when the assignment's blank asked for them. */
+    identity?: IdentityCrop[];
+  }
   | { ok: false; reason: "page_count" | "unaligned"; note: string };
 
 export interface DetectedSpot {
@@ -86,6 +92,11 @@ export interface DetectedSpot {
 /** Crops of answer spots to transcribe: only the student's handwriting, never the question or the key. */
 export interface TranscribeInput {
   crops: Array<{ id: string; kind: SpotKind; png: Uint8Array; width: number; height: number }>;
+  /**
+   * The class list's names, sent only with crops of a name ("name" kind): the reader may use a listed spelling when the
+   * writing matches it. Never set on a call with answer crops.
+   */
+  nameHints?: string[];
 }
 
 /** One blank worksheet page as an image, for the AI to find its answer spots. */
@@ -204,6 +215,11 @@ export interface Grader {
    * most this many calls to Ollama at once, and the worker runs this many jobs (concurrencyFor).
    */
   readonly parallel?: number;
+  /**
+   * Crops of written spots best sent in one transcribeCrops call (Ollama: OLLAMA_CROPS_PER_CALL; Claude: CROPS_PER_CALL);
+   * absent: DEFAULT_CROPS_PER_CALL.
+   */
+  readonly cropsPerCall?: number;
   extractKey(i: ExtractKeyInput, o?: CallOptions): Promise<{ output: KeyExtraction; meta: AiCallMeta }>;
   /** READ: transcribes one paper, item by item, without the answer key (with the pages). */
   readSubmission(i: ReadInput, o?: CallOptions): Promise<{ output: ReadingOutput; meta: AiCallMeta }>;

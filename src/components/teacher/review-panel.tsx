@@ -141,6 +141,12 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
         {byHostedAgent && " · Graded by the hosted agent"}
         {onThisComputer && " · Graded on this computer (Ollama)"}
       </p>
+      {s.nameSource === "ai" && s.rosterName && (
+        <p className="text-sm text-muted">
+          Matched to your class list: <span className="font-medium text-ink">{s.rosterName}</span>
+          {s.aiName && s.aiName !== s.rosterName && <> · read on the paper as “{s.aiName}”</>}
+        </p>
+      )}
       {timing && <p className="text-sm text-muted">{timing}</p>}
       {view.earlierAttempts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">

@@ -29,7 +29,7 @@ function titleCase(s: string): string {
 }
 
 /** Lowercase letter-only words with accents removed: "María O'Brien-Lopez" → ["maria", "obrien", "lopez"]. */
-function nameWords(s: string): string[] {
+export function nameWords(s: string): string[] {
   return s
     .normalize("NFKD")
     .replace(COMBINING_MARKS, "")
@@ -80,7 +80,7 @@ function wordsMatch(a: string, b: string): boolean {
 }
 
 /** Levenshtein distance (names are short, so the full table is cheap). */
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const current = [i];

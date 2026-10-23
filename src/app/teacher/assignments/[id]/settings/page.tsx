@@ -2,9 +2,11 @@ import { connection } from "next/server";
 import { updateAssignmentAction } from "@/actions/assignments";
 import { AssignmentForm } from "@/components/teacher/assignment-form";
 import { DangerZone } from "@/components/teacher/danger-zone";
+import { RosterForm } from "@/components/teacher/roster-form";
 import { Card } from "@/components/ui/card";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { formatAgentTime } from "@/lib/grader-engine-messages";
+import { getRosterView } from "@/lib/services/rosters";
 import { getSettingsView } from "@/lib/services/views";
 import type { AssignmentFormInput, SettingsView } from "@/lib/types";
 
@@ -32,6 +34,9 @@ export default async function SettingsPage(props: PageProps<"/teacher/assignment
           action={updateAssignmentAction.bind(null, assignment.id)}
           defaults={defaults}
         />
+      </Card>
+      <Card title="Class list">
+        <RosterForm assignmentId={assignment.id} view={getRosterView(assignment)} />
       </Card>
       <Card title="AI usage">
         <Usage usage={view.usage} />

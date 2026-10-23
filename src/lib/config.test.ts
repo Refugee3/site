@@ -54,6 +54,8 @@ describe("getConfig", () => {
       ollamaImageMaxEdge: null,
       ollamaPagesPerCall: 4,
       ollamaTimeoutMs: 1_200_000,
+      ollamaCropsPerCall: 8,
+      cropsPerCall: 30,
       startupWarnings: [],
     });
   });

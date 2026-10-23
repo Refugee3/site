@@ -115,17 +115,26 @@ function onePassEtaMs(scan: Scan): number {
   });
 }
 
+/** The fast lane's time left in its current stage, from the stage's pace so far (a stage that hasn't started: 0). */
+function fastLaneEtaMs(stage: { done: number; total: number }, startedAt: number): number {
+  if (stage.done <= 0) return 0;
+  return Math.max(0, Math.round(((now() - startedAt) / stage.done) * (stage.total - stage.done)));
+}
+
 /** A scan's split (or its grading in one pass) while the AI reads it; null in any other status. */
 export function getSplitProgress(scan: Scan): ScanSplitProgress | null {
   if (scan.status !== "splitting") return null;
   const splitStartedAt = scan.splitStartedAt ?? scan.updatedAt;
   if (scan.splitMode === "one_pass") {
+    const fast = scan.onePass?.fastLane;
+    const stage = fast && fast.stage !== "done" ? { kind: fast.stage, done: fast.done, total: fast.total } : null;
     return {
       splitStartedAt,
       pagesRead: onePassPagesDone(scan),
       pageCount: scan.pageCount,
-      etaMs: onePassEtaMs(scan),
+      etaMs: stage ? fastLaneEtaMs(stage, fast!.startedAt ?? splitStartedAt) : onePassEtaMs(scan),
       papersGraded: scan.onePass?.papers.filter((paper) => paper.submissionId !== null).length ?? 0,
+      ...(stage ? { stage } : {}),
     };
   }
   return {

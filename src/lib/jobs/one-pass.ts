@@ -24,11 +24,13 @@ import {
   addUsage, describe, DONE, failureLimits, type HandlerResult, isFinalRefusal, KEY_WAIT_MS, readStoredPdf, recordUsage,
   WAITING_FOR_KEY,
 } from "@/lib/jobs/handler-shared";
+import { runFastLane } from "@/lib/jobs/fast-lane";
 import { enqueueGrade, PRIORITY } from "@/lib/jobs/queue";
 import { formatPageRanges } from "@/lib/scan-layout";
 import { loadGuidance } from "@/lib/services/guidance";
+import { getRoster } from "@/lib/services/rosters";
 import { rescoreSubmission } from "@/lib/services/submissions";
-import { spotsForGrading } from "@/lib/services/worksheets";
+import { activeSpotRevision, fastLaneSpots, spotsForGrading } from "@/lib/services/worksheets";
 import { removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { submissionPdfRel } from "@/lib/storage/paths";
 import { CutTooLargeError, extractPageSets } from "@/lib/storage/pdf";
@@ -81,11 +83,15 @@ type StoreStop = { kind: "superseded" } | { kind: "fail"; message: string };
 class Superseded extends Error {}
 
 export async function handleOnePassScan(
-  job: Job, grader: Grader, signal: AbortSignal, scan: Scan, splitFirst: SplitFirst,
+  job: Job, grader: Grader, signal: AbortSignal, claimed: Scan, splitFirst: SplitFirst,
 ): Promise<HandlerResult> {
+  let scan = claimed;
   const run: Run = { job, scanId: scan.id, generation: scan.splitGeneration, assignmentId: scan.assignmentId };
   const gradeChunk = grader.gradePacketChunk;
-  if (!gradeChunk) {
+  // The fast lane, when the assignment has a saved blank worksheet (any engine that can read crops) and the AI hasn't
+  // started reading this scan page by page.
+  const fastLane = fastLaneFor(scan, grader);
+  if (!gradeChunk && !fastLane) {
     // The hosted agent was chosen after the upload: split first, as at upload, unless papers were graded. (Direct API,
     // Ollama on this computer and practice mode all grade in one pass.)
     if (hasOnePassProgress(scan.onePass)) return failScan(run, AGENT_CANT_RESUME);
@@ -116,6 +122,28 @@ export async function handleOnePassScan(
   // Loaded once: every chunk of this run is sent the same guidance, so they all share one cached prefix.
   const guidance = loadGuidance(assignment, items);
   const sections = listSections(assignment.id);
+
+  if (fastLane) {
+    const spots = fastLaneSpots(assignment.id, items);
+    if (spots) {
+      const outcome = await runFastLane({
+        job, grader, signal, scan, assignment, key, items, sections, guidance, spots, progress: scan.onePass ?? emptyProgress(),
+      });
+      if (outcome.kind !== "fallback") return outcome;
+      // The pages don't match the blank: the AI reads every page (or, with the hosted agent, splits the scan first).
+      // Remembered, so a retry of this scan doesn't match its pages again.
+      const declined: OnePassProgress = { ...(scan.onePass ?? emptyProgress()), fastLane: null, fastLaneDeclined: true };
+      if (!updateSplittingScan(run.scanId, run.generation, { statusNote: outcome.note, onePass: gradeChunk ? declined : null })) return DONE;
+      scan = { ...scan, onePass: declined };
+    }
+    if (!gradeChunk) {
+      if (!updateSplittingScan(run.scanId, run.generation, { splitMode: "auto", onePass: null, statusNote: AGENT_FALLBACK_NOTE })) {
+        return DONE;
+      }
+      return splitFirst(job, grader, signal);
+    }
+  }
+  if (!gradeChunk) return DONE;
   // Each chunk is read without the answer key (no key PDF either), then each paper is marked and judged (gradePacketByReading),
   // its marks read from the blank worksheet's answer spots first when the teacher saved them.
   const spots = spotsForGrading(assignment.id, items);
@@ -186,6 +214,17 @@ export async function handleOnePassScan(
     status: "done", statusNote: null, errorMessage: null, pagesRead: scan.pageCount, splitFinishedAt: now(),
   });
   return DONE;
+}
+
+/**
+ * Whether this scan may go by the fast lane: the engine can transcribe crops, the assignment has saved answer spots, and the
+ * AI hasn't graded any of it page by page (a scan the fast lane started goes on in it).
+ */
+function fastLaneFor(scan: Scan, grader: Grader): boolean {
+  if (!grader.transcribeCrops) return false;
+  const p = scan.onePass;
+  if (p?.fastLaneDeclined || (p && !p.fastLane && hasOnePassProgress(p))) return false;
+  return activeSpotRevision(scan.assignmentId) !== null;
 }
 
 function emptyProgress(): OnePassProgress {
@@ -354,7 +393,7 @@ function saveGrading(submission: Submission, paper: ChunkPaper, pending: OnePass
   try {
     reconciled = reconcileGrading({
       output: paper.output, refs: itemRefs(pending.items.length), items: pending.items, sections: listSections(submission.assignmentId),
-      pageCount: submission.pageCount, current: submission, fallbackUsed: pending.fallbackUsed,
+      pageCount: submission.pageCount, current: submission, fallbackUsed: pending.fallbackUsed, roster: getRoster(submission.assignmentId),
     });
   } catch (e) {
     if (!(e instanceof AiError)) throw e;

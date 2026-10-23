@@ -25,6 +25,7 @@ import {
 } from "@/lib/jobs/handler-shared";
 import { handleOnePassScan } from "@/lib/jobs/one-pass";
 import { loadGuidance, type AssignmentGuidance } from "@/lib/services/guidance";
+import { getRoster, rosterNameHints } from "@/lib/services/rosters";
 import { autoGradeCleanSplit } from "@/lib/services/scans";
 import { rescoreSubmission } from "@/lib/services/submissions";
 import { spotsForGrading } from "@/lib/services/worksheets";
@@ -106,6 +107,8 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
         writeNotes: assignment.writeNotes,
         // The blank worksheet's answer spots, once the teacher saved them: marks are read there before any AI call.
         answerSpots: ctx.spots?.answerSpots ?? null,
+        // The class list's names, offered to the AI only when it reads a name crop.
+        nameHints: rosterNameHints(assignment.id),
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
@@ -140,7 +143,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
   const reconciled = outcome.kind === "graded"
     ? reconcileGrading({
       output: outcome.output, refs: outcome.refs, items: ctx.items, sections, pageCount: latest.pageCount,
-      current: latest, fallbackUsed: outcome.meta.fallbackUsed,
+      current: latest, fallbackUsed: outcome.meta.fallbackUsed, roster: getRoster(ctx.assignment.id),
     })
     : buildRefusedResult({ items: ctx.items, current: latest, hasSections: sections.length > 0, category: outcome.category });
   const ai = outcome.kind === "graded"

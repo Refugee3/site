@@ -200,7 +200,7 @@ export type CropTranscriptions = z.infer<typeof CropTranscriptionSchema>;
 export const SpotProposalSchema = z.object({
   questions: z.array(z.object({
     label: z.string(),
-    kind: z.enum(["choice", "write_in"]),
+    kind: z.enum(["choice", "write_in", "name", "section"]),
     options: z.array(z.object({ label: z.string(), box: z.array(z.number()) })),
     answer_box: z.array(z.number()).nullable(),
   })),

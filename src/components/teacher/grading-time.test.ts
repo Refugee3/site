@@ -13,6 +13,12 @@ describe("the time breakdown on a paper's review page", () => {
     expect(gradingTimeText({ readMs: null, judgeMs: null, aiModel: "ollama:qwen2.5vl:32b" })).toBeNull();
   });
 
+  it("starts with the fast lane for a paper cut from a class scan by matching its pages to the blank worksheet", () => {
+    expect(gradingTimeText({ readMs: 4_200, judgeMs: null, aiModel: "ollama:qwen2.5vl:32b", fastLane: true }))
+      .toBe("Fast lane: matched pages to the blank worksheet · Read: 4 s · Checked: not needed · Model: qwen2.5vl:32b");
+    expect(gradingTimeText({ readMs: 4_200, judgeMs: null, aiModel: null, fastLane: false })).toBe("Read: 4 s · Checked: not needed");
+  });
+
   it("formats durations", () => {
     expect([0, 1_499, 59_400, 60_000, 125_000].map(formatStepDuration)).toEqual(["1 s", "1 s", "59 s", "1 min", "2 min 5 s"]);
     expect(modelName("ollama:qwen2.5vl:32b")).toBe("qwen2.5vl:32b");

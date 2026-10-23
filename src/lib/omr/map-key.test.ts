@@ -90,3 +90,27 @@ describe("proposalToSpots", () => {
     expect(["(c)", "2.", "true", "YES", "are"].map(optionValue)).toEqual(["C", "2", "True", "Yes", "are"]);
   });
 });
+
+describe("identity spots (where the name and class go)", () => {
+  const nameSpot: QuestionSpots = {
+    id: "id1", label: "Name", itemLabel: null, kind: "name", multi: false, enabled: true, page: 1, options: [],
+    boxes: [{ x: 0.2, y: 0.05, w: 0.3, h: 0.04 }],
+  };
+
+  it("are never planned as answers, even if linked to a key item by mistake", () => {
+    expect(planSpots([nameSpot, { ...nameSpot, itemLabel: "1" }], [{ label: "1" }]).size).toBe(0);
+  });
+
+  it("come from the AI's proposal for a scanned blank as identity spots, not questions", () => {
+    const spots = proposalToSpots({
+      questions: [
+        { label: "Name", kind: "name", options: [], answer_box: [100, 40, 400, 70] },
+        { label: "Period", kind: "section", options: [], answer_box: [450, 40, 520, 70] },
+        { label: "1", kind: "write_in", options: [], answer_box: [100, 200, 900, 260] },
+      ],
+    }, { page: 1, width: 1000, height: 1000, items: [{ label: "1", answerType: "short_answer" }], firstId: 1 });
+    expect(spots.map((s) => [s.label, s.kind, s.itemLabel])).toEqual([["Name", "name", null], ["Period", "section", null], ["1", "write_in", "1"]]);
+    const b = spots[0].boxes[0];
+    expect([b.x, b.y, b.w, b.h].map((v) => Number(v.toFixed(6)))).toEqual([0.1, 0.04, 0.3, 0.03]);
+  });
+});

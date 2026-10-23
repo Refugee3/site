@@ -1,6 +1,6 @@
 import { type AutoMark, autoMark } from "@/lib/grading/auto-mark";
 import { type SpotItem, spotReadings, withSpotReadings } from "@/lib/omr/merge";
-import type { SpotEvidence } from "@/lib/omr/types";
+import type { IdentityCrop, SpotEvidence } from "@/lib/omr/types";
 import type { AiUsage, Confidence } from "@/lib/types";
 import { type AgentCallCost, AiError, classifySdkError } from "./errors";
 import {
@@ -24,8 +24,9 @@ import type {
 // page is lined up with the blank and the ink the student added in each spot is measured. A choice is then read from its
 // marks and a blank spot is blank, without the AI; a written spot is cropped and only the crop is transcribed
 // (transcribeCrops: no question, no answers). Those readings replace the AI's for their items. When every item is read
-// from its spots, the AI reads page 1 only, for the name, section and document check. A paper that can't be lined up is
-// read entirely by the AI, as without spots, and flagged.
+// from its spots, the name and class are read from crops of where they are written (the blank's name and class spots, or
+// the top of page 1), with the class list's names as hints; only when nothing is written there does the AI read page 1. A
+// paper that can't be lined up is read entirely by the AI, as without spots, and flagged.
 
 /** The calls an engine provides; the orchestration below is the same for every engine. */
 export type BlindGrader = Pick<Grader, "readSubmission" | "judgeSubmission" | "transcribeCrops">;
@@ -34,7 +35,7 @@ export type BlindGrader = Pick<Grader, "readSubmission" | "judgeSubmission" | "t
 export const PACKET_JUDGE_PARALLEL = 4;
 
 type PlannedItem = JudgeInput["reading"][number];
-type GradingContext = Omit<GradeInput, "studentPdf" | "studentPageCount">;
+export type GradingContext = Omit<GradeInput, "studentPdf" | "studentPageCount">;
 
 /** READ, MARK and JUDGE one paper. A judge failure carries the read call's cost (billed), so the job layer records it. */
 export async function gradeByReading(
@@ -44,9 +45,11 @@ export async function gradeByReading(
   const pages = Array.from({ length: input.studentPageCount }, (_, i) => i + 1);
   const detection = input.answerSpots ? await input.answerSpots.read(input.studentPdf, pages, { signal: o.signal }) : null;
   const detected = detection?.ok ? detection.items : [];
-  // Every item read from its spots (a written one only when this engine can transcribe its crop): page 1 is enough.
+  // Every item read from its spots (a written one only when this engine can transcribe its crop): only the name is left.
   const identityOnly = detection?.ok === true && refs.length > 0 && refs.every((ref) => coversRef(g, detected, ref));
-  const read = await g.readSubmission({
+  // The name (and class) from crops of where they are written, when something is written there: no page goes to the AI.
+  const fromCrops = identityOnly && detection?.ok && g.transcribeCrops ? await readIdentityFromCrops(g, detection.identity, input.nameHints, o) : null;
+  const read = fromCrops ?? await g.readSubmission({
     assignmentTitle: input.assignment.title,
     sections: input.sections,
     items: identityOnly ? [] : blindItems(input.items),
@@ -70,6 +73,53 @@ export async function gradeByReading(
   const steps = { readMs: meta.durationMs, judgeMs: judged.meta?.durationMs ?? null };
   const output = { ...judged.output, ...spotsStatus(detection) };
   return { output, refs, meta: { ...(judged.meta === null ? meta : combineMeta(meta, judged.meta)), steps } };
+}
+
+/** Crop ids of a paper's identity spots. */
+export const IDENTITY_CROP_IDS = { name: "NAME", section: "SECTION" } as const;
+
+/**
+ * A paper's identity read from the crops of its name and class spots (one transcribeCrops call, with the class list's names
+ * as hints), as a reading without items; null when nothing is written in the name spot (the AI then reads page 1).
+ */
+async function readIdentityFromCrops(
+  g: BlindGrader, identity: IdentityCrop[] | undefined, nameHints: string[] | undefined, o: CallOptions,
+): Promise<{ output: ReadingOutput; meta: AiCallMeta } | null> {
+  const written = (identity ?? []).filter((c) => c.written && c.crop);
+  const name = written.find((c) => c.kind === "name");
+  const section = written.find((c) => c.kind === "section");
+  if (!name || !g.transcribeCrops) return null;
+  const crops = [name, ...(section ? [section] : [])].map((c) => ({ id: IDENTITY_CROP_IDS[c.kind], kind: c.kind, ...c.crop! }));
+  const result = await g.transcribeCrops({ crops, ...(nameHints && nameHints.length > 0 ? { nameHints } : {}) }, o);
+  return { output: identityReading(result.output, { name: IDENTITY_CROP_IDS.name, section: section ? IDENTITY_CROP_IDS.section : null }), meta: result.meta };
+}
+
+/** The reading of a paper's identity from its crops' transcriptions (no items: the spots read those). */
+export function identityReading(t: CropTranscriptions, ids: { name: string | null; section: string | null }): ReadingOutput {
+  const byId = new Map(t.crops.map((c) => [normalizeRef(c.id), c]));
+  const read = (id: string | null) => (id === null ? null : byId.get(normalizeRef(id)) ?? null);
+  const clean = (text: string | undefined) => {
+    const v = (text ?? "").replace(/\[illegible\]/gi, " ").replace(/^\s*(?:name|period|per|class|section)\s*[:.]?\s*/i, "").replace(/\s+/g, " ").trim();
+    return v === "" ? null : v;
+  };
+  const name = read(ids.name);
+  const section = read(ids.section);
+  const nameText = clean(name?.text);
+  const illegible = /\[illegible\]/i.test(name?.text ?? "");
+  return {
+    student: {
+      name: nameText,
+      name_confidence: nameText === null ? "low" : illegible && name!.confidence === "high" ? "medium" : (name?.confidence ?? "low"),
+      section_raw: clean(section?.text),
+      section_match: null,
+      multiple_students_detected: false,
+    },
+    // Lined up with the blank worksheet, so it is this assignment's worksheet; what the marks show decides "blank".
+    document_check: { match: "matches", pages_appear_missing: false, note: "" },
+    items: [],
+    integrity: { grader_directed_text_found: false, excerpt: "" },
+    unmatched_work: "",
+  };
 }
 
 /** An item mark detection reads entirely: a choice, a blank spot, or a written spot this engine can transcribe. */
@@ -171,7 +221,7 @@ function boundary(p: PacketReadingOutput["papers"][number]) {
 }
 
 /** MARK the reading, JUDGE what is left (or skip the call), and combine. `meta` is the judge call's, null when skipped. */
-async function markAndJudge(
+export async function markAndJudge(
   g: BlindGrader, input: GradingContext, refs: string[], reading: ReadingOutput, o: CallOptions,
   spots: Map<string, SpotItem> = new Map(),
 ): Promise<{ output: GradingOutput; meta: AiCallMeta | null }> {

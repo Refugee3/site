@@ -14,6 +14,7 @@ import { enqueueSplitScan } from "@/lib/jobs/queue";
 import { describePapers, everyNLayout, formatPageRanges, papersFromLayout } from "@/lib/scan-layout";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions";
+import { activeSpotRevision } from "@/lib/services/worksheets";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
 import { buildSubmissionPdf, CutTooLargeError, extractPageSets, uploadName, type UploadedFile } from "@/lib/storage/pdf";
@@ -43,8 +44,11 @@ export function engineName(engine: GradingEngineChoice): string {
  * Whether a scan can be graded in one pass now: with the direct API, Ollama on this computer and the practice grader, not
  * with the hosted agent (a scan uploaded for one pass is then split first, as with "auto").
  */
-export function onePassAvailable(): boolean {
-  return getConfig().aiMode === "fake" || getGradingEngine() !== "agent";
+export function onePassAvailable(assignmentId?: string): boolean {
+  if (getConfig().aiMode === "fake" || getGradingEngine() !== "agent") return true;
+  // The hosted agent can't read a scan in one pass, but the fast lane needs no full page: an assignment with saved answer
+  // spots is graded from its blank worksheet with any engine.
+  return assignmentId !== undefined && activeSpotRevision(assignmentId) !== null;
 }
 
 /**
@@ -58,7 +62,7 @@ export async function ingestScan(
 ): Promise<Scan> {
   assertKeyApproved(a);
   const pagesPerPaper = o.mode === "every" ? readPagesPerPaper(o.pagesPerPaper) : null;
-  const splitMode: ScanSplitMode = o.mode === "one_pass" && !onePassAvailable() ? "auto" : o.mode;
+  const splitMode: ScanSplitMode = o.mode === "one_pass" && !onePassAvailable(a.id) ? "auto" : o.mode;
   const files = [upload].flat();
   const { bytes, pageCount, contentSha256: sha } = await buildSubmissionPdf(files, { maxPages: getConfig().maxScanPages });
   if (requireKey(a.id).sourceSha256 === sha) {
@@ -170,7 +174,7 @@ export function retryScanWithAi(scan: Scan, o: { mode?: "auto" | "one_pass" } = 
 
 /** Runs inside retryScanWithAi's transaction. Keeps the progress (and an AI answer not stored yet), so nothing is paid twice. */
 function resumeOnePass(current: Scan): Scan {
-  if (!onePassAvailable()) {
+  if (!onePassAvailable(current.assignmentId)) {
     throw new AppError("invalid_state", `${engineName(getGradingEngine())} can't grade in one pass. Choose Direct API or On this computer (Ollama) under `
       + "Settings → Grader first, or have the AI split the scan.");
   }

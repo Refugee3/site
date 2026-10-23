@@ -143,8 +143,21 @@ export function EstimatedProgress({ label, barLabel, startedAt, typicalMs, serve
  * A scan being split, or graded in one pass: pages read (a real count), the time so far and the estimated time left; graded
  * in one pass, also the papers graded so far.
  */
+/** The fast lane's stages as the teacher reads them: "Matching pages to the blank… 12/26". */
+export function fastLaneStageText(stage: NonNullable<ScanSplitProgress["stage"]>): { label: string; progress: string } {
+  switch (stage.kind) {
+    case "matching":
+      return { label: "Matching pages to the blank…", progress: `${stage.done}/${stage.total}` };
+    case "reading":
+      return { label: "Reading names and written answers…", progress: `${stage.done}/${plural(stage.total, "crop")}` };
+    case "marking":
+      return { label: "Marking…", progress: `${stage.done}/${plural(stage.total, "paper")}` };
+  }
+}
+
 export function ScanSplitProgressBar({ split, serverNow }: { split: ScanSplitProgress; serverNow: number }) {
   const now = useServerClock(serverNow);
+  if (split.stage) return <FastLaneProgressBar split={split} stage={split.stage} now={now} serverNow={serverNow} />;
   const fraction = split.pageCount > 0 ? split.pagesRead / split.pageCount : 0;
   const onePass = split.papersGraded !== null;
   const verb = onePass ? "Graded" : "Read";
@@ -160,6 +173,27 @@ export function ScanSplitProgressBar({ split, serverNow }: { split: ScanSplitPro
         <Clock ms={now - split.splitStartedAt} /> · {formatTimeLeft(remainingMs(split.etaMs, now - serverNow))}
       </p>
       {split.papersGraded !== null && (
+        <p className="font-medium">
+          <span className="tabular-nums">{split.papersGraded}</span> {split.papersGraded === 1 ? "paper" : "papers"} graded so far
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FastLaneProgressBar(props: {
+  split: ScanSplitProgress; stage: NonNullable<ScanSplitProgress["stage"]>; now: number; serverNow: number;
+}) {
+  const { split, stage, now, serverNow } = props;
+  const text = fastLaneStageText(stage);
+  return (
+    <div className="flex flex-col gap-2">
+      <ProgressBar value={stage.total > 0 ? stage.done / stage.total : 0} label={text.label} valueText={`${text.label} ${text.progress}`} />
+      <p className="text-sm text-muted">
+        {text.label} <span className="tabular-nums">{text.progress}</span> · <Clock ms={now - split.splitStartedAt} />
+        {stage.done > 0 && <> · {formatTimeLeft(remainingMs(split.etaMs, now - serverNow))}</>}
+      </p>
+      {split.papersGraded !== null && split.papersGraded > 0 && (
         <p className="font-medium">
           <span className="tabular-nums">{split.papersGraded}</span> {split.papersGraded === 1 ? "paper" : "papers"} graded so far
         </p>

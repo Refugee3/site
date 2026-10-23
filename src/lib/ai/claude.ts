@@ -38,7 +38,9 @@ import {
   CropTranscriptionSchema, JudgingOutputSchema, JudgingOutputWithoutNotesSchema, judgingWithEmptyNotes, KeyExtractionSchema, outputFormat,
   PacketReadingOutputSchema, ReadingOutputSchema, ScanPagesSchema, SpotProposalSchema,
 } from "./schemas";
-import { cropLabel, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask } from "./spot-prompts";
+import {
+  cropLabel, nameHintsFor, PROPOSE_SPOTS_SYSTEM_PROMPT, proposeSpotsTask, TRANSCRIBE_SYSTEM_PROMPT, transcribeTask,
+} from "./spot-prompts";
 
 export type MessageRunner = (params: BetaMessageStreamParams, o: { signal?: AbortSignal }) => Promise<BetaMessage>;
 
@@ -258,7 +260,7 @@ export function buildTranscribeParams(i: TranscribeInput, cfg: DirectAiConfig): 
           { type: "text" as const, text: cropLabel(c.id, c.kind) },
           { type: "image" as const, source: pngSource(c.png) },
         ]),
-        { type: "text", text: transcribeTask(i.crops.map((c) => c.id)) },
+        { type: "text", text: transcribeTask(i.crops.map((c) => c.id), { nameHints: nameHintsFor(i.crops, i.nameHints) }) },
       ],
     }],
   };

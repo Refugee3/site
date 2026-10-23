@@ -101,6 +101,10 @@ export interface Submission { id: string; assignmentId: string; source: "student
   queuedAt: number;
   /** How long the stored grading's reading and judging took (ms); judgeMs null when no judge call was needed or not recorded. */
   readMs: number | null; judgeMs: number | null;
+  /** Cut from a whole-class scan by the fast lane (its pages matched to the blank worksheet; names and answers read from crops). */
+  fastLane: boolean;
+  /** The class list's spelling of the name, when the name read on the paper (aiName) was matched to the class list. */
+  rosterName: string | null;
   createdAt: number; updatedAt: number }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
@@ -179,6 +183,11 @@ export interface ScanSplitProgress {
   etaMs: number;
   /** Grading in one pass: papers graded so far (null for a split). */
   papersGraded: number | null;
+  /**
+   * The fast lane's current stage (matching pages to the blank, reading crops, marking papers) and how far it is; absent
+   * when the AI reads the scan page by page.
+   */
+  stage?: { kind: Exclude<FastLaneStage, "done">; done: number; total: number };
 }
 export interface DashboardView { assignments: Array<{ id: string; title: string; kind: AssignmentKind;
   keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans; createdAt: number;
@@ -265,7 +274,18 @@ export interface Scan { id: string; assignmentId: string; status: ScanStatus; sp
 export type SkippedPageReason = "blank" | "cover_or_separator" | "answer_key" | "other" | "unassigned";
 export interface SkippedPage { page: number; reason: SkippedPageReason }
 /** A paper of a scan graded in one pass (1-based scan pages); `submissionId` null: the same pages were already uploaded. */
-export interface OnePassPaper { firstPage: number; lastPage: number; submissionId: string | null; flagged: boolean }
+export interface OnePassPaper { firstPage: number; lastPage: number; submissionId: string | null; flagged: boolean;
+  /** The fast lane: the paper's scan pages in worksheet order (they need not be consecutive); absent for the AI's papers. */
+  pages?: number[] }
+/**
+ * The fast lane (a class scan whose assignment has a saved blank worksheet): every page matched to a page of the blank, the
+ * papers split from that, names and written answers read from crops, then each paper marked. `stage` and done/total are
+ * the progress of the current stage: pages matched, crops read, papers marked.
+ */
+export interface FastLaneProgress { stage: FastLaneStage; done: number; total: number;
+  /** When the stage started (epoch ms), for its time left. */
+  startedAt?: number }
+export type FastLaneStage = "matching" | "reading" | "marking" | "done";
 /**
  * A scan graded in one pass, chunk by chunk in page order. A chunk's AI answer is saved (`pending`) before its papers are
  * stored, so a run that stops partway resumes there without paying for the call again.
@@ -282,6 +302,10 @@ export interface OnePassProgress {
   papers: OnePassPaper[];
   skipped: SkippedPage[];
   pending: OnePassPendingChunk | null;
+  /** Graded by the fast lane (see FastLaneProgress); absent or null: by the AI reading every page. */
+  fastLane?: FastLaneProgress | null;
+  /** The fast lane was tried and its pages didn't match the blank worksheet: the AI reads every page (not tried again). */
+  fastLaneDeclined?: boolean;
 }
 /** An AI answer for one chunk whose papers are not all stored yet. */
 export interface OnePassPendingChunk {
@@ -354,7 +378,9 @@ export interface UploadPageView { keyApproved: boolean; keyPageCount: number | n
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage" | "onePass">;
   /** Grading in one pass: papers graded and pages left out so far (no AI answers). Null for other modes. */
-  onePass: { papersGraded: number; duplicates: number; flagged: number; pagesDone: number; skipped: SkippedPage[] } | null;
+  onePass: { papersGraded: number; duplicates: number; flagged: number; pagesDone: number; skipped: SkippedPage[];
+    /** Graded by the fast lane (pages matched to the blank worksheet); absent otherwise. */
+    fastLane?: true } | null;
   pdfUrl: string /* /api/teacher/scans/<id>/pdf */;
   keyApproved: boolean; keyPageCount: number | null; maxPagesPerPaper: number; remainingSubmissions: number;
   /** Only while the AI is splitting the scan. */
