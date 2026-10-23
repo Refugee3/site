@@ -19,6 +19,7 @@ export const RECOMMENDED_OLLAMA_MODELS: ReadonlyArray<{ name: string; note: stri
   { name: "qwen2.5vl:7b", note: "Recommended — about 8 GB of GPU memory" },
   { name: "gemma3:12b", note: "About 12 GB of GPU memory" },
   { name: "qwen2.5vl:32b", note: "Most accurate — about 24 GB of GPU memory" },
+  { name: "qwen3.6:27b", note: "Newest Qwen — about 20 GB of GPU memory" },
 ];
 
 export interface OllamaSettings {

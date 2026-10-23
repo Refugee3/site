@@ -31,6 +31,8 @@ export interface OllamaChatRequest {
   options: { num_ctx: number; temperature: number; num_predict?: number };
   keep_alive: string;
   stream: false;
+  /** false turns off a thinking model's reasoning (Qwen 3.x and the like); sent only to models that report "thinking". */
+  think?: boolean;
 }
 
 export interface OllamaChatResponse {

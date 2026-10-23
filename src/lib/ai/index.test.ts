@@ -93,6 +93,9 @@ const scanInput = {
   firstPage: 1, chunkPageCount: 1, totalPages: 1, previousPage: null,
 };
 
+
+/** A fake Ollama's answer to /api/show, which the grader asks once per model (thinking or not). */
+const SHOW_VISION = JSON.stringify({ capabilities: ["completion", "vision"] });
 describe("getGrader", () => {
   it("returns the fake grader in fake mode and memoizes it", () => {
     const grader = getGrader();
@@ -217,6 +220,7 @@ describe("Ollama on this computer", () => {
       let body = "";
       req.on("data", (chunk: Buffer) => (body += chunk.toString()));
       req.on("end", () => {
+        if (req.url === "/api/show") return void res.writeHead(200, { "content-type": "application/json" }).end(SHOW_VISION);
         requests.push({ url: req.url, body: JSON.parse(body) });
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
           model: "gemma3:12b", done: true, done_reason: "stop", prompt_eval_count: 900, eval_count: 100,
@@ -259,6 +263,7 @@ describe("Ollama's page image size and papers at a time", () => {
       let body = "";
       req.on("data", (chunk: Buffer) => (body += chunk.toString()));
       req.on("end", () => {
+        if (req.url === "/api/show") return void res.writeHead(200, { "content-type": "application/json" }).end(SHOW_VISION);
         const png = Buffer.from((JSON.parse(body) as { messages: Array<{ images?: string[] }> }).messages[1].images![0], "base64");
         edges.push(Math.max(png.readUInt32BE(16), png.readUInt32BE(20)));
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({

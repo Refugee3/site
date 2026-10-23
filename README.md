@@ -180,6 +180,7 @@ The whole app can run on one Windows PC, like Ollama: double-click to start it, 
    | ~8 GB | `qwen2.5vl:7b` | Recommended starting point. |
    | ~12 GB | `gemma3:12b` | Another good reader of page images. |
    | ~24 GB | `qwen2.5vl:32b` | Most accurate of these, much slower without a big GPU. |
+   | ~24 GB | `qwen3.6:27b` | Newest Qwen (about 18 GB download; needs a recent Ollama). Its "thinking" is turned off automatically so it answers directly. |
 
    **Without a GPU** (CPU only) it works, but expect **several minutes per page** and keep the class small; a laptop may get hot and slow.
 4. **Double-click `Start Grader.bat`** (in the app's folder). The first time it installs the app's packages and builds it (a few minutes, needs internet); later starts take seconds. It creates `.env.local` with `AI_MODE=claude` and no API key, starts the app, waits until it answers and opens <http://localhost:3000>. Keep the window open while you grade; **Ctrl+C** (or closing the window) stops it. On a Mac, double-click `start-grader.command`; on Linux, run `./start-grader.sh`.

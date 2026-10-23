@@ -76,6 +76,9 @@ export interface OllamaGraderDeps {
 /** Crops of written answer spots transcribed per call (mark detection), unless configured (OLLAMA_CROPS_PER_CALL). */
 export const OLLAMA_CROPS_PER_CALL = 8;
 
+/** How long to wait for Ollama to say what the model can do (thinking or not). */
+const CAPABILITIES_TIMEOUT_MS = 10_000;
+
 /** How long Ollama keeps the model loaded between calls. */
 export const OLLAMA_KEEP_ALIVE = "30m";
 
@@ -111,6 +114,17 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
   const parallel = Math.max(1, Math.floor(cfg.concurrency));
   const cropsPerCall = Math.max(1, Math.floor(cfg.cropsPerCall ?? OLLAMA_CROPS_PER_CALL));
   const acquire = semaphore(parallel);
+  let thinking: Promise<boolean> | undefined;
+
+  /**
+   * Whether the model reasons before answering (Ollama reports "thinking", e.g. qwen3.6): asked once, then every call turns it
+   * off, since the reasoning would be thousands of extra tokens per paper. False when Ollama can't say.
+   */
+  function canThink(): Promise<boolean> {
+    thinking ??= client.capabilities(cfg.model, { signal: AbortSignal.timeout(CAPABILITIES_TIMEOUT_MS) })
+      .then((capabilities) => capabilities?.includes("thinking") ?? false, () => false);
+    return thinking;
+  }
 
   async function pagesOf(pdf: Uint8Array, o: CallOptions): Promise<RenderedPage[]> {
     return render(pdf, { maxEdge: cfg.imageMaxEdge, maxPages: cfg.maxPages, signal: o.signal });
@@ -123,6 +137,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
     let usage = NO_USAGE;
     let numPredict = spec.numPredict === undefined ? undefined : Math.max(1, Math.min(Math.round(spec.numPredict), cfg.numCtx));
+    const noThinking = (await canThink()) ? { think: false } : {};
     const messages: OllamaMessage[] = [
       { role: "system", content: spec.system },
       { role: "user", content: spec.text, images: spec.images.map((page) => Buffer.from(page.png).toString("base64")) },
@@ -138,6 +153,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
             options: { num_ctx: cfg.numCtx, temperature: 0, ...(numPredict === undefined ? {} : { num_predict: numPredict }) },
             keep_alive: OLLAMA_KEEP_ALIVE,
             stream: false,
+            ...noThinking,
           }, { signal });
         } catch (e) {
           throw classifyOllamaError(e, {

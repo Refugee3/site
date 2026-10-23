@@ -40,7 +40,7 @@ const imageOf = (tag: number, page: number) => Buffer.from([tag, page]).toString
 interface Sent {
   url: string;
   body: {
-    model: string; stream: boolean; keep_alive: string; options: Record<string, unknown>; format: unknown;
+    model: string; stream: boolean; keep_alive: string; options: Record<string, unknown>; format: unknown; think?: boolean;
     messages: Array<{ role: string; content: string; images?: string[] }>;
   };
 }
@@ -49,8 +49,15 @@ type Reply = Response | Error | ((init: FetchInit) => Promise<Response>);
 
 /** Answers each request with the next reply; records every request. */
 function fakeOllama(...replies: Reply[]) {
+  return fakeOllamaWith(undefined, ...replies);
+}
+
+/** fakeOllama for a model reporting `capabilities` (Ollama's /api/show). */
+function fakeOllamaWith(capabilities: string[] | undefined, ...replies: Reply[]) {
   const sent: Sent[] = [];
   const fetch = async (url: string, init: FetchInit): Promise<Response> => {
+    // The grader asks once what the model can do; answered here unless a test scripts it with `capabilities`.
+    if (url.endsWith("/api/show")) return Response.json({ capabilities: capabilities ?? ["completion", "vision"] });
     sent.push({ url, body: JSON.parse(init.body ?? "null") as Sent["body"] });
     const reply = replies.shift();
     if (!reply) throw new Error("no reply scripted");
@@ -564,5 +571,37 @@ describe("createOllamaGrader: one call at a time", () => {
     await Promise.all([grader.extractKey(input), grader.extractKey(input), grader.extractKey(input)]);
     expect(api.sent).toHaveLength(3);
     expect(most).toBe(1);
+  });
+});
+
+describe("createOllamaGrader: thinking models", () => {
+  const input = { assignmentTitle: "Quiz", teacherNotes: "", keyPdf: pdf(1), pageCount: 1 };
+
+  it("turns thinking off for a model that reports it (qwen3.6), asking Ollama only once", async () => {
+    let shows = 0;
+    const api = fakeOllamaWith(["completion", "vision", "thinking"], answer(keyExtraction), answer(keyExtraction));
+    const counting = async (url: string, init: FetchInit) => {
+      if (url.endsWith("/api/show")) shows++;
+      return api.fetch(url, init);
+    };
+    const grader = graderWith(counting);
+    await grader.extractKey(input);
+    await grader.extractKey(input);
+    expect(api.sent.map((s) => s.body.think)).toEqual([false, false]);
+    expect(shows).toBe(1);
+  });
+
+  it("sends no thinking setting to a model without it, or when Ollama can't say", async () => {
+    const plain = fakeOllamaWith(["completion", "vision"], answer(keyExtraction));
+    await graderWith(plain.fetch).extractKey(input);
+    expect(plain.sent[0].body).not.toHaveProperty("think");
+
+    const failing = fakeOllama(answer(keyExtraction));
+    const broken = async (url: string, init: FetchInit) => {
+      if (url.endsWith("/api/show")) return Response.json({ error: "boom" }, { status: 500 });
+      return failing.fetch(url, init);
+    };
+    await graderWith(broken).extractKey(input);
+    expect(failing.sent[0].body).not.toHaveProperty("think");
   });
 });
