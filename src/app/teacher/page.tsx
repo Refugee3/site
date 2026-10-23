@@ -1,0 +1,110 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { connection } from "next/server";
+import { AssignmentCard } from "@/components/teacher/assignment-card";
+import { DashboardLive } from "@/components/teacher/dashboard-live";
+import { NewFromKey } from "@/components/teacher/new-from-key";
+import { StrugglingQuestions } from "@/components/teacher/struggling-questions";
+import { cx } from "@/components/ui/cx";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LinkButton } from "@/components/ui/link-button";
+import { requireTeacher } from "@/lib/auth/dal";
+import { getDashboardView, getStrugglingQuestions } from "@/lib/services/views";
+import type { AssignmentKind } from "@/lib/types";
+
+export const metadata: Metadata = { title: "Assignments" };
+
+const KIND_FILTERS: Array<{ kind: AssignmentKind | null; label: string; href: string }> = [
+  { kind: null, label: "All", href: "/teacher" },
+  { kind: "homework", label: "Homework", href: "/teacher?type=homework" },
+  { kind: "quiz", label: "Quizzes", href: "/teacher?type=quiz" },
+];
+
+export default async function TeacherDashboardPage(props: PageProps<"/teacher">) {
+  await connection();
+  const teacher = await requireTeacher();
+  const view = getDashboardView(teacher);
+  const { type, struggling } = await props.searchParams;
+  const kind: AssignmentKind | null = type === "homework" || type === "quiz" ? type : null;
+  const typeQuery = kind ? `type=${kind}` : "";
+  const shown = kind ? view.assignments.filter((a) => a.kind === kind) : view.assignments;
+  // Polls for every assignment, shown or not, so switching filters never shows stale cards.
+  const busy = view.assignments.some((a) => a.progress !== null || a.scans.splitting > 0 || a.keyStatus === "processing");
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Assignments</h1>
+        <LinkButton href={kind === "quiz" ? "/teacher/assignments/new?kind=quiz" : "/teacher/assignments/new"} variant="secondary">
+          New homework or quiz from a form
+        </LinkButton>
+      </div>
+
+      <NewFromKey defaultKind={kind ?? "homework"} />
+
+      {view.assignments.length > 0 && (
+        <StrugglingQuestions
+          questions={getStrugglingQuestions(teacher)}
+          showAll={struggling === "all"}
+          showAllHref={`/teacher?${[typeQuery, "struggling=all"].filter(Boolean).join("&")}`}
+          showTopHref={`/teacher${typeQuery ? `?${typeQuery}` : ""}`}
+        />
+      )}
+
+      {view.assignments.length > 0 && <h2 className="text-xl font-semibold">Your homework and quizzes</h2>}
+
+      {view.assignments.length > 0 && (
+        <nav aria-label="Filter assignments by type">
+          <ul className="flex flex-wrap gap-2">
+            {KIND_FILTERS.map((option) => {
+              const active = option.kind === kind;
+              return (
+                <li key={option.label}>
+                  <Link
+                    href={option.href}
+                    scroll={false}
+                    aria-current={active ? "page" : undefined}
+                    className={cx(
+                      "flex min-h-11 items-center rounded-full border px-4 text-sm font-medium no-underline sm:min-h-9",
+                      active ? "border-brand-600 bg-brand-600 text-white" : "border-line-strong bg-surface text-ink hover:bg-subtle",
+                    )}
+                  >
+                    {option.label}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      )}
+
+      {view.assignments.length === 0 ? (
+        <EmptyState
+          title="No assignments yet"
+          body="Drop an answer key above to start: the AI reads it and asks you anything it needs, then you drop your students' work and watch the results come in. Every paper is graded against your key, and anything the AI isn't sure about is flagged for you to check."
+          action={<LinkButton href="/teacher/assignments/new" variant="secondary">Or fill in a form first</LinkButton>}
+        />
+      ) : shown.length === 0 ? (
+        <EmptyState
+          title={kind === "quiz" ? "No quizzes yet" : "No homework yet"}
+          action={
+            <LinkButton href={kind === "quiz" ? "/teacher/assignments/new?kind=quiz" : "/teacher/assignments/new"}>
+              {kind === "quiz" ? "Create a quiz" : "Create homework"}
+            </LinkButton>
+          }
+        />
+      ) : (
+        <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {shown.map((assignment) => (
+            <li key={assignment.id} className="flex min-w-0 flex-col [&>article]:flex-1">
+              <AssignmentCard assignment={assignment} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Live: the cards re-render as keys are read and papers graded (polls while busy if the live stream fails). */}
+      <DashboardLive busy={busy} />
+    </>
+  );
+}
