@@ -130,3 +130,49 @@ export function downscaleGray(img: GrayImage, f: number): GrayImage {
   }
   return { width, height, data };
 }
+
+/**
+ * `img` shrunk to `width` × `height` (smaller or equal), each output pixel the area-weighted mean of the pixels it covers:
+ * the same page as if it had been rendered at the smaller size, from one render (a scanned page is slow to decode).
+ */
+export function resizeGray(img: GrayImage, width: number, height: number): GrayImage {
+  if (width === img.width && height === img.height) return img;
+  if (width > img.width || height > img.height || width < 1 || height < 1) throw new RangeError("resizeGray only shrinks");
+  const across = shrinkAxis(img.width, width);
+  const down = shrinkAxis(img.height, height);
+  // Rows first (to width), then columns (to height).
+  const tmp = new Float32Array(width * img.height);
+  for (let y = 0; y < img.height; y++) {
+    const row = y * img.width;
+    for (let x = 0; x < width; x++) {
+      const { from, weights } = across[x];
+      let sum = 0;
+      for (let k = 0; k < weights.length; k++) sum += img.data[row + from + k] * weights[k];
+      tmp[y * width + x] = sum;
+    }
+  }
+  const data = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const { from, weights } = down[y];
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = 0; k < weights.length; k++) sum += tmp[(from + k) * width + x] * weights[k];
+      data[y * width + x] = Math.min(255, Math.max(0, Math.round(sum)));
+    }
+  }
+  return { width, height, data };
+}
+
+/** For each of `to` output pixels: the first source pixel it covers and the weight of each covered pixel (summing to 1). */
+function shrinkAxis(from: number, to: number): Array<{ from: number; weights: Float32Array }> {
+  const scale = from / to;
+  return Array.from({ length: to }, (_, i) => {
+    const start = i * scale;
+    const end = Math.min(from, (i + 1) * scale);
+    const first = Math.floor(start);
+    const last = Math.min(from - 1, Math.ceil(end) - 1);
+    const weights = new Float32Array(last - first + 1);
+    for (let k = first; k <= last; k++) weights[k - first] = (Math.min(end, k + 1) - Math.max(start, k)) / scale;
+    return { from: first, weights };
+  });
+}

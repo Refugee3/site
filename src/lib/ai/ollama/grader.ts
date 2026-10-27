@@ -76,6 +76,17 @@ export interface OllamaGraderDeps {
 /** Crops of written answer spots transcribed per call (mark detection), unless configured (OLLAMA_CROPS_PER_CALL). */
 export const OLLAMA_CROPS_PER_CALL = 8;
 
+/** Per call options object: when its calls waited for their turn at Ollama ([from, to] in performance.now() time). */
+const waits = new WeakMap<CallOptions, Array<[number, number]>>();
+
+function noteWait(o: CallOptions, from: number, to: number): void {
+  if (to - from < 1) return;
+  const list = waits.get(o) ?? [];
+  list.push([from, to]);
+  if (list.length > 64) list.shift();
+  waits.set(o, list);
+}
+
 /** How long to wait for Ollama to say what the model can do (thinking or not). */
 const CAPABILITIES_TIMEOUT_MS = 10_000;
 
@@ -132,7 +143,9 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
 
   /** One request, plus one retry when the answer isn't usable (or was cut off at num_predict). Rejects with AiError. */
   async function call<T>(spec: CallSpec<T>, o: CallOptions): Promise<CallResult<T>> {
+    const queuedAt = performance.now();
     const release = await acquire(o.signal);
+    noteWait(o, queuedAt, performance.now());
     const timeout = AbortSignal.timeout(cfg.timeoutMs);
     const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
     let usage = NO_USAGE;
@@ -197,10 +210,16 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     }
   }
 
-  function meta(usage: AiUsage, startedAt: number): AiCallMeta {
+  /**
+   * The step's time: from `startedAt` until now, less the time its calls waited for their turn at Ollama (papers prepared
+   * ahead wait there while another paper's call runs), so a paper's read time is its own work.
+   */
+  function meta(usage: AiUsage, startedAt: number, o: CallOptions): AiCallMeta {
+    const end = performance.now();
+    const waited = (waits.get(o) ?? []).reduce((sum, [from, to]) => sum + Math.max(0, Math.min(to, end) - Math.max(from, startedAt)), 0);
     return {
       requestedModel: modelId, servedModel: modelId, fallbackUsed: false, stopReason: "end_turn", usage,
-      durationMs: Math.round(performance.now() - startedAt),
+      durationMs: Math.max(0, Math.round(end - startedAt - waited)),
     };
   }
 
@@ -264,7 +283,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
       start = next;
     }
     if (open) papers.push(open);
-    return { output: { papers, skipped_pages: skipped }, meta: meta(usage, startedAt) };
+    return { output: { papers, skipped_pages: skipped }, meta: meta(usage, startedAt, o) };
   }
 
   const grader: Grader = {
@@ -294,7 +313,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         parts.push(result.output);
         usage = sumUsage(usage, result.usage);
       }
-      return { output: mergeKeyExtractions(parts), meta: meta(usage, startedAt) };
+      return { output: mergeKeyExtractions(parts), meta: meta(usage, startedAt, o) };
     },
 
     async readSubmission(input, o = {}) {
@@ -324,7 +343,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         parts.push(itemsInRefOrder(expandReading(result.output, pageRange(first, last)), refs));
         usage = sumUsage(usage, result.usage);
       }
-      return { output: mergeReadings(parts, refs), meta: meta(usage, startedAt) };
+      return { output: mergeReadings(parts, refs), meta: meta(usage, startedAt, o) };
     },
 
     async judgeSubmission(input, o = {}) {
@@ -349,7 +368,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
           ...spec, system: OLLAMA_JUDGING_SYSTEM_PROMPT, schema: CompactJudgingSchema,
           check: (out) => refProblems(withRefs(out.i), expected),
         }, o);
-        return { output: itemsInRefOrder(expandJudging(result.output), expected), meta: meta(result.usage, startedAt) };
+        return { output: itemsInRefOrder(expandJudging(result.output), expected), meta: meta(result.usage, startedAt, o) };
       }
       const result = await call<CompactJudgingWithoutNotes>({
         ...spec, system: OLLAMA_JUDGING_WITHOUT_NOTES_SYSTEM_PROMPT, schema: CompactJudgingWithoutNotesSchema,
@@ -357,7 +376,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
       }, o);
       return {
         output: judgingWithEmptyNotes(itemsInRefOrder(expandJudgingWithoutNotes(result.output), expected)),
-        meta: meta(result.usage, startedAt),
+        meta: meta(result.usage, startedAt, o),
       };
     },
 
@@ -391,7 +410,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         // The next batch is judged against this one's last page, when the model described it.
         previousPage = batch.at(-1)?.chunk_page === last ? previousFrom(batch, input.firstPage) : null;
       }
-      return { output: { pages: read }, meta: meta(usage, startedAt) };
+      return { output: { pages: read }, meta: meta(usage, startedAt, o) };
     },
 
     readPacketChunk,
@@ -422,7 +441,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         crops.push(...result.output.crops);
         usage = sumUsage(usage, result.usage);
       }
-      return { output: { crops }, meta: meta(usage, startedAt) };
+      return { output: { crops }, meta: meta(usage, startedAt, o) };
     },
 
     async proposeSpots(input, o = {}) {
@@ -434,7 +453,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         schema: SpotProposalSchema,
         numPredict: 6_000,
       }, o);
-      return { output: result.output, meta: meta(result.usage, startedAt) };
+      return { output: result.output, meta: meta(result.usage, startedAt, o) };
     },
   };
   return grader;

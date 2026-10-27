@@ -4,9 +4,9 @@ import type { AnswerSpots, DetectedSpot, SpotDetection } from "@/lib/ai/grader";
 import { extractPageSets } from "@/lib/storage/pdf";
 import { readChoice, readWriteIn } from "./decide";
 import { TOP_STRIP } from "./identity-zones";
-import type { Mask } from "./image";
+import { type Mask, resizeGray } from "./image";
 import { addedInk, choiceInk, type CoveredBlank, coverBlank, OMR_DPI, studentInkMask } from "./ink";
-import { grayToPng, openPdf } from "./pdf-raster";
+import { grayToPng, type OpenPdf, openPdf } from "./pdf-raster";
 import { applyAffine, type PreparedPage, prepareBlankPage, type Registration, registerPage } from "./register";
 import { clampBox } from "./text-zones";
 import {
@@ -220,27 +220,26 @@ export async function readPaperSpots(i: {
     const needed = [...new Set([...i.plan.map((p) => p.spot.page), ...identityPages(i.identity)])]
       .filter((page) => page >= 1 && page <= worksheet.pages.length)
       .sort((a, b) => a - b);
-    const lined = new Map<number, { reg: Registration; ink: Mask }>();
+    const lined = new Map<number, { reg: Registration; ink: Mask; hiRes: () => Promise<GrayImage> }>();
+    const cropPages = pagesWithCrops(i.plan, i.identity);
     for (const page of needed) {
       if (i.signal?.aborted) throw new AiError("aborted", "Stopped while reading the answer spots.", { retryable: true });
       const blank = worksheet.pages[page - 1];
       const size = await doc.pageSize(i.pages[page - 1]);
       if (aspectChange(size, blank) > MAX_ASPECT_CHANGE) return { ok: false, reason: "unaligned", note: UNALIGNED };
       // Rendered as wide as the blank, so registration only has to find small changes of scale.
-      const student = await doc.renderGray(i.pages[page - 1], { widthPx: blank.gray.width });
+      const { gray: student, hiRes } = await renderForMarks(doc, i.pages[page - 1], blank, cropPages.has(page));
       const reg = registerPage(blank.prepared, student);
       if (!reg.ok) return { ok: false, reason: "unaligned", note: UNALIGNED };
-      lined.set(page, { reg, ink: studentInkMask(student) });
+      lined.set(page, { reg, ink: studentInkMask(student), hiRes });
     }
 
     const read: PageSpots["items"] = [];
     const identity: IdentityCrop[] = [];
     for (const page of needed) {
       const at = lined.get(page)!;
-      const blank = worksheet.pages[page - 1];
       const result = await readPageSpots({
-        worksheet, blankPage: page, reg: at.reg, studentInk: at.ink, plan: i.plan, identity: i.identity,
-        hiRes: () => doc.renderGray(i.pages[page - 1], { widthPx: Math.round((blank.widthPt / 72) * CROP_DPI) }),
+        worksheet, blankPage: page, reg: at.reg, studentInk: at.ink, plan: i.plan, identity: i.identity, hiRes: at.hiRes,
       });
       read.push(...result.items);
       identity.push(...result.identity);
@@ -251,6 +250,29 @@ export async function readPaperSpots(i: {
   } finally {
     await doc.close();
   }
+}
+
+/**
+ * A paper page rendered for mark detection (as wide as its blank page) and, for its crops, at CROP_DPI. A scanned page is
+ * slow to decode (seconds for a compressed scan), so when crops are likely (`crops`: the page has the name or a written
+ * spot) it is rendered once, at CROP_DPI, and shrunk for the marks; otherwise at the marks' size, the crops rendered later.
+ */
+export async function renderForMarks(
+  doc: OpenPdf, page: number, blank: Pick<PreparedBlankPage, "gray" | "widthPt">, crops: boolean,
+): Promise<{ gray: GrayImage; hiRes: () => Promise<GrayImage> }> {
+  const hiWidth = Math.round((blank.widthPt / 72) * CROP_DPI);
+  if (!crops || hiWidth < blank.gray.width) {
+    const gray = await doc.renderGray(page, { widthPx: blank.gray.width });
+    return { gray, hiRes: () => doc.renderGray(page, { widthPx: hiWidth }) };
+  }
+  const hi = await doc.renderGray(page, { widthPx: hiWidth });
+  const height = Math.max(1, Math.round((hi.height * blank.gray.width) / hi.width));
+  return { gray: resizeGray(hi, blank.gray.width, height), hiRes: async () => hi };
+}
+
+/** The blank pages likely to need crops: the name's (identity) and any with a written answer spot. */
+export function pagesWithCrops(plan: SpotPlanEntry[], identity: IdentitySpotsPlan | undefined): Set<number> {
+  return new Set([...identityPages(identity), ...plan.filter((p) => p.spot.kind !== "choice").map((p) => p.spot.page)]);
 }
 
 /** How much a page's shape differs from the blank's (0: the same aspect ratio). */

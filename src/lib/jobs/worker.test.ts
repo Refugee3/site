@@ -21,7 +21,7 @@ import { makeGradingOutput, makeOutputItem } from "@/lib/grading/test-utils";
 import { sha256Hex } from "@/lib/ids";
 import { enqueueExtractKey, enqueueGrade, getWorkerStatus, PRIORITY, resumeWorker } from "@/lib/jobs/queue";
 import { answeringGrader, deferred, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
-import { concurrencyFor, createWorker, startWorker } from "@/lib/jobs/worker";
+import { concurrencyFor, createWorker, OLLAMA_PREPARE_AHEAD, startWorker } from "@/lib/jobs/worker";
 import { updateAssignment } from "@/lib/services/assignments";
 import { ingestKeyPdf, saveKey } from "@/lib/services/keys";
 import { ingestTeacherUpload, regradeSubmission, updateIdentity } from "@/lib/services/submissions";
@@ -1211,9 +1211,10 @@ describe("grading on this computer (Ollama)", () => {
     return { grader, calls };
   }
 
-  it("concurrencyFor: the Ollama grader's papers at a time, else OLLAMA_CONCURRENCY, while Ollama grades", () => {
+  it("concurrencyFor: the Ollama grader's papers at a time (plus papers being prepared), else OLLAMA_CONCURRENCY, while Ollama grades", () => {
     const cfg = { concurrency: 10, ollamaConcurrency: 1 };
-    expect(concurrencyFor({ ...scriptedGrader({ engine: "ollama" }), parallel: 3 }, cfg)).toBe(3);
+    expect(OLLAMA_PREPARE_AHEAD).toBe(2);
+    expect(concurrencyFor({ ...scriptedGrader({ engine: "ollama" }), parallel: 3 }, cfg)).toBe(3 + OLLAMA_PREPARE_AHEAD);
     expect(concurrencyFor({ ...scriptedGrader({ engine: "direct" }), parallel: 3 }, cfg)).toBe(10);
   });
 
@@ -1224,24 +1225,25 @@ describe("grading on this computer (Ollama)", () => {
     setGraderForTests(undefined);
     setGradingEngine("ollama");
     const cfg = getConfig();
-    expect(concurrencyFor(getGrader(), cfg)).toBe(1);
+    expect(concurrencyFor(getGrader(), cfg)).toBe(1 + OLLAMA_PREPARE_AHEAD);
 
     setOllamaSpeedSettings({ imageMaxEdge: null, papersAtATime: 2 });
     setGraderForTests(undefined); // as saving the settings does (resetGrader)
     const fromSettings = getGrader();
-    // The grader sends at most 2 calls to Ollama at once, and the worker runs 2 papers at once: the same number.
+    // The grader sends at most 2 calls to Ollama at once (its own limit); the worker runs 2 papers, plus the ones being
+    // prepared meanwhile.
     expect(fromSettings).toMatchObject({ engine: "ollama", parallel: 2 });
-    expect(concurrencyFor(fromSettings, cfg)).toBe(2);
+    expect(concurrencyFor(fromSettings, cfg)).toBe(2 + OLLAMA_PREPARE_AHEAD);
 
-    const ids = [await uploadPaper("a"), await uploadPaper("b"), await uploadPaper("c")];
+    const ids = [await uploadPaper("a"), await uploadPaper("b"), await uploadPaper("c"), await uploadPaper("d"), await uploadPaper("e")];
     const local = hangingOllama();
     const grader: Grader = { ...local.grader, parallel: fromSettings?.parallel };
     const worker = createWorker({ grader: () => grader, concurrency: (g) => concurrencyFor(g, cfg), pollMs: 1000 });
     worker.start();
-    await vi.waitFor(() => expect(local.calls).toHaveLength(2));
+    await vi.waitFor(() => expect(local.calls).toHaveLength(4));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(local.calls).toHaveLength(2);
-    expect(worker.status()).toMatchObject({ concurrency: 2, running: 2, queued: 1 });
+    expect(local.calls).toHaveLength(4);
+    expect(worker.status()).toMatchObject({ concurrency: 4, running: 4, queued: 1 });
     for (const release of local.calls.splice(0)) release();
     await vi.waitFor(() => expect(local.calls).toHaveLength(1));
     local.calls[0]();
@@ -1249,31 +1251,32 @@ describe("grading on this computer (Ollama)", () => {
     await worker.stop();
   });
 
-  it("concurrencyFor: OLLAMA_CONCURRENCY while Ollama grades, GRADING_CONCURRENCY otherwise", () => {
+  it("concurrencyFor: OLLAMA_CONCURRENCY (plus papers being prepared) while Ollama grades, GRADING_CONCURRENCY otherwise", () => {
     const cfg = { concurrency: 10, ollamaConcurrency: 1 };
-    expect(concurrencyFor(scriptedGrader({ engine: "ollama" }), cfg)).toBe(1);
+    expect(concurrencyFor(scriptedGrader({ engine: "ollama" }), cfg)).toBe(1 + OLLAMA_PREPARE_AHEAD);
     expect(concurrencyFor(scriptedGrader({ engine: "direct" }), cfg)).toBe(10);
     expect(concurrencyFor(null, cfg)).toBe(10);
   });
 
-  it("runs one paper at a time with the Ollama grader, and more again once a Claude engine is chosen", async () => {
-    const ids = [await uploadPaper("a"), await uploadPaper("b"), await uploadPaper("c")];
+  it("runs one paper at a time with the Ollama grader (plus papers being prepared), and more again once a Claude engine is chosen", async () => {
+    const ids = await Promise.all(["a", "b", "c", "d", "e", "f"].map((name) => uploadPaper(name)));
     const local = hangingOllama();
     let current: Grader = local.grader;
-    const worker = createWorker({ grader: () => current, concurrency: (g) => concurrencyFor(g, { concurrency: 3, ollamaConcurrency: 1 }), pollMs: 1000 });
+    const worker = createWorker({ grader: () => current, concurrency: (g) => concurrencyFor(g, { concurrency: 6, ollamaConcurrency: 1 }), pollMs: 1000 });
 
     worker.start();
-    await vi.waitFor(() => expect(local.calls).toHaveLength(1));
+    await vi.waitFor(() => expect(local.calls).toHaveLength(3));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(local.calls).toHaveLength(1);
-    expect(worker.status()).toMatchObject({ concurrency: 1, effectiveConcurrency: 1, running: 1, queued: 2 });
+    expect(local.calls).toHaveLength(3);
+    expect(worker.status()).toMatchObject({ concurrency: 3, effectiveConcurrency: 3, running: 3, queued: 3 });
 
-    // Switching to a Claude engine applies at the next claim: the two papers left start together.
+    // Switching to a Claude engine applies at the next claim: the three papers left start together.
     const claude = hangingOllama("direct");
     current = claude.grader;
     local.calls[0]();
-    await vi.waitFor(() => expect(claude.calls).toHaveLength(2));
-    expect(worker.status()).toMatchObject({ concurrency: 3 });
+    await vi.waitFor(() => expect(claude.calls).toHaveLength(3));
+    expect(worker.status()).toMatchObject({ concurrency: 6 });
+    for (const release of local.calls.splice(0)) release();
     for (const release of claude.calls.splice(0)) release();
     await vi.waitFor(() => expect(ids.every((id) => jobRows(id)[0].status === "done")).toBe(true));
     await worker.stop();

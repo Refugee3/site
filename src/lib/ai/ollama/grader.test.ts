@@ -572,6 +572,21 @@ describe("createOllamaGrader: one call at a time", () => {
     expect(api.sent).toHaveLength(3);
     expect(most).toBe(1);
   });
+
+  it("times each step without the wait for its turn: a paper prepared ahead shows its own read time", async () => {
+    const slow = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return answer(keyExtraction);
+    };
+    const grader = graderWith(fakeOllama(slow, slow, slow).fetch, { concurrency: 1 });
+    const input = { assignmentTitle: "Quiz", teacherNotes: "", keyPdf: pdf(1), pageCount: 1 };
+    const started = performance.now();
+    const results = await Promise.all([grader.extractKey(input), grader.extractKey(input), grader.extractKey(input)]);
+    const wall = performance.now() - started;
+    expect(wall).toBeGreaterThanOrEqual(170);
+    // The last one waited about two calls' time for its turn; its own step took about one.
+    for (const r of results) expect(r.meta.durationMs).toBeLessThan(150);
+  });
 });
 
 describe("createOllamaGrader: thinking models", () => {

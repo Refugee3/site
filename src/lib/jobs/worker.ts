@@ -363,11 +363,18 @@ const HOUR_MS = 3_600_000;
 const FINISHED_JOB_RETENTION_MS = 30 * 24 * HOUR_MS;
 
 /**
- * GRADING_CONCURRENCY, or while Ollama on this computer grades, its papers at a time: the grader's own `parallel` (Settings →
- * Grader → "Papers at a time", else OLLAMA_CONCURRENCY, default 1), the same number of calls the grader sends Ollama at once.
+ * Papers the worker prepares while Ollama is busy: each paper's pages are decoded and its marks read on this computer's
+ * processor before its call to Ollama, which then waits its turn (the grader sends at most "Papers at a time" calls at once).
+ * The graphics card stays busy instead of waiting for the next paper's pages.
+ */
+export const OLLAMA_PREPARE_AHEAD = 2;
+
+/**
+ * GRADING_CONCURRENCY, or while Ollama on this computer grades, its papers at a time (the grader's own `parallel`: Settings →
+ * Grader → "Papers at a time", else OLLAMA_CONCURRENCY, default 1) plus OLLAMA_PREPARE_AHEAD papers being prepared.
  */
 export function concurrencyFor(grader: Grader | null, cfg: Pick<AppConfig, "concurrency" | "ollamaConcurrency">): number {
-  return grader?.engine === "ollama" ? (grader.parallel ?? cfg.ollamaConcurrency) : cfg.concurrency;
+  return grader?.engine === "ollama" ? (grader.parallel ?? cfg.ollamaConcurrency) + OLLAMA_PREPARE_AHEAD : cfg.concurrency;
 }
 
 /**

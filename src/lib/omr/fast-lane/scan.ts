@@ -1,6 +1,9 @@
 import "server-only";
 import { AiError } from "@/lib/ai/errors";
-import { aspectChange, CROP_DPI, type IdentitySpotsPlan, MAX_ASPECT_CHANGE, type PageSpots, type PreparedWorksheet, readPageSpots, type SpotPlanEntry } from "../detect";
+import {
+  aspectChange, CROP_DPI, type IdentitySpotsPlan, MAX_ASPECT_CHANGE, type PageSpots, pagesWithCrops, type PreparedWorksheet, readPageSpots,
+  renderForMarks, type SpotPlanEntry,
+} from "../detect";
 import { studentInkMask } from "../ink";
 import { openPdf } from "../pdf-raster";
 import { REGISTRATION_MIN_SCORE } from "../register";
@@ -55,6 +58,9 @@ export async function analyzeScan(i: {
   const doc = await openPdf(i.scanPdf);
   try {
     const out: AnalyzedPage[] = [];
+    // Every blank page has the name or a written spot: each matched page will need crops.
+    const withCrops = pagesWithCrops(i.plan, i.identity);
+    const cropsLikely = worksheet.pages.every((_, k) => withCrops.has(k + 1));
     let previous: number | null = null;
     for (let page = 1; page <= doc.numPages; page++) {
       if (i.signal?.aborted) throw new AiError("aborted", "Stopped while matching the scan's pages.", { retryable: true });
@@ -69,7 +75,8 @@ export async function analyzeScan(i: {
         i.onPage?.(page, doc.numPages);
         continue;
       }
-      const gray = await doc.renderGray(page, { widthPx: first.gray.width });
+      // One render when crops are likely on any page (a 1-page quiz: always, for the name), shrunk for matching.
+      const { gray, hiRes } = await renderForMarks(doc, page, first, cropsLikely);
       // The page after worksheet page j is most likely page j + 1, or the next paper's page 1.
       const expected = previous === null || previous >= k ? 1 : previous + 1;
       const m = matchPage(blanks, gray, expected);
@@ -85,9 +92,12 @@ export async function analyzeScan(i: {
       const readStarted = performance.now();
       if (readable) {
         const blank = worksheet.pages[m.blankPage - 1];
+        const crops = blank.widthPt === first.widthPt
+          ? hiRes
+          : () => doc.renderGray(page, { widthPx: Math.round((blank.widthPt / 72) * CROP_DPI) });
         spots = await readPageSpots({
           worksheet, blankPage: m.blankPage, reg: m.reg, studentInk: studentInkMask(gray), plan: i.plan, identity: i.identity,
-          hiRes: () => doc.renderGray(page, { widthPx: Math.round((blank.widthPt / 72) * CROP_DPI) }),
+          hiRes: crops,
         });
       }
       const name = spots?.identity.find((c) => c.kind === "name");

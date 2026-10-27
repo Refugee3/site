@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readChoice, readWriteIn } from "./decide";
 import { addedInk, choiceInk, coverBlank, studentInkMask } from "./ink";
+import { INK_THRESHOLD, resizeGray } from "./image";
 import { applyAffine, prepareBlankPage, registerPage } from "./register";
 import { blankPage, copyImage, disc, fillRect, ring, specks, stroke, textLine, warp } from "./synthetic";
 import type { GrayImage, SpotBox } from "./types";
@@ -225,6 +226,30 @@ describe("options printed one under another (a. b. c. d.)", () => {
     const { perBox, choice } = read(student);
     expect(choice.marked.length).not.toBe(1);
     expect(perBox.every((f) => f > 0)).toBe(true);
+  });
+});
+
+describe("resizeGray", () => {
+  it("shrinks a page as if it were rendered smaller: same tones, marks kept", () => {
+    const big = blankPage(400, 300);
+    fillRect(big, 100, 100, 40, 40, 0);
+    stroke(big, 200, 50, 300, 50, 3, 30);
+    const small = resizeGray(big, 300, 225);
+    expect(small).toMatchObject({ width: 300, height: 225 });
+    expect(small.data[10 * 300 + 10]).toBe(255);
+    expect(small.data[90 * 300 + 90]).toBe(0);
+    // The 3 px line is still a dark line at 3/4 size.
+    const column = Array.from({ length: 10 }, (_, k) => small.data[(33 + k) * 300 + 190]);
+    expect(Math.min(...column)).toBeLessThan(INK_THRESHOLD);
+    // Total darkness is kept (area-weighted means).
+    const darkness = (img: GrayImage) => img.data.reduce((sum, v) => sum + (255 - v), 0) / (img.width * img.height);
+    expect(darkness(small)).toBeCloseTo(darkness(big), 0);
+  });
+
+  it("returns the page itself at the same size, and only shrinks", () => {
+    const img = blankPage(50, 40);
+    expect(resizeGray(img, 50, 40)).toBe(img);
+    expect(() => resizeGray(img, 60, 40)).toThrow(RangeError);
   });
 });
 
