@@ -5,7 +5,7 @@ import { extractPageSets } from "@/lib/storage/pdf";
 import { readChoice, readWriteIn } from "./decide";
 import { TOP_STRIP } from "./identity-zones";
 import type { Mask } from "./image";
-import { addedInk, type CoveredBlank, coverBlank, OMR_DPI, studentInkMask } from "./ink";
+import { addedInk, choiceInk, type CoveredBlank, coverBlank, OMR_DPI, studentInkMask } from "./ink";
 import { grayToPng, openPdf } from "./pdf-raster";
 import { applyAffine, type PreparedPage, prepareBlankPage, type Registration, registerPage } from "./register";
 import { clampBox } from "./text-zones";
@@ -124,7 +124,8 @@ export async function readPageSpots(i: {
     const crop = padBox(unionBox(spot.kind === "choice" ? spot.options.map((o) => o.box) : spot.boxes), marginX, marginY);
     const evidence: SpotEvidence = { kind: spot.kind, page: spot.page, crop, map: i.reg.map };
     if (spot.kind === "choice") {
-      const options = spot.options.map((o) => ({ value: o.value, box: o.box, ink: addedInk(blank.covered, i.studentInk, i.reg.px, o.box).fraction }));
+      const inks = choiceInk(blank.covered, i.studentInk, i.reg.px, spot.options.map((o) => o.box));
+      const options = spot.options.map((o, k) => ({ value: o.value, box: o.box, ink: inks[k].fraction }));
       items.push({
         planIndex,
         detected: {

@@ -141,10 +141,56 @@ function findQuestions(pages: TextPage[], keyByLabel: Map<string, KeyItemOutline
     }
   });
   // A question number followed only by sub-questions ("3." then "a)", "b)") is not answered itself.
-  return questions.filter((q, i) => {
+  const answered = questions.filter((q, i) => {
     const next = questions[i + 1];
     return !(next && /^\d+$/.test(q.label) && next.label.startsWith(q.label) && /[a-z]$/.test(next.label) && q.tokens.every((t) => !isAnswerToken(t)));
   });
+  return splitUnlabelled(answered, keyByLabel);
+}
+
+/**
+ * Questions whose number the text layer lost (a scanner's text recognition often skips "5." beside a bold line): when a
+ * question's options start over ("a." again after "a.", "b.", …) and the key has numbered questions after it that weren't
+ * found, each restart begins the next of them. The new question takes the lines after the previous run's last option.
+ */
+function splitUnlabelled(questions: Question[], keyByLabel: Map<string, KeyItemOutline>): Question[] {
+  if (keyByLabel.size === 0) return questions;
+  const found = new Set(questions.map((q) => q.label));
+  const missing = [...keyByLabel.keys()].filter((label) => /^\d+$/.test(label) && !found.has(label)).map(Number).sort((a, b) => a - b);
+  if (missing.length === 0) return questions;
+  const out: Question[] = [];
+  questions.forEach((q, qi) => {
+    const own = /^\d+$/.test(q.label) ? Number(q.label) : Number(/^(\d+)/.exec(q.label)?.[1] ?? NaN);
+    const nextFound = questions.slice(qi + 1).map((n) => Number(/^(\d+)/.exec(n.label)?.[1] ?? NaN)).find((n) => !Number.isNaN(n));
+    const available = missing.filter((n) => n > own && (nextFound === undefined || n < nextFound));
+    let current = q;
+    out.push(current);
+    let seenFirst = false;
+    let lastOptionLine = -1;
+    const lines = [...q.lines]; // q.lines is cut short as questions are split off
+    lines.forEach((line, li) => {
+      if (li === 0) return;
+      const m = LETTER_OPTION.exec(line.tokens[0]?.text ?? "");
+      if (!m) return;
+      const letter = m[1].toUpperCase();
+      if (letter === "A" && seenFirst && available.length > 0) {
+        const startLine = Math.max(lastOptionLine + 1, 1);
+        const startInCurrent = current.lines.indexOf(lines[startLine]);
+        if (startInCurrent < 1) return;
+        const label = String(available.shift());
+        const moved = current.lines.splice(startInCurrent);
+        current.tokens = current.tokens.filter((t) => !moved.some((l) => l.tokens.includes(t)));
+        current.nextTop = moved[0].top;
+        current = {
+          label, page: q.page, lines: moved, tokens: moved.flatMap((l) => l.tokens), labelToken: moved[0].tokens[0], nextTop: q.nextTop,
+        };
+        out.push(current);
+      }
+      if (letter === "A") seenFirst = true;
+      lastOptionLine = li;
+    });
+  });
+  return out;
 }
 
 function numericLabel(t: TextToken | undefined): { number: string; letter: string | null } | null {
@@ -341,7 +387,9 @@ function separate(options: SpotOption[]): SpotOption[] {
   for (const a of out) {
     for (const b of out) {
       if (a === b) continue;
-      const sameRow = a.box.y < b.box.y + b.box.h && b.box.y < a.box.y + a.box.h;
+      // Side by side only when on the same printed line: padded boxes of stacked options overlap too, and on a scan their
+      // letters are never exactly aligned, which must not read as one option to the right of the other.
+      const sameRow = Math.abs((a.box.y + a.box.h / 2) - (b.box.y + b.box.h / 2)) < Math.min(a.box.h, b.box.h) * 0.4;
       if (sameRow && a.box.x < b.box.x && a.box.x + a.box.w > b.box.x) {
         const mid = (a.box.x + a.box.w + b.box.x) / 2;
         // Keep at least the start of each one.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readChoice, readWriteIn } from "./decide";
-import { addedInk, coverBlank, studentInkMask } from "./ink";
+import { addedInk, choiceInk, coverBlank, studentInkMask } from "./ink";
 import { applyAffine, prepareBlankPage, registerPage } from "./register";
 import { blankPage, copyImage, disc, fillRect, ring, specks, stroke, textLine, warp } from "./synthetic";
 import type { GrayImage, SpotBox } from "./types";
@@ -45,7 +45,7 @@ function readOptions(blank: GrayImage, student: GrayImage) {
   const ink = studentInkMask(student);
   return {
     reg,
-    choice: readChoice(LETTERS.map((value, i) => ({ value, ink: addedInk(covered, ink, reg.px, optionBox(i)).fraction }))),
+    choice: readChoice(choiceInk(covered, ink, reg.px, LETTERS.map((_, i) => optionBox(i))).map((score, i) => ({ value: LETTERS[i], ink: score.fraction }))),
     write: addedInk(covered, ink, reg.px, WRITE_BOX),
   };
 }
@@ -168,6 +168,63 @@ describe("reading marks", () => {
     stroke(student, 400, 700, 430, 700);
     const { write } = readOptions(blank, warp(student, { dx: -8, dy: 11, angleDeg: 1.5 }));
     expect(readWriteIn(write.pixels, write.fraction)).toMatchObject({ written: true, confidence: "high" });
+  });
+});
+
+describe("options printed one under another (a. b. c. d.)", () => {
+  // As on a typical quiz: the letters in a column 26 px (0.17 in) apart, each spot as tall as its line.
+  const COLUMN_X = 160;
+  const ROW_Y = [400, 426, 452, 478];
+  const stacked = (() => {
+    const img = blankPage(W, H);
+    textLine(img, 100, 340, 60);
+    for (const y of ROW_Y) {
+      fillRect(img, COLUMN_X, y, 9, 12);
+      fillRect(img, COLUMN_X + 11, y + 9, 3, 3);
+      textLine(img, COLUMN_X + 30, y, 30);
+    }
+    for (let y = 700; y < 1500; y += 40) textLine(img, 100, y, 70);
+    return img;
+  })();
+  const boxes: SpotBox[] = ROW_Y.map((y) => ({ x: (COLUMN_X - 30) / W, y: (y - 7) / H, w: 90 / W, h: 26 / H }));
+  const read = (student: GrayImage) => {
+    const reg = registerPage(prepareBlankPage(stacked), student);
+    const covered = coverBlank(stacked);
+    const ink = studentInkMask(student);
+    return {
+      perBox: boxes.map((box) => addedInk(covered, ink, reg.px, box).fraction),
+      choice: readChoice(choiceInk(covered, ink, reg.px, boxes).map((score, i) => ({ value: LETTERS[i], ink: score.fraction }))),
+    };
+  };
+
+  it("a big circle around a. that dips into b.'s line reads a. alone", () => {
+    const student = copyImage(stacked);
+    ring(student, COLUMN_X + 6, ROW_Y[0] + 8, 19);
+    const { perBox, choice } = read(warp(student, { dx: 6, dy: -4, angleDeg: 0.6 }));
+    expect(perBox[1]).toBeGreaterThan(0.005); // counted box by box, the circle's bottom would show on b.
+    expect(choice).toMatchObject({ marked: ["A"], confidence: "high", review: "none" });
+    expect(choice.marksSeen).toMatch(/^A: .*others clean$/);
+  });
+
+  it("a circle around d. that reaches up into c. reads d. alone", () => {
+    const student = copyImage(stacked);
+    ring(student, COLUMN_X + 6, ROW_Y[3] + 6, 20);
+    expect(read(student).choice).toMatchObject({ marked: ["D"], confidence: "high" });
+  });
+
+  it("two separate circles still read as two answers", () => {
+    const student = copyImage(stacked);
+    ring(student, COLUMN_X + 6, ROW_Y[0] + 6, 14);
+    ring(student, COLUMN_X + 6, ROW_Y[2] + 6, 14);
+    expect(read(student).choice).toMatchObject({ marked: ["A", "C"], review: "multiple_answers" });
+  });
+
+  it("a line drawn down through every option counts where it falls, not for one option", () => {
+    const student = copyImage(stacked);
+    stroke(student, COLUMN_X - 12, ROW_Y[0] - 4, COLUMN_X - 12, ROW_Y[3] + 16);
+    const { perBox, choice } = read(student);
+    expect(choice.marked.length).not.toBe(1);
+    expect(perBox.every((f) => f > 0)).toBe(true);
   });
 });
 
