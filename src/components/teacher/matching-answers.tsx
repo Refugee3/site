@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { UsersIcon } from "@/components/ui/icons";
 import type { AnswerMatch, AnswerMatchSummary, SharedWrongAnswer } from "@/lib/grading/answer-match";
 import { MATCH_MIN_PAPERS } from "@/lib/grading/answer-match";
 import { reviewHref } from "./board-helpers";
@@ -17,6 +18,8 @@ export function MatchingAnswersCard({ assignmentId, summary }: { assignmentId: s
   const { matches } = summary;
   return (
     <Card
+      icon={<UsersIcon />}
+      accent="ember"
       title={<span id="matching-answers">Matching answers</span>}
       actions={matches.length > 0 ? <Badge tone="warning">{plural(matches.length, "pair")} to look at</Badge> : undefined}
     >
@@ -102,7 +105,7 @@ function othersText(s: SharedWrongAnswer): string {
 export function QuizMatchAlerts({ alerts }: { alerts: Array<{ assignmentId: string; title: string; pairs: number; strong: number }> }) {
   if (alerts.length === 0) return null;
   return (
-    <Card title="Matching answers on quizzes">
+    <Card title="Matching answers on quizzes" icon={<UsersIcon />} accent="ember">
       <div className="flex flex-col gap-3">
         <p className="text-sm text-muted">
           Students who gave the same unusual wrong answers on a quiz. Homework isn&apos;t checked, since students often work together.

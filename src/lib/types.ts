@@ -192,7 +192,9 @@ export interface ScanSplitProgress {
 export interface DashboardView { assignments: Array<{ id: string; title: string; kind: AssignmentKind;
   keyStatus: KeyStatus; keyApproved: boolean; counts: StatusCounts; scans: PendingScans; createdAt: number;
   /** The current grading batch (see GradingProgress); null while nothing is queued or grading. */
-  progress: { done: number; total: number } | null }> }
+  progress: { done: number; total: number } | null;
+  /** The class average of the current graded papers, in tenths of a percent; null (or absent) before any is graded. */
+  averageTenths?: number | null }> }
 /** A question most of a class missed, on the dashboard's "Where students are struggling" (see getStrugglingQuestions). */
 export interface StrugglingQuestion { assignmentId: string; assignmentTitle: string; kind: AssignmentKind; itemId: string; label: string;
   prompt: string;

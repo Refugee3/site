@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { SignupForm } from "@/components/auth/signup-form";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
+import { LogoMark } from "@/components/ui/logo";
 import { PublicPage } from "@/components/ui/public-page";
 import { isFirstSignup, signupPolicy } from "@/lib/auth/accounts";
 
@@ -15,7 +16,11 @@ export default async function SignupPage() {
 
   return (
     <PublicPage>
-      <h1 className="text-2xl font-semibold">Create a teacher account</h1>
+      <div className="flex flex-col items-start gap-3">
+        <LogoMark className="size-12" id="dg-fire-hero" />
+        <h1 className="text-3xl font-bold tracking-tight">Create a teacher account</h1>
+        <p className="text-muted">Set up DragonGrader in a minute: your answer keys and grades stay on this server.</p>
+      </div>
       {policy === "closed" ? (
         <Alert tone="info" title="Sign-ups are closed">
           This server already has a teacher. To let more teachers join, the administrator sets TEACHER_SIGNUP_CODE and

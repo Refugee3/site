@@ -40,5 +40,5 @@ export function WorkerBanner({ worker }: { worker: WorkerStatus | null }) {
   }
 
   if (notices.length === 0) return null;
-  return <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 px-4 pt-4">{notices}</div>;
+  return <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 px-4 pt-4 sm:px-6 lg:px-10">{notices}</div>;
 }

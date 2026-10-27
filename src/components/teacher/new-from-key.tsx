@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { Alert } from "@/components/ui/alert";
 import { cx } from "@/components/ui/cx";
 import { DropZone } from "@/components/ui/drop-zone";
+import { SparklesIcon } from "@/components/ui/icons";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_FORMATS } from "@/lib/client/upload-files";
 import type { AssignmentKind } from "@/lib/types";
@@ -68,9 +69,12 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
 
   const busy = uploading || opening;
   return (
-    <section aria-labelledby="new-from-key-heading" className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-surface p-4 shadow-sm sm:p-6">
+    <section aria-labelledby="new-from-key-heading" className="flex flex-col gap-4 rounded-2xl border border-line bg-surface p-4 shadow-[0_1px_2px_rgb(20_23_51/0.04),0_8px_24px_-12px_rgb(20_23_51/0.12)] sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="new-from-key-heading" className="text-lg font-semibold">Start a new homework or quiz</h2>
+        <h2 id="new-from-key-heading" className="flex items-center gap-3 text-lg font-semibold">
+          <span className="grid size-9 place-items-center rounded-xl bg-ember-50 text-ember-700"><SparklesIcon /></span>
+          Start a new homework or quiz
+        </h2>
         <fieldset disabled={busy} className="min-w-0">
           <legend className="sr-only">Type</legend>
           <div className="inline-flex rounded-lg border border-line-strong bg-subtle p-0.5">

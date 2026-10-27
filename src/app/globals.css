@@ -16,23 +16,40 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
   /* Neutral surfaces and text. */
-  --color-canvas: #f5f6f8;
+  --color-canvas: #f4f5fa;
   --color-surface: #ffffff;
-  --color-subtle: #eef0f3;
-  --color-line: #dde1e7;
-  --color-line-strong: #b9c0ca;
+  --color-subtle: #eef0f6;
+  --color-line: #e2e5ee;
+  --color-line-strong: #c2c7d4;
   /* Borders of text fields, selects and checkboxes: often their only visible edge, so they must stay at or
      above 3:1 (WCAG 1.4.11) against surface, canvas, subtle and the -50 tones (globals.test.ts checks). */
-  --color-line-control: #7d8796;
-  --color-ink: #17202b;
-  --color-muted: #525d6c;
+  --color-line-control: #767e92;
+  --color-ink: #151a2d;
+  --color-muted: #515a70;
 
-  /* Primary accent: buttons, links, focus rings. White text on brand-600 is above 4.5:1. */
-  --color-brand-50: #eef3ff;
-  --color-brand-100: #dbe6ff;
-  --color-brand-600: #2c56c9;
-  --color-brand-700: #2246a8;
-  --color-brand-800: #1b3886;
+  /* Primary accent (indigo): buttons, links, focus rings. White text on brand-600 is above 4.5:1. */
+  --color-brand-50: #f0f0ff;
+  --color-brand-100: #e1e1ff;
+  --color-brand-200: #c7c6fb;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+
+  /* DragonGrader's fire: the logo, highlights and the dashboard banner (decoration; never body text on white). */
+  --color-ember-50: #fff4eb;
+  --color-ember-100: #ffe4cc;
+  --color-ember-400: #fb923c;
+  --color-ember-500: #f97316;
+  --color-ember-600: #ea580c;
+  --color-ember-700: #c2410c;
+
+  /* The sidebar and the banner: deep night blues (white text on all of them is above 7:1). */
+  --color-night-950: #0d0f24;
+  --color-night-900: #141733;
+  --color-night-800: #1e2247;
+  --color-night-700: #2b305e;
+  --color-night-300: #a9aed6;
 
   /* Status tones: -50 backgrounds, -200 borders, -700/-800 text (all text pairs are above 4.5:1). */
   --color-info-50: #eef6fc;

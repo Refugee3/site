@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { ChartIcon } from "@/components/ui/icons";
 import { cx } from "@/components/ui/cx";
 import type { Tone } from "@/components/ui/tone";
 import { formatPercent, formatPoints, OUTCOME_LABEL } from "@/lib/format";
@@ -61,7 +62,7 @@ export function MissedQuestionsCard({ assignmentId, stats, activeItemId, onQuest
     );
   }
   return (
-    <Card title={MOST_MISSED_TITLE} actions={onQuestionsTab ? undefined : <Link href={questionsHref} className="text-sm">All questions</Link>}>
+    <Card icon={<ChartIcon />} accent="danger" title={MOST_MISSED_TITLE} actions={onQuestionsTab ? undefined : <Link href={questionsHref} className="text-sm">All questions</Link>}>
       <ul className="flex flex-col gap-5">
         {stats.highlighted.map((stat) => {
           const active = stat.item.id === activeItemId;

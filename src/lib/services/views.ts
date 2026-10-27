@@ -60,9 +60,20 @@ export function getDashboardView(t: Teacher): DashboardView {
         scans: countPendingScans(a.id),
         createdAt: a.createdAt,
         progress: getGradingCounts(a.id),
+        averageTenths: classAverageTenths(a.id),
       };
     }),
   };
+}
+
+/** The average score of each student's current graded paper (as the board shows them), or null before any is graded. */
+function classAverageTenths(assignmentId: string): number | null {
+  const percents = organizeBoard(listSubmissions(assignmentId), listSections(assignmentId))
+    .flatMap((group) => group.rows.map((row) => row.current))
+    .filter((s) => hasGrade(s) && s.scoreEarnedCenti !== null && s.scoreMaxCenti !== null && s.scoreMaxCenti > 0)
+    .map((s) => percentTenths(s.scoreEarnedCenti!, s.scoreMaxCenti!))
+    .filter((p): p is number => p !== null);
+  return percents.length === 0 ? null : Math.round(percents.reduce((a, b) => a + b, 0) / percents.length);
 }
 
 /**

@@ -12,12 +12,9 @@ export default async function LoginPage(props: PageProps<"/login">) {
   return (
     <PublicPage>
       <div className="flex flex-col items-start gap-3">
-        <LogoMark className="size-12" />
-        <h1 className="text-2xl font-semibold">Welcome to DragonGrader</h1>
-        <p className="text-muted">
-          Grade your students&apos; handwritten homework and quizzes against your answer key, see which questions the class
-          is struggling with, and spot matching answers on quizzes.
-        </p>
+        <LogoMark className="size-12" id="dg-fire-hero" />
+        <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
+        <p className="text-muted">Log in to DragonGrader to grade your students&apos; homework and quizzes.</p>
       </div>
       <Card>
         <LoginForm next={typeof next === "string" ? next : ""} />
