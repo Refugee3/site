@@ -17,6 +17,7 @@ import { getGradingPreferences, getTeacher } from "@/lib/db/repos/teachers";
 import { FLAG_DEFS } from "@/lib/flags";
 import { formatPercent, formatPoints, STATUS_LABEL } from "@/lib/format";
 import { boardOrderIds, countCurrent, inBoardFilter, nextNeedsReview, organizeBoard, type BoardGroup } from "@/lib/grading/board";
+import { type AnswerMatchSummary, findAnswerMatches, MATCH_MIN_PAPERS } from "@/lib/grading/answer-match";
 import { toCsv } from "@/lib/grading/csv";
 import { median } from "@/lib/grading/estimates";
 import {
@@ -98,6 +99,29 @@ export function getStrugglingQuestions(t: Teacher): StrugglingQuestion[] {
   found.sort((x, y) => y.question.missedTenths - x.question.missedTenths || y.question.missedPapers - x.question.missedPapers
     || y.createdAt - x.createdAt || x.position - y.position);
   return found.map((entry) => entry.question);
+}
+
+/** A quiz's matching answers (pairs of students with the same rare wrong answers); null for homework, which isn't checked. */
+export function getAnswerMatches(a: Assignment): AnswerMatchSummary | null {
+  if (a.kind !== "quiz") return null;
+  return findAnswerMatches(listKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
+}
+
+/** For the dashboard: each quiz with matching answers, newest quiz first. */
+export function getQuizMatchAlerts(t: Teacher): Array<{ assignmentId: string; title: string; pairs: number; strong: number }> {
+  const alerts: Array<{ assignmentId: string; title: string; pairs: number; strong: number; createdAt: number }> = [];
+  for (const a of listAssignmentsForTeacher(t.id)) {
+    if (a.kind !== "quiz") continue;
+    const submissions = listSubmissions(a.id);
+    if (submissions.filter((s) => isCountedStatus(s.status)).length < MATCH_MIN_PAPERS) continue;
+    const { matches } = findAnswerMatches(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
+    if (matches.length === 0) continue;
+    alerts.push({
+      assignmentId: a.id, title: a.title, pairs: matches.length, strong: matches.filter((m) => m.strength === "strong").length,
+      createdAt: a.createdAt,
+    });
+  }
+  return alerts.sort((x, y) => y.createdAt - x.createdAt).map(({ assignmentId, title, pairs, strong }) => ({ assignmentId, title, pairs, strong }));
 }
 
 export function getAssignmentHeader(a: Assignment): AssignmentHeader {

@@ -3,13 +3,14 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { AssignmentCard } from "@/components/teacher/assignment-card";
 import { DashboardLive } from "@/components/teacher/dashboard-live";
+import { QuizMatchAlerts } from "@/components/teacher/matching-answers";
 import { NewFromKey } from "@/components/teacher/new-from-key";
 import { StrugglingQuestions } from "@/components/teacher/struggling-questions";
 import { cx } from "@/components/ui/cx";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireTeacher } from "@/lib/auth/dal";
-import { getDashboardView, getStrugglingQuestions } from "@/lib/services/views";
+import { getDashboardView, getQuizMatchAlerts, getStrugglingQuestions } from "@/lib/services/views";
 import type { AssignmentKind } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Assignments" };
@@ -50,6 +51,8 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
           showTopHref={`/teacher${typeQuery ? `?${typeQuery}` : ""}`}
         />
       )}
+
+      {kind !== "homework" && view.assignments.length > 0 && <QuizMatchAlerts alerts={getQuizMatchAlerts(teacher)} />}
 
       {view.assignments.length > 0 && <h2 className="text-xl font-semibold">Your homework and quizzes</h2>}
 

@@ -3,6 +3,7 @@ import { Board } from "@/components/teacher/board";
 import { BoardFilters } from "@/components/teacher/board-filters";
 import { boardHref, firstNeedsReviewId, parseBoardFilter, reviewHref } from "@/components/teacher/board-helpers";
 import { BulkActions } from "@/components/teacher/bulk-actions";
+import { MatchingAnswersCard } from "@/components/teacher/matching-answers";
 import { MissedQuestionsCard } from "@/components/teacher/question-stats";
 import { parseMissedParam, questionName, shortPrompt } from "@/components/teacher/question-text";
 import { plural } from "@/components/teacher/text";
@@ -12,12 +13,12 @@ import { LinkButton } from "@/components/ui/link-button";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { loadAssignmentLive } from "@/lib/services/live";
 import { onePassAvailable } from "@/lib/services/scans";
-import { getBoardView, getItemStats, getUploadPageView } from "@/lib/services/views";
+import { getAnswerMatches, getBoardView, getItemStats, getUploadPageView } from "@/lib/services/views";
 import type { BoardView } from "@/lib/types";
 
 /**
- * The assignment's workspace: answer key → students' work → grading, live (see LiveWorkspace), then the results board and the
- * questions most students got wrong.
+ * The assignment's workspace: answer key → students' work → grading, live (see LiveWorkspace), then the results board, the
+ * questions most students got wrong and, on a quiz, students with matching wrong answers.
  */
 export default async function WorkspacePage(props: PageProps<"/teacher/assignments/[id]">) {
   await connection();
@@ -27,6 +28,8 @@ export default async function WorkspacePage(props: PageProps<"/teacher/assignmen
   const filter = parseBoardFilter(searchParams.filter);
   const view = getBoardView(assignment, filter, parseMissedParam(searchParams.missed));
   const itemStats = getItemStats(assignment);
+  // Quizzes only: on homework students may work together, and most answers match.
+  const matches = view.counts.total > 0 ? getAnswerMatches(assignment) : null;
   const live = loadAssignmentLive(assignment);
   const { keyPageCount } = getUploadPageView(assignment);
 
@@ -66,6 +69,8 @@ export default async function WorkspacePage(props: PageProps<"/teacher/assignmen
       )}
 
       <MissedQuestionsCard assignmentId={assignment.id} stats={itemStats} activeItemId={view.missed?.itemId ?? null} />
+
+      {matches && <MatchingAnswersCard assignmentId={assignment.id} summary={matches} />}
     </div>
   );
 }

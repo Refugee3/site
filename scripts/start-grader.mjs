@@ -129,7 +129,7 @@ function openBrowser() {
 async function main() {
   process.chdir(ROOT);
   say("=====================================================");
-  say("  PDF Auto-Grader - starting on this computer");
+  say("  DragonGrader - starting on this computer");
   say("=====================================================");
   checkNode();
   if (await answers()) {

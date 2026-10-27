@@ -1,9 +1,9 @@
 @echo off
-REM PDF Auto-Grader: one-click start on this Windows PC. Double-click this file.
+REM DragonGrader: one-click start on this Windows PC. Double-click this file.
 REM It checks Node.js, installs and builds the app when needed, starts it on http://localhost:3000 and opens the browser.
 REM Keep the window open while you grade; press Ctrl+C (or close the window) to stop.
 setlocal
-title PDF Auto-Grader
+title DragonGrader
 cd /d "%~dp0"
 
 where node >nul 2>nul

@@ -1,4 +1,4 @@
-# PDF Auto-Grader
+# DragonGrader
 
 A small self-hosted web app **for teachers** that grades handwritten student work against the teacher's answer key. Students never log in or use it: the teacher scans or photographs the papers and uploads them.
 
@@ -98,6 +98,10 @@ Servers upgraded from a version where students could hand in work themselves kee
 The dashboard's first section lists every question that **most of a class got wrong**, across all of your homework and quizzes, most missed first. A question counts once at least **5 papers** are graded (each student's latest paper; papers waiting for your check count too) and its miss rate is **above 50%**. An answer is missed when it isn't fully right — wrong, blank or unreadable, or partly right by the credit it lost — whatever the grading mode, and your point changes count. Each row shows the assignment, "Question 3", the question's prompt, "{pct}% missed ({n} of {total} students)" and **See who missed it**, which opens that assignment's results showing only the papers that missed it and what those students wrote most often. The 10 most missed show first; **Show all** lists the rest.
 
 The same rule highlights "Questions most students got wrong" on each assignment's Workspace and Questions tabs, and fills the "Most students got it wrong" column of the question-stats CSV. It is worked out from the stored grades, with no AI calls.
+
+## Matching answers (quizzes only)
+
+On a **quiz**, the Workspace tab ends with **Matching answers**: pairs of students who gave the **same wrong answers that few others in the class chose**, the usual sign of copied answers. Getting the same questions right never counts (good students agree), and neither does a wrong answer most of the class fell for. A pair shows up when the two answered at least 4 of the same questions, gave the same answer on at least 80% of them, and share at least two wrong answers, one of them rare (chosen by at most a quarter of the papers, or by only these two). Two or more rare wrong answers in common make a **Strong match**; one makes a **Possible match**. Each pair lists the questions and answers they share ("Q4: C (only these two)") and links to both papers. It starts once 4 papers are graded, and the dashboard's **Matching answers on quizzes** lists the quizzes that have any. Homework isn't checked: students may work on it together, and most answers match anyway. A match is a reason to look at the papers, not proof; it is worked out from the stored grades, with no AI calls.
 
 ## How a paper is graded: read first without the answer key, then marked
 

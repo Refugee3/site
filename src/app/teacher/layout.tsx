@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { logoutAction } from "@/actions/auth";
 import { WorkerBanner } from "@/components/teacher/worker-banner";
+import { Logo } from "@/components/ui/logo";
 import { APP_NAME } from "@/components/ui/public-page";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { requireTeacher } from "@/lib/auth/dal";
@@ -16,8 +17,8 @@ export default async function TeacherLayout({ children }: LayoutProps<"/teacher"
     <>
       <header className="border-b border-line bg-surface">
         <div className="mx-auto flex min-h-14 w-full max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-1">
-          <Link href="/teacher" className="text-base font-semibold text-ink no-underline">
-            {APP_NAME}
+          <Link href="/teacher" className="no-underline" aria-label={`${APP_NAME}: your assignments`}>
+            <Logo />
           </Link>
           {/* On phones the links get their own row under the name and "Log out", which don't fit beside them. */}
           <nav aria-label="Teacher" className="order-last flex w-full items-center gap-5 sm:order-none sm:w-auto">

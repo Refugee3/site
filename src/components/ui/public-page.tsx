@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { cx } from "./cx";
+import { Logo } from "./logo";
 
-export const APP_NAME = "PDF Auto-Grader";
+export const APP_NAME = "DragonGrader";
 
 export interface PublicPageProps {
   children: ReactNode;
@@ -16,8 +17,8 @@ export function PublicPage({ children, width = "narrow" }: PublicPageProps) {
     <>
       <header className="border-b border-line bg-surface">
         <div className="mx-auto flex min-h-14 w-full max-w-3xl items-center px-4">
-          <Link href="/" className="text-base font-semibold text-ink no-underline">
-            {APP_NAME}
+          <Link href="/" className="no-underline" aria-label={APP_NAME}>
+            <Logo />
           </Link>
         </div>
       </header>

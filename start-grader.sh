@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PDF Auto-Grader: one-click start on this computer (Linux; macOS uses start-grader.command).
+# DragonGrader: one-click start on this computer (Linux; macOS uses start-grader.command).
 # Checks Node.js, installs and builds the app when needed, starts it on http://localhost:3000 and opens the browser.
 # Press Ctrl+C to stop.
 cd "$(dirname "$0")" || exit 1
