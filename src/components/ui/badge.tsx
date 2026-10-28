@@ -15,7 +15,7 @@ export function Badge({ tone, children, title, className }: BadgeProps) {
     <span
       title={title}
       className={cx(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-sm border px-1.5 py-0.5 text-xs font-medium",
         TONE_CLASSES[tone],
         className,
       )}

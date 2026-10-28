@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { ChartIcon } from "@/components/ui/icons";
 import { KIND_LABEL } from "@/lib/format";
 import { MISS_HIGHLIGHT_MIN_PAPERS } from "@/lib/grading/item-stats";
 import type { StrugglingQuestion } from "@/lib/types";
@@ -29,8 +28,6 @@ export function StrugglingQuestions({ questions, showAll, showAllHref, showTopHr
   const more = questions.length > STRUGGLING_TOP;
   return (
     <Card
-      icon={<ChartIcon />}
-      accent="danger"
       title={<span id="struggling">Where students are struggling</span>}
       actions={
         more ? (

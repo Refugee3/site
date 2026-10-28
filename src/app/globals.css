@@ -14,18 +14,32 @@
     system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji";
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* Headings: a book serif (Palatino on Windows and Macs, else Georgia), like a printed gradebook. */
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+
+  /* Flat, squared-off surfaces: small corner radii and almost no shadows, everywhere. */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
+  --radius-2xl: 6px;
+  --radius-3xl: 6px;
+  --shadow-2xs: 0 0 #0000;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 1px 0 rgb(29 33 37 / 0.04);
+  --shadow-md: 0 1px 2px rgb(29 33 37 / 0.06);
 
   /* Neutral surfaces and text. */
-  --color-canvas: #f4f5fa;
+  --color-canvas: #f7f6f2;
   --color-surface: #ffffff;
-  --color-subtle: #eef0f6;
-  --color-line: #e2e5ee;
-  --color-line-strong: #c2c7d4;
+  --color-subtle: #f0eee8;
+  --color-line: #e0ddd4;
+  --color-line-strong: #c3beb2;
   /* Borders of text fields, selects and checkboxes: often their only visible edge, so they must stay at or
      above 3:1 (WCAG 1.4.11) against surface, canvas, subtle and the -50 tones (globals.test.ts checks). */
-  --color-line-control: #767e92;
-  --color-ink: #151a2d;
-  --color-muted: #515a70;
+  --color-line-control: #7a766c;
+  --color-ink: #1d2125;
+  --color-muted: #595d63;
 
   /* Primary accent: Drexel Blue (#07294D) and its tints. White text on brand-500/600 is far above 4.5:1. */
   --color-brand-50: #eef3f9;
@@ -36,8 +50,8 @@
   --color-brand-700: #062342;
   --color-brand-800: #041a33;
 
-  /* Drexel Gold (#FFC600): highlights, the logo and the dashboard banner. Text on gold is navy, never white; gold-700/800
-     are the text tones on the light gold tints. */
+  /* Drexel Gold (#FFC600): only as a marker (the current page, the wordmark's rule, what needs attention). Text on gold
+     is navy, never white; gold-700/800 are the text tones on the light gold tints. */
   --color-gold-50: #fff8db;
   --color-gold-100: #ffefad;
   --color-gold-300: #ffd84d;
@@ -45,13 +59,6 @@
   --color-gold-500: #f0b800;
   --color-gold-700: #7d5e00;
   --color-gold-800: #634a00;
-
-  /* The sidebar and the banner: deep Drexel navies (white text on all of them is above 10:1). */
-  --color-night-950: #031529;
-  --color-night-900: #061f3d;
-  --color-night-800: #0b2c55;
-  --color-night-700: #17406f;
-  --color-night-300: #b8c7da;
 
   /* Status tones: -50 backgrounds, -200 borders, -700/-800 text (all text pairs are above 4.5:1). */
   --color-info-50: #eef6fc;
@@ -121,6 +128,12 @@
 @layer base {
   :root {
     color-scheme: light;
+  }
+
+  h1,
+  h2 {
+    font-family: var(--font-serif);
+    letter-spacing: -0.005em;
   }
 
   body {

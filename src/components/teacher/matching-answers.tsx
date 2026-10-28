@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { UsersIcon } from "@/components/ui/icons";
 import type { AnswerMatch, AnswerMatchSummary, SharedWrongAnswer } from "@/lib/grading/answer-match";
 import { MATCH_MIN_PAPERS } from "@/lib/grading/answer-match";
 import { reviewHref } from "./board-helpers";
@@ -18,8 +17,6 @@ export function MatchingAnswersCard({ assignmentId, summary }: { assignmentId: s
   const { matches } = summary;
   return (
     <Card
-      icon={<UsersIcon />}
-      accent="gold"
       title={<span id="matching-answers">Matching answers</span>}
       actions={matches.length > 0 ? <Badge tone="warning">{plural(matches.length, "pair")} to look at</Badge> : undefined}
     >
@@ -99,32 +96,4 @@ function sectionsText(m: AnswerMatch): string {
 function othersText(s: SharedWrongAnswer): string {
   if (s.others === 0) return "only these two";
   return `${plural(s.others, "other student")} too`;
-}
-
-/** The dashboard's alert: quizzes where students share unusual wrong answers, each linking to its list. */
-export function QuizMatchAlerts({ alerts }: { alerts: Array<{ assignmentId: string; title: string; pairs: number; strong: number }> }) {
-  if (alerts.length === 0) return null;
-  return (
-    <Card title="Matching answers on quizzes" icon={<UsersIcon />} accent="gold">
-      <div className="flex flex-col gap-3">
-        <p className="text-sm text-muted">
-          Students who gave the same unusual wrong answers on a quiz. Homework isn&apos;t checked, since students often work together.
-        </p>
-        <ul className="flex flex-col divide-y divide-line">
-          {alerts.map((alert) => (
-            <li key={alert.assignmentId} className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0 last:pb-0">
-              <span className="min-w-0 break-words font-medium">{alert.title}</span>
-              <span className="flex flex-wrap items-center gap-2">
-                {alert.strong > 0 && <Badge tone="danger">{plural(alert.strong, "strong match", "strong matches")}</Badge>}
-                <Link href={`/teacher/assignments/${alert.assignmentId}#matching-answers`} className="inline-flex min-h-11 items-center text-sm font-medium sm:min-h-0">
-                  See {plural(alert.pairs, "pair")}
-                  <span className="sr-only"> in {alert.title}</span>
-                </Link>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Card>
-  );
 }

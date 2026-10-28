@@ -240,7 +240,7 @@ function QuestionRow({ q, index, draft, onChange }: { q: LiveKeyQuestion; index:
                   <label
                     key={choice}
                     className={cx(
-                      "flex min-h-11 cursor-pointer items-center rounded-full border px-4 text-sm font-medium sm:min-h-9",
+                      "flex min-h-11 cursor-pointer items-center rounded-md border px-3 text-sm font-medium sm:min-h-9",
                       "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600",
                       checked ? "border-brand-600 bg-brand-600 text-white" : "border-line-strong bg-surface text-ink hover:bg-subtle",
                     )}

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { cx } from "@/components/ui/cx";
-import { ChartIcon, KeyIcon, LayersIcon, LightbulbIcon, SettingsIcon, UploadIcon } from "@/components/ui/icons";
 
 export interface AssignmentTabsProps {
   assignmentId: string;
@@ -36,43 +35,40 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
   const tabs = [
     {
       href: base,
-      label: "Workspace", Icon: LayersIcon,
+      label: "Workspace",
       // The live workspace: the key, the students' work, grading and the results. The review page belongs to it.
       active: pathname === base || pathname.startsWith(`${base}/submissions/`),
       note: needsReviewCount > 0 ? `${needsReviewCount} to check` : null,
     },
-    { href: `${base}/key`, label: "Answer key", Icon: KeyIcon, active: pathname === `${base}/key`, note: keyNeedsAttention ? "needs you" : null },
+    { href: `${base}/key`, label: "Answer key", active: pathname === `${base}/key`, note: keyNeedsAttention ? "needs you" : null },
     {
       href: `${base}/upload`,
-      label: "Upload work", Icon: UploadIcon,
+      label: "Upload work",
       // A scan's split is checked on its own page, under the Upload tab.
       active: pathname === `${base}/upload` || pathname.startsWith(`${base}/scans/`),
       note: null,
     },
-    { href: `${base}/questions`, label: "Questions", Icon: ChartIcon, active: pathname === `${base}/questions`, note: null },
-    { href: `${base}/lessons`, label: "Lessons", Icon: LightbulbIcon, active: pathname === `${base}/lessons`, note: null },
-    { href: `${base}/settings`, label: "Settings", Icon: SettingsIcon, active: pathname === `${base}/settings`, note: null },
+    { href: `${base}/questions`, label: "Questions", active: pathname === `${base}/questions`, note: null },
+    { href: `${base}/lessons`, label: "Lessons", active: pathname === `${base}/lessons`, note: null },
+    { href: `${base}/settings`, label: "Settings", active: pathname === `${base}/settings`, note: null },
   ];
 
   return (
     <nav ref={navRef} aria-label="Assignment" className="sm:overflow-x-auto">
-      <ul className="flex flex-wrap gap-1 rounded-2xl border border-line bg-surface p-1.5 shadow-xs sm:w-max sm:min-w-full sm:flex-nowrap">
+      <ul className="flex flex-wrap gap-x-1 border-b border-line sm:min-w-max sm:flex-nowrap">
         {tabs.map((tab) => (
           <li key={tab.href}>
             <Link
               href={tab.href}
               aria-current={tab.active ? "page" : undefined}
               className={cx(
-                "flex min-h-11 items-center gap-2 rounded-xl px-3.5 text-sm font-semibold no-underline transition",
-                tab.active
-                  ? "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-[0_4px_12px_-4px_rgb(7_41_77/0.45)]"
-                  : "text-muted hover:bg-subtle hover:text-ink",
+                "-mb-px flex min-h-11 items-center gap-2 border-b-[3px] px-3 text-sm no-underline",
+                tab.active ? "border-brand-600 font-semibold text-ink" : "border-transparent text-muted hover:border-line-strong hover:text-ink",
               )}
             >
-              <tab.Icon className="size-4" />
               {tab.label}
               {tab.note && (
-                <span className="rounded-full border border-warning-200 bg-warning-50 px-2 py-0.5 text-xs font-medium text-warning-800">
+                <span className="rounded-sm border border-warning-200 bg-warning-50 px-1.5 py-0.5 text-xs font-medium text-warning-800">
                   {tab.note}
                 </span>
               )}

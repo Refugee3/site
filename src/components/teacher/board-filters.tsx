@@ -26,7 +26,7 @@ export function BoardFilters({ assignmentId, filter, counts }: BoardFiltersProps
                 scroll={false}
                 aria-current={active ? "page" : undefined}
                 className={cx(
-                  "flex min-h-11 items-center gap-2 rounded-full border px-4 text-sm font-medium no-underline sm:min-h-9",
+                  "flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm font-medium no-underline sm:min-h-9",
                   active && "border-brand-600 bg-brand-600 text-white",
                   !active && urgent && "border-warning-200 bg-warning-50 text-warning-800 hover:bg-warning-200/50",
                   !active && !urgent && "border-line-strong bg-surface text-ink hover:bg-subtle",
