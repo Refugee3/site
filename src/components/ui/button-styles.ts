@@ -10,7 +10,7 @@ const BASE =
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-[0_1px_2px_rgb(20_23_51/0.2),0_4px_12px_-4px_rgb(79_70_229/0.5)] " +
+    "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-[0_1px_2px_rgb(20_23_51/0.2),0_4px_12px_-4px_rgb(7_41_77/0.45)] " +
     "hover:from-brand-600 hover:to-brand-700 active:to-brand-800",
   secondary: "border border-line-strong bg-surface text-ink shadow-xs hover:border-brand-200 hover:bg-brand-50",
   danger: "bg-danger-600 text-white shadow-sm hover:bg-danger-700 active:bg-danger-800",

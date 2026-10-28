@@ -35,11 +35,11 @@ export default async function AssignmentLayout({ params, children }: Props) {
         <div className="relative overflow-hidden rounded-2xl border border-line bg-surface p-5 shadow-[0_1px_2px_rgb(20_23_51/0.04),0_8px_24px_-12px_rgb(20_23_51/0.12)] sm:p-6">
           <div aria-hidden="true" className={assignment.kind === "quiz"
             ? "absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-brand-500 to-brand-700"
-            : "absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-ember-400 to-ember-600"} />
+            : "absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-gold-300 to-gold-500"} />
           <div className="flex flex-wrap items-start gap-4">
             <span className={assignment.kind === "quiz"
               ? "grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-50 text-brand-700"
-              : "grid size-12 shrink-0 place-items-center rounded-2xl bg-ember-50 text-ember-700"}>
+              : "grid size-12 shrink-0 place-items-center rounded-2xl bg-gold-50 text-gold-800"}>
               {assignment.kind === "quiz" ? <QuizIcon className="size-6" /> : <BookIcon className="size-6" />}
             </span>
             <div className="flex min-w-0 flex-1 flex-col gap-2">

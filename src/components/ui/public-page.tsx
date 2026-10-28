@@ -24,10 +24,11 @@ export function PublicPage({ children, width = "narrow" }: PublicPageProps) {
   return (
     <div className="flex min-h-full flex-1">
       <aside className="relative hidden w-[44%] max-w-xl flex-col justify-between overflow-hidden bg-gradient-to-br from-night-900 via-night-800 to-brand-800 p-10 text-white lg:flex">
-        <div aria-hidden="true" className="pointer-events-none absolute -top-24 -right-16 size-80 rounded-full bg-ember-500/30 blur-3xl" />
+        <div aria-hidden="true" className="pointer-events-none absolute -top-24 -right-16 size-80 rounded-full bg-brand-500/50 blur-3xl" />
         <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 -left-16 size-80 rounded-full bg-brand-500/30 blur-3xl" />
+        <div aria-hidden="true" className="absolute inset-y-0 right-0 w-1.5 bg-gold-400" />
         <Link href="/" className="relative no-underline" aria-label={APP_NAME}>
-          <Logo onDark className="text-xl" id="dg-fire-panel" />
+          <Logo onDark className="text-xl" />
         </Link>
         <div className="relative flex flex-col gap-8">
           <div className="flex flex-col gap-3">
@@ -37,7 +38,7 @@ export function PublicPage({ children, width = "narrow" }: PublicPageProps) {
           <ul className="flex flex-col gap-4">
             {FEATURES.map((f) => (
               <li key={f.title} className="flex gap-3">
-                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-white/10 text-ember-400">{f.icon}</span>
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-white/10 text-gold-400">{f.icon}</span>
                 <span className="flex flex-col">
                   <span className="font-semibold">{f.title}</span>
                   <span className="text-sm text-night-300">{f.text}</span>
@@ -53,7 +54,7 @@ export function PublicPage({ children, width = "narrow" }: PublicPageProps) {
         <header className="border-b border-line bg-surface lg:hidden">
           <div className="mx-auto flex min-h-14 w-full max-w-3xl items-center px-4">
             <Link href="/" className="no-underline" aria-label={APP_NAME}>
-              <Logo id="dg-fire-topbar" />
+              <Logo />
             </Link>
           </div>
         </header>

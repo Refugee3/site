@@ -36,13 +36,13 @@ export default async function TeacherLayout({ children }: LayoutProps<"/teacher"
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col bg-gradient-to-b from-night-900 to-night-950 text-night-300 lg:flex">
         <div className="flex h-16 items-center px-5">
           <Link href="/teacher" className="no-underline" aria-label={`${APP_NAME}: your dashboard`}>
-            <Logo onDark id="dg-fire-sidebar" />
+            <Logo onDark />
           </Link>
         </div>
         <div className="px-4 pb-4">
           <Link
             href="/teacher/assignments/new"
-            className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-ember-500 to-ember-600 px-3 text-sm font-semibold text-white no-underline shadow-[0_6px_18px_-6px_rgb(249_115_22/0.6)] hover:from-ember-600 hover:to-ember-700"
+            className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-gold-400 px-3 text-sm font-semibold text-night-900 no-underline shadow-[0_6px_18px_-6px_rgb(255_198_0/0.5)] hover:bg-gold-300"
           >
             <PlusIcon />
             New homework or quiz
@@ -69,7 +69,7 @@ export default async function TeacherLayout({ children }: LayoutProps<"/teacher"
         <header className="sticky top-0 z-20 border-b border-line bg-surface/95 backdrop-blur lg:hidden">
           <div className="flex min-h-14 items-center justify-between gap-3 px-4">
             <Link href="/teacher" className="no-underline" aria-label={`${APP_NAME}: your dashboard`}>
-              <Logo id="dg-fire-topbar" />
+              <Logo />
             </Link>
             <div className="text-muted">{logout}</div>
           </div>

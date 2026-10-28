@@ -52,8 +52,9 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
         aria-labelledby="dashboard-heading"
         className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-night-900 via-night-800 to-brand-800 px-6 py-7 text-white shadow-[0_20px_40px_-20px_rgb(20_23_51/0.6)] sm:px-8"
       >
-        <div aria-hidden="true" className="pointer-events-none absolute -top-16 -right-10 size-64 rounded-full bg-ember-500/30 blur-3xl" />
+        <div aria-hidden="true" className="pointer-events-none absolute -top-16 -right-10 size-64 rounded-full bg-brand-500/50 blur-3xl" />
         <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 left-1/3 size-64 rounded-full bg-brand-500/30 blur-3xl" />
+        <div aria-hidden="true" className="absolute inset-x-0 bottom-0 h-1.5 bg-gold-400" />
         <div className="relative flex flex-col gap-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="flex flex-col gap-1">
@@ -166,8 +167,8 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
 /** One number in the dashboard banner. */
 function StatTile({ icon, label, value, highlight = false }: { icon: ReactNode; label: string; value: number; highlight?: boolean }) {
   return (
-    <div className={cx("flex items-center gap-3 rounded-2xl px-3 py-3 ring-1 sm:px-4", highlight ? "bg-ember-500/20 ring-ember-400/50" : "bg-white/5 ring-white/10")}>
-      <span className={cx("hidden size-10 shrink-0 place-items-center rounded-xl sm:grid", highlight ? "bg-ember-500 text-white" : "bg-white/10 text-white")}>{icon}</span>
+    <div className={cx("flex items-center gap-3 rounded-2xl px-3 py-3 ring-1 sm:px-4", highlight ? "bg-white/10 ring-2 ring-gold-400" : "bg-white/5 ring-white/10")}>
+      <span className={cx("hidden size-10 shrink-0 place-items-center rounded-xl sm:grid", highlight ? "bg-gold-400 text-night-900" : "bg-white/10 text-white")}>{icon}</span>
       <div className="flex min-w-0 flex-col">
         <dt className="text-xs font-medium leading-tight text-night-300">{label}</dt>
         <dd className="text-2xl font-bold tabular-nums">{value}</dd>

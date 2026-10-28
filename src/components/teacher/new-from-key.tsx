@@ -72,7 +72,7 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
     <section aria-labelledby="new-from-key-heading" className="flex flex-col gap-4 rounded-2xl border border-line bg-surface p-4 shadow-[0_1px_2px_rgb(20_23_51/0.04),0_8px_24px_-12px_rgb(20_23_51/0.12)] sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="new-from-key-heading" className="flex items-center gap-3 text-lg font-semibold">
-          <span className="grid size-9 place-items-center rounded-xl bg-ember-50 text-ember-700"><SparklesIcon /></span>
+          <span className="grid size-9 place-items-center rounded-xl bg-gold-50 text-gold-800"><SparklesIcon /></span>
           Start a new homework or quiz
         </h2>
         <fieldset disabled={busy} className="min-w-0">

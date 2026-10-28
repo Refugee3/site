@@ -47,14 +47,14 @@ export function AppNavLinks({ variant, active }: { variant: "sidebar" | "bar"; a
                 variant === "sidebar" ? "items-center gap-3 px-3 text-sm" : "flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-xs",
                 variant === "sidebar"
                   ? current
-                    ? "bg-white/10 text-white shadow-[inset_3px_0_0_var(--color-ember-500)]"
+                    ? "bg-white/10 text-white shadow-[inset_3px_0_0_var(--color-gold-400)]"
                     : "text-night-300 hover:bg-white/5 hover:text-white"
                   : current
                     ? "bg-brand-600 text-white"
                     : "text-muted hover:bg-subtle hover:text-ink",
               )}
             >
-              <Icon className={cx(variant === "sidebar" && current && "text-ember-400")} />
+              <Icon className={cx(variant === "sidebar" && current && "text-gold-400")} />
               {label}
             </Link>
           </li>

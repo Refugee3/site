@@ -29,10 +29,10 @@ export function AssignmentCard({ assignment: a }: AssignmentCardProps) {
 
   return (
     <article className="group relative flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[0_1px_2px_rgb(20_23_51/0.04),0_8px_24px_-12px_rgb(20_23_51/0.12)] transition hover:-translate-y-0.5 hover:shadow-[0_2px_4px_rgb(20_23_51/0.06),0_16px_32px_-12px_rgb(20_23_51/0.2)] motion-reduce:transition-none motion-reduce:hover:translate-y-0">
-      <div aria-hidden="true" className={cx("h-1.5", quiz ? "bg-gradient-to-r from-brand-500 to-brand-700" : "bg-gradient-to-r from-ember-400 to-ember-600")} />
+      <div aria-hidden="true" className={cx("h-1.5", quiz ? "bg-gradient-to-r from-brand-500 to-brand-700" : "bg-gradient-to-r from-gold-300 to-gold-500")} />
       <div className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex items-start gap-3">
-          <span className={cx("grid size-10 shrink-0 place-items-center rounded-xl", quiz ? "bg-brand-50 text-brand-700" : "bg-ember-50 text-ember-700")}>
+          <span className={cx("grid size-10 shrink-0 place-items-center rounded-xl", quiz ? "bg-brand-50 text-brand-700" : "bg-gold-50 text-gold-800")}>
             <Icon />
           </span>
           <div className="flex min-w-0 flex-1 flex-col gap-1">

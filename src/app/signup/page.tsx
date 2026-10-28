@@ -17,7 +17,7 @@ export default async function SignupPage() {
   return (
     <PublicPage>
       <div className="flex flex-col items-start gap-3">
-        <LogoMark className="size-12" id="dg-fire-hero" />
+        <LogoMark className="size-12" />
         <h1 className="text-3xl font-bold tracking-tight">Create a teacher account</h1>
         <p className="text-muted">Set up DragonGrader in a minute: your answer keys and grades stay on this server.</p>
       </div>

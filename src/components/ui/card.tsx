@@ -9,12 +9,12 @@ export interface CardProps {
   /** An icon shown in a soft tile before the title. */
   icon?: ReactNode;
   /** The icon tile's color. */
-  accent?: "brand" | "ember" | "danger" | "success" | "info";
+  accent?: "brand" | "gold" | "danger" | "success" | "info";
 }
 
 const ACCENTS: Record<NonNullable<CardProps["accent"]>, string> = {
   brand: "bg-brand-50 text-brand-700",
-  ember: "bg-ember-50 text-ember-700",
+  gold: "bg-gold-50 text-gold-800",
   danger: "bg-danger-50 text-danger-700",
   success: "bg-success-50 text-success-800",
   info: "bg-info-50 text-info-800",

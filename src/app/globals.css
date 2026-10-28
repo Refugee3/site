@@ -27,29 +27,31 @@
   --color-ink: #151a2d;
   --color-muted: #515a70;
 
-  /* Primary accent (indigo): buttons, links, focus rings. White text on brand-600 is above 4.5:1. */
-  --color-brand-50: #f0f0ff;
-  --color-brand-100: #e1e1ff;
-  --color-brand-200: #c7c6fb;
-  --color-brand-500: #6366f1;
-  --color-brand-600: #4f46e5;
-  --color-brand-700: #4338ca;
-  --color-brand-800: #3730a3;
+  /* Primary accent: Drexel Blue (#07294D) and its tints. White text on brand-500/600 is far above 4.5:1. */
+  --color-brand-50: #eef3f9;
+  --color-brand-100: #dce6f2;
+  --color-brand-200: #b5c8de;
+  --color-brand-500: #12457e;
+  --color-brand-600: #07294d;
+  --color-brand-700: #062342;
+  --color-brand-800: #041a33;
 
-  /* DragonGrader's fire: the logo, highlights and the dashboard banner (decoration; never body text on white). */
-  --color-ember-50: #fff4eb;
-  --color-ember-100: #ffe4cc;
-  --color-ember-400: #fb923c;
-  --color-ember-500: #f97316;
-  --color-ember-600: #ea580c;
-  --color-ember-700: #c2410c;
+  /* Drexel Gold (#FFC600): highlights, the logo and the dashboard banner. Text on gold is navy, never white; gold-700/800
+     are the text tones on the light gold tints. */
+  --color-gold-50: #fff8db;
+  --color-gold-100: #ffefad;
+  --color-gold-300: #ffd84d;
+  --color-gold-400: #ffc600;
+  --color-gold-500: #f0b800;
+  --color-gold-700: #7d5e00;
+  --color-gold-800: #634a00;
 
-  /* The sidebar and the banner: deep night blues (white text on all of them is above 7:1). */
-  --color-night-950: #0d0f24;
-  --color-night-900: #141733;
-  --color-night-800: #1e2247;
-  --color-night-700: #2b305e;
-  --color-night-300: #a9aed6;
+  /* The sidebar and the banner: deep Drexel navies (white text on all of them is above 10:1). */
+  --color-night-950: #031529;
+  --color-night-900: #061f3d;
+  --color-night-800: #0b2c55;
+  --color-night-700: #17406f;
+  --color-night-300: #b8c7da;
 
   /* Status tones: -50 backgrounds, -200 borders, -700/-800 text (all text pairs are above 4.5:1). */
   --color-info-50: #eef6fc;

@@ -65,7 +65,7 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
               className={cx(
                 "flex min-h-11 items-center gap-2 rounded-xl px-3.5 text-sm font-semibold no-underline transition",
                 tab.active
-                  ? "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-[0_4px_12px_-4px_rgb(79_70_229/0.5)]"
+                  ? "bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-[0_4px_12px_-4px_rgb(7_41_77/0.45)]"
                   : "text-muted hover:bg-subtle hover:text-ink",
               )}
             >

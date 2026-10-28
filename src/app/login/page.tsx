@@ -12,7 +12,7 @@ export default async function LoginPage(props: PageProps<"/login">) {
   return (
     <PublicPage>
       <div className="flex flex-col items-start gap-3">
-        <LogoMark className="size-12" id="dg-fire-hero" />
+        <LogoMark className="size-12" />
         <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
         <p className="text-muted">Log in to DragonGrader to grade your students&apos; homework and quizzes.</p>
       </div>
