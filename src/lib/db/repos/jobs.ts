@@ -71,28 +71,43 @@ export function enqueueJob(j: {
   );
 }
 
+/** Grading jobs sort after every key and scan job (PRIORITY.splitScan < this ≤ every grading priority, see jobs/queue.ts). */
+export const FIRST_GRADING_PRIORITY = 10;
+
 /**
  * Claims the next runnable job (marks it running and counts the attempt). A job waits while its run_after
  * is in the future, while another job for the same target runs, and (grading only) while the key is unapproved.
  * Key extraction and scan splitting don't need an approved key. Claiming clears `paused`.
+ *
+ * Teachers take turns: answer keys and scan splits go first (quick, and they unblock the rest); then the next paper is
+ * the teacher's with the fewest jobs running now, ties going to the teacher served longest ago (whose latest job
+ * started or ended earliest), so one teacher's 200-page scan doesn't hold up everyone else's quiz. Within a teacher's
+ * own work the order is as before: priority, then run_after, then upload order.
  */
 export function claimNextJob(at: number): Job | null {
   return tx(() => {
     const row = one<JobRow>(
       `UPDATE jobs SET status = 'running', attempts = attempts + 1, paused = 0, updated_at = @now
        WHERE id = (
-         SELECT j.id FROM jobs j
+         SELECT j.id FROM jobs j JOIN assignments a ON a.id = j.assignment_id
          WHERE j.status = 'queued' AND j.run_after <= @now
            AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.kind = j.kind AND r.target_id = j.target_id AND r.status = 'running')
            AND (j.kind IN ('extract_key', 'split_scan') OR EXISTS (SELECT 1 FROM answer_keys k WHERE k.assignment_id = j.assignment_id
                                                   AND k.status = 'ready' AND k.approved_revision = k.revision))
-         ORDER BY j.priority, j.run_after, j.id LIMIT 1)
+         ORDER BY CASE WHEN j.kind IN ('extract_key', 'split_scan') THEN j.priority ELSE ${FIRST_GRADING_PRIORITY} END,
+           (SELECT COUNT(*) FROM jobs r JOIN assignments ra ON ra.id = r.assignment_id
+             WHERE r.status = 'running' AND ra.teacher_id = a.teacher_id),
+           COALESCE((SELECT MAX(r.updated_at) FROM jobs r JOIN assignments ra ON ra.id = r.assignment_id
+             WHERE r.status IN ('running', 'done', 'failed') AND ra.teacher_id = a.teacher_id), 0),
+           j.priority, j.run_after, j.id
+         LIMIT 1)
        RETURNING *`,
       { now: at },
     );
     return row ? jobFromRow(row) : null;
   });
 }
+
 
 export function completeJob(id: number): void {
   const at = now();

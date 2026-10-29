@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setClockForTests } from "@/lib/clock";
 import type { DB } from "@/lib/db/connection";
 import {
-  cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, hasActiveJob, pruneFinishedJobs, queuedJobsAhead, queueStats,
+  cancelQueuedJobs, claimNextJob, completeJob, enqueueJob, failJob, FIRST_GRADING_PRIORITY, hasActiveJob, pruneFinishedJobs, queuedJobsAhead,
+  queueStats,
   recoverRunningJobs, releasePausedJobs, requeueJob, requeueOrphanedRunningJobs,
 } from "@/lib/db/repos/jobs";
 import { updateKey } from "@/lib/db/repos/keys";
+import { PRIORITY } from "@/lib/jobs/queue";
 import { seedApprovedKey, seedAssignment, seedTeacher, useTestDb } from "@/test/helpers";
 import type { Assignment, Job, JobKind } from "@/lib/types";
 
@@ -130,6 +132,67 @@ describe("claimNextJob", () => {
     const job = claimNextJob(T0 + 5)!;
     expect(job.attempts).toBe(1);
     expect(job.updatedAt).toBe(T0 + 5);
+  });
+});
+
+describe("claimNextJob: teachers take turns", () => {
+  /** A second teacher's assignment with an approved key. */
+  function otherTeacher(): Assignment {
+    const other = seedAssignment(seedTeacher().id, { title: "Other class" });
+    seedApprovedKey(other.id, [{}]);
+    return other;
+  }
+
+  /** Claims `n` jobs one at a time, the clock moving a second each time; the claimed targets in order. */
+  function claim(n: number, start = T0): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      setClockForTests(() => start + i * 1000);
+      out.push(claimNextJob(start + i * 1000)!.targetId);
+    }
+    return out;
+  }
+
+  it("alternates between teachers instead of finishing one teacher's whole stack first", () => {
+    const other = otherTeacher();
+    for (const id of ["a1", "a2", "a3", "a4", "a5"]) grade(id);
+    for (const id of ["b1", "b2"]) grade(id, { assignmentId: other.id });
+    expect(claim(7)).toEqual(["a1", "b1", "a2", "b2", "a3", "a4", "a5"]);
+  });
+
+  it("serves the teacher with the fewest papers grading now", () => {
+    const other = otherTeacher();
+    for (const id of ["a1", "a2", "a3"]) grade(id);
+    expect(claim(2)).toEqual(["a1", "a2"]);
+    // A teacher uploading now goes ahead of the two papers left from the first teacher's batch.
+    grade("b1", { assignmentId: other.id });
+    expect(claim(1, T0 + 10_000)).toEqual(["b1"]);
+  });
+
+  it("serves the teacher served longest ago once both have a paper grading", () => {
+    const other = otherTeacher();
+    for (const id of ["a1", "a2"]) grade(id);
+    for (const id of ["b1", "b2"]) grade(id, { assignmentId: other.id });
+    const [first, second] = claim(2);
+    expect([first, second]).toEqual(["a1", "b1"]);
+    // b1 finishes: the second teacher now has none grading, so goes next even though a2 was queued earlier.
+    const b1 = db.prepare("SELECT id FROM jobs WHERE target_id = 'b1'").get() as { id: number };
+    setClockForTests(() => T0 + 5_000);
+    completeJob(b1.id);
+    expect(claim(1, T0 + 6_000)).toEqual(["b2"]);
+  });
+
+  it("still reads answer keys and splits scans before any teacher's papers", () => {
+    const other = otherTeacher();
+    grade("a1");
+    enqueueJob({ kind: "split_scan", targetId: "scan-1", assignmentId: other.id, priority: PRIORITY.splitScan, maxAttempts: 4 });
+    enqueueJob({ kind: "extract_key", targetId: other.id, assignmentId: other.id, priority: PRIORITY.extractKey, maxAttempts: 4 });
+    expect(claim(3)).toEqual([other.id, "scan-1", "a1"]);
+  });
+
+  it("keeps the grading priorities after key and scan jobs", () => {
+    expect(PRIORITY.splitScan).toBeLessThan(FIRST_GRADING_PRIORITY);
+    expect(Math.min(PRIORITY.student, PRIORITY.regrade, PRIORITY.teacher)).toBeGreaterThanOrEqual(FIRST_GRADING_PRIORITY);
   });
 });
 
