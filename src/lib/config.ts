@@ -58,6 +58,8 @@ export interface AppConfig {
   ollamaCropsPerCall: number;
   /** Claude engines: crops of written answers (and names) read per call by a class scan's fast lane. */
   cropsPerCall: number;
+  /** Worker threads that render PDF pages; 0 = render in-process; null (unset) = one per core but one, at most 8. */
+  renderThreads: number | null;
   /** Logged once when the server starts: settings it ignores (ANTHROPIC_MODEL). */
   startupWarnings: string[];
 }
@@ -138,6 +140,7 @@ const EnvSchema = z.object({
   OLLAMA_TIMEOUT_MS: intVar(60_000, 2_700_000, 1_200_000),
   OLLAMA_CROPS_PER_CALL: intVar(1, 16, 8),
   CROPS_PER_CALL: intVar(1, 60, 30),
+  RENDER_THREADS: z.coerce.number().int().min(0).max(32).optional(),
 });
 
 type EnvVar = keyof typeof EnvSchema.shape;
@@ -196,6 +199,7 @@ function parseConfig(): AppConfig {
     ollamaTimeoutMs: env.OLLAMA_TIMEOUT_MS,
     ollamaCropsPerCall: env.OLLAMA_CROPS_PER_CALL,
     cropsPerCall: env.CROPS_PER_CALL,
+    renderThreads: env.RENDER_THREADS ?? null,
     startupWarnings: env.ANTHROPIC_MODEL === undefined ? [] : [ANTHROPIC_MODEL_RETIRED],
     ...CONSTANTS,
   };

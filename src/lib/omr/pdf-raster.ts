@@ -3,11 +3,13 @@ import { createCanvas } from "@napi-rs/canvas";
 import { pdfJsAssets } from "@/lib/ai/ollama/render";
 import { AppError } from "@/lib/errors";
 import { grayFromRgba } from "./image";
+import { pooledPdf, RenderFailed, RenderPoolUnavailable } from "./render-pool";
 import type { TextToken } from "./text-zones";
 import type { GrayImage } from "./types";
 
 // PDF pages as grayscale pixels (mark detection), as PNG (the zone editor, the review page's crops) and as positioned text
-// (finding the answer spots on a digital blank). pdf.js draws on @napi-rs/canvas, as for the Ollama engine.
+// (finding the answer spots on a digital blank). pdf.js draws on @napi-rs/canvas, as for the Ollama engine. Pages are drawn
+// in worker threads when there are any (render-pool.ts); sizes and text are read here.
 
 type PdfJs = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 let pdfjsModule: Promise<PdfJs> | null = null;
@@ -46,6 +48,7 @@ export async function openPdf(bytes: Uint8Array, o: { fonts?: boolean } = {}): P
     throw new AppError("invalid_pdf", UNREADABLE);
   }
   const factory = doc.canvasFactory as { create(w: number, h: number): { canvas: unknown; context: CanvasLike } };
+  const pooled = pooledPdf(bytes);
 
   return {
     numPages: doc.numPages,
@@ -55,6 +58,14 @@ export async function openPdf(bytes: Uint8Array, o: { fonts?: boolean } = {}): P
       return { width: viewport.width, height: viewport.height };
     },
     async renderGray(n, opts) {
+      if (pooled) {
+        try {
+          return await pooled.render("dpi" in opts ? { op: "gray", page: n, dpi: opts.dpi } : { op: "gray", page: n, widthPx: opts.widthPx });
+        } catch (e) {
+          if (e instanceof RenderFailed) throw new AppError("invalid_pdf", UNREADABLE);
+          if (!(e instanceof RenderPoolUnavailable)) throw e;
+        }
+      }
       const page = await doc.getPage(n);
       try {
         const unscaled = page.getViewport({ scale: 1 });
@@ -107,6 +118,7 @@ export async function openPdf(bytes: Uint8Array, o: { fonts?: boolean } = {}): P
       return tokens;
     },
     async close() {
+      pooled?.close();
       await task.destroy().catch(() => undefined);
     },
   };

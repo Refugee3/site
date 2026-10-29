@@ -8,6 +8,7 @@ const CONFIG_VARS = [
   "COOKIE_SECURE", "MAX_UPLOAD_MB", "MAX_PAGES", "APP_SECRET", "MAX_SCAN_MB", "MAX_SCAN_PAGES", "AGENT_BUDGET_EXTRACT_USD",
   "AGENT_BUDGET_GRADE_USD", "AGENT_BUDGET_SCAN_USD", "AGENT_SESSION_TIMEOUT_MS", "AGENT_KEEP_SESSIONS", "SCAN_SPLIT_PARALLEL",
   "ONE_PASS_CHUNK_PAGES", "OLLAMA_CONCURRENCY", "OLLAMA_IMAGE_MAX_EDGE", "OLLAMA_PAGES_PER_CALL", "OLLAMA_TIMEOUT_MS",
+  "RENDER_THREADS",
 ];
 
 /** Starts from an empty environment (setup.ts restores it after each test), then applies `vars`. */
@@ -56,6 +57,8 @@ describe("getConfig", () => {
       ollamaTimeoutMs: 1_200_000,
       ollamaCropsPerCall: 8,
       cropsPerCall: 30,
+      // Unset: chosen from the number of cores (render-pool.ts).
+      renderThreads: null,
       startupWarnings: [],
     });
   });
@@ -90,6 +93,7 @@ describe("getConfig", () => {
       OLLAMA_IMAGE_MAX_EDGE: "1024",
       OLLAMA_PAGES_PER_CALL: "8",
       OLLAMA_TIMEOUT_MS: "300000",
+      RENDER_THREADS: "3",
     });
     expect(cfg).toMatchObject({
       nodeEnv: "production",
@@ -118,6 +122,7 @@ describe("getConfig", () => {
       ollamaImageMaxEdge: 1024,
       ollamaPagesPerCall: 8,
       ollamaTimeoutMs: 300_000,
+      renderThreads: 3,
     });
   });
 
@@ -129,6 +134,9 @@ describe("getConfig", () => {
     ["OLLAMA_PAGES_PER_CALL", "0"],
     ["OLLAMA_PAGES_PER_CALL", "9"],
     ["OLLAMA_TIMEOUT_MS", "1000"],
+    ["RENDER_THREADS", "-1"],
+    ["RENDER_THREADS", "33"],
+    ["RENDER_THREADS", "two"],
   ])("refuses %s=%s", (name, value) => {
     expect(() => configWith({ [name]: value })).toThrow(name);
   });
@@ -143,6 +151,10 @@ describe("getConfig", () => {
     }
     expect(configWith({ ANTHROPIC_MODEL: "  " }).startupWarnings).toEqual([]);
     expect(configWith().startupWarnings).toEqual([]);
+  });
+
+  it("takes RENDER_THREADS=0 to mean rendering in-process", () => {
+    expect(configWith({ RENDER_THREADS: "0" }).renderThreads).toBe(0);
   });
 
   it("treats empty and blank values as unset", () => {

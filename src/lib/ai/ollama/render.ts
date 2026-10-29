@@ -1,12 +1,14 @@
 import "server-only";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { type PooledPdf, pooledPdf, readAhead, RenderPoolUnavailable, renderThreads } from "@/lib/omr/render-pool";
 import { AiError } from "../errors";
 
 // PDF → PNG page images for a local vision model, which can't read PDFs. pdf.js (legacy build, for Node) parses and draws
 // the pages; @napi-rs/canvas, which ships prebuilt binaries for Windows, macOS and Linux, is the canvas it draws on. Both
 // stay outside the server bundle (next.config.ts serverExternalPackages). Uploads are already PDFs when they get here: the
-// upload pipeline turns photos, Word and text files into PDFs.
+// upload pipeline turns photos, Word and text files into PDFs. Pages are drawn in worker threads when there are any
+// (src/lib/omr/render-pool.ts).
 
 export interface RenderedPage {
   /** PNG bytes. */
@@ -50,6 +52,7 @@ export const renderPdfPages: PdfRenderer = async (pdf, o) => {
   const pdfjs = await loadPdfJs();
   // pdf.js may take over the buffer it is given; the caller's bytes stay intact.
   const task = pdfjs.getDocument({ data: new Uint8Array(pdf), ...pdfJsAssets(), verbosity: 0 });
+  let pooled: PooledPdf | null = null;
   try {
     let doc: Awaited<typeof task.promise>;
     try {
@@ -60,9 +63,16 @@ export const renderPdfPages: PdfRenderer = async (pdf, o) => {
     if (doc.numPages > o.maxPages) {
       throw new AiError("request_too_large", `This PDF has ${doc.numPages} pages; at most ${o.maxPages} can be read.`, { retryable: false });
     }
-    const pages: RenderedPage[] = [];
-    for (let n = 1; n <= doc.numPages; n++) {
-      if (o.signal?.aborted) throw new AiError("aborted", "Stopped while turning the PDF into images.", { retryable: true });
+    const inPool = (pooled = pooledPdf(pdf));
+    const renderPage = async (n: number): Promise<RenderedPage> => {
+      if (inPool) {
+        try {
+          const r = await inPool.render({ op: "png", page: n, maxEdge: o.maxEdge });
+          return { png: r.data, width: r.width, height: r.height };
+        } catch (e) {
+          if (!(e instanceof RenderPoolUnavailable)) throw e;
+        }
+      }
       const page = await doc.getPage(n);
       try {
         const unscaled = page.getViewport({ scale: 1 });
@@ -72,16 +82,25 @@ export const renderPdfPages: PdfRenderer = async (pdf, o) => {
         const factory = doc.canvasFactory as { create(w: number, h: number): { canvas: NapiCanvas } };
         const { canvas } = factory.create(width, height);
         await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport, background: "white" }).promise;
-        pages.push({ png: new Uint8Array(await canvas.encode("png")), width, height });
-      } catch (e) {
-        if (e instanceof AiError) throw e;
-        throw new AiError("bad_request", `${RENDER_FAILED} (page ${n})`, { retryable: false });
+        return { png: new Uint8Array(await canvas.encode("png")), width, height };
       } finally {
         page.cleanup();
+      }
+    };
+    // In worker threads, the next pages render while one is awaited.
+    const rendered = readAhead(doc.numPages, inPool ? renderThreads() : 0, renderPage);
+    const pages: RenderedPage[] = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      if (o.signal?.aborted) throw new AiError("aborted", "Stopped while turning the PDF into images.", { retryable: true });
+      try {
+        pages.push(await rendered(n));
+      } catch {
+        throw new AiError("bad_request", `${RENDER_FAILED} (page ${n})`, { retryable: false });
       }
     }
     return pages;
   } finally {
+    pooled?.close();
     await task.destroy().catch(() => undefined);
   }
 };

@@ -7,13 +7,15 @@ import {
 import { studentInkMask } from "../ink";
 import { openPdf } from "../pdf-raster";
 import { REGISTRATION_MIN_SCORE } from "../register";
+import { readAhead, renderThreads } from "../render-pool";
 import { isIdentityKind, type SpotBox } from "../types";
 import type { MatchedPage } from "./group";
 import { BLANK_PAGE_INK, MATCH_CONFIDENT, type MatchBlank, matchPage, prepareMatchBlank } from "./match";
 
 // The fast lane's pass over a whole-class scan (server side): each page is rendered once at mark-detection density,
 // matched to a page of the blank worksheet (match.ts), and, when it lines up well, its answer spots and name spots are
-// read at once (ink, choices, and the crops of what is written). Nothing here calls the AI.
+// read at once (ink, choices, and the crops of what is written). Nothing here calls the AI. The next pages render (in worker
+// threads) while one is matched and read.
 
 export interface AnalyzedPage extends MatchedPage {
   /** The match score (0..1). */
@@ -61,22 +63,30 @@ export async function analyzeScan(i: {
     // Every blank page has the name or a written spot: each matched page will need crops.
     const withCrops = pagesWithCrops(i.plan, i.identity);
     const cropsLikely = worksheet.pages.every((_, k) => withCrops.has(k + 1));
+    // One render when crops are likely on any page (a 1-page quiz: always, for the name), shrunk for matching; none for a
+    // page of another shape.
+    const rendered = readAhead(doc.numPages, renderThreads(), async (page) => {
+      const started = performance.now();
+      const size = await doc.pageSize(page);
+      const render = aspectChange(size, first) > MAX_ASPECT_CHANGE ? null : await renderForMarks(doc, page, first, cropsLikely);
+      return { render, ms: performance.now() - started };
+    });
     let previous: number | null = null;
     for (let page = 1; page <= doc.numPages; page++) {
       if (i.signal?.aborted) throw new AiError("aborted", "Stopped while matching the scan's pages.", { retryable: true });
-      const started = performance.now();
-      const size = await doc.pageSize(page);
+      const { render, ms } = await rendered(page);
+      // The page's own rendering time (it may have rendered ahead), plus matching from here.
+      const started = performance.now() - ms;
       const unmatched = (o: Partial<AnalyzedPage> = {}): AnalyzedPage => ({
         page, blankPage: null, ambiguous: false, blank: false, nameInk: null, score: 0, readable: false, spots: null,
         matchMs: Math.round(performance.now() - started), readMs: 0, tried: 0, ...o,
       });
-      if (aspectChange(size, first) > MAX_ASPECT_CHANGE) {
+      if (render === null) {
         out.push(unmatched());
         i.onPage?.(page, doc.numPages);
         continue;
       }
-      // One render when crops are likely on any page (a 1-page quiz: always, for the name), shrunk for matching.
-      const { gray, hiRes } = await renderForMarks(doc, page, first, cropsLikely);
+      const { gray, hiRes } = render;
       // The page after worksheet page j is most likely page j + 1, or the next paper's page 1.
       const expected = previous === null || previous >= k ? 1 : previous + 1;
       const m = matchPage(blanks, gray, expected);

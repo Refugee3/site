@@ -27,6 +27,9 @@ const nextConfig: NextConfig = {
   // stay out of the bundle (Ollama engine: PDF pages → images). The database is Node's built-in node:sqlite, which, like
   // every node: module, is never bundled.
   serverExternalPackages: ["pdfjs-dist", "@napi-rs/canvas"],
+  // The page-rendering worker (src/lib/omr/render-pool.ts) is loaded by path at run time, never bundled; this keeps it in
+  // the server's file traces too.
+  outputFileTracingIncludes: { "/**": ["./workers/**"] },
   experimental: {
     serverActions: {
       bodySizeLimit: "2mb",
