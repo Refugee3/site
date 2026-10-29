@@ -1,3 +1,6 @@
+import { now } from "@/lib/clock";
+import { addOverflowSpend, countWaitingGradingJobs, getOllamaExtraUrls, getOverflowSettings, getOverflowSpend, monthKey } from "@/lib/db/repos/capacity";
+import { createOverflowGrader, type OverflowPolicy } from "./overflow";
 import Anthropic from "@anthropic-ai/sdk";
 import { SCAN_SPLIT_MODEL } from "@/lib/ai-models";
 import { type AppConfig, getConfig } from "@/lib/config";
@@ -53,6 +56,11 @@ export function resetGrader(): void {
 export function setGraderForTests(g: Grader | null | undefined): void {
   if (g === undefined) delete slots[SLOT];
   else slots[SLOT] = { grader: g };
+}
+
+/** Whether an API key is available (saved in Settings or ANTHROPIC_API_KEY), e.g. for the Claude overflow. Never calls Anthropic. */
+export function resolveApiKeyPresent(): boolean {
+  return getConfig().aiMode !== "fake" && resolveApiKey() !== null;
 }
 
 /** Checks a candidate API key with Anthropic before it is saved, against the model chosen in Settings. */
@@ -118,11 +126,7 @@ function graderFromConfig(): Grader | null {
   if (getGradingEngine() === "ollama") return ollamaGrader(cfg);
   const resolved = resolveApiKey();
   if (resolved === null) return null;
-  if (getGradingEngine() === "direct") {
-    const direct = { ...cfg, model: getAiModel() };
-    if (resolved.source === "env") return createClaudeGrader(createSdkRunner(cfg), direct);
-    return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), direct);
-  }
+  if (getGradingEngine() === "direct") return directGrader(cfg, resolved);
   const deps = agentDeps(cfg, resolved);
   const key = agentKey(resolved);
   if (deps === null || key === null) return null;
@@ -149,8 +153,10 @@ function graderFromConfig(): Grader | null {
 function ollamaGrader(cfg: AppConfig): Grader {
   const settings = getOllamaSettings();
   const speed = getOllamaSpeedSettings();
-  return createOllamaGrader({
+  const local = createOllamaGrader({
     client: createOllamaClient({ baseUrl: settings.baseUrl }),
+    // Other computers running Ollama (Settings → Grader): papers are spread over all of them.
+    extraClients: getOllamaExtraUrls().filter((url) => url !== settings.baseUrl).map((baseUrl) => createOllamaClient({ baseUrl })),
     cfg: {
       model: settings.model,
       numCtx: settings.numCtx,
@@ -162,6 +168,35 @@ function ollamaGrader(cfg: AppConfig): Grader {
       cropsPerCall: cfg.ollamaCropsPerCall,
     },
   });
+  // The Claude overflow (Settings → Grader), with the saved API key: built only when it is first needed.
+  if (!getOverflowSettings().enabled) return local;
+  const resolved = resolveApiKey();
+  if (resolved === null) return local;
+  let claude: Grader | undefined;
+  return createOverflowGrader({ local, claude: () => (claude ??= directGrader(cfg, resolved)), policy: overflowPolicy() });
+}
+
+/** The direct Messages API grader with the key `resolved` and the model chosen in Settings. */
+function directGrader(cfg: AppConfig, resolved: NonNullable<ReturnType<typeof resolveApiKey>>): Grader {
+  const direct = { ...cfg, model: getAiModel() };
+  if (resolved.source === "env") return createClaudeGrader(createSdkRunner(cfg), direct);
+  return createClaudeGrader(confirmKeyOnSuccess(createSdkRunner(cfg, resolved.key), resolved.ciphertext), direct);
+}
+
+/** Overflow to Claude while more papers wait than the setting says, until the month's cap is spent (read at every call). */
+export function overflowPolicy(): OverflowPolicy {
+  return {
+    allowed() {
+      const s = getOverflowSettings();
+      if (!s.enabled) return false;
+      const at = now();
+      if (countWaitingGradingJobs(at) <= s.afterPapers) return false;
+      return getOverflowSpend(monthKey(at)).microUsd < s.monthlyCapUsd * 1_000_000;
+    },
+    spent(costUsd, paper) {
+      addOverflowSpend(monthKey(now()), costUsd * 1_000_000, paper ? 1 : 0);
+    },
+  };
 }
 
 /** What the hosted agent needs for the key in use; null in AI_MODE=fake or without a usable key. */

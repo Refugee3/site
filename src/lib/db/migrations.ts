@@ -607,6 +607,26 @@ UPDATE assignments SET grading_notified_at = CAST(strftime('%s', 'now') AS INTEG
 UPDATE assignments SET key_notified_revision = (SELECT k.revision FROM answer_keys k WHERE k.assignment_id = assignments.id);
 `,
   },
+  {
+    version: 18,
+    name: "grading_capacity",
+    sql: `
+-- More grading capacity for several teachers. ollama_extra_urls: other computers running Ollama with the same model, as a
+-- JSON array of addresses; papers are spread over them and this one (src/lib/ai/ollama/hosts.ts).
+ALTER TABLE app_settings ADD COLUMN ollama_extra_urls TEXT;
+-- Claude overflow (src/lib/ai/overflow.ts): while Ollama grades and more than overflow_after_papers papers wait, extra papers go
+-- to Claude with the saved API key, until overflow_monthly_cap_usd is spent this month.
+ALTER TABLE app_settings ADD COLUMN overflow_enabled INTEGER NOT NULL DEFAULT 0 CHECK (overflow_enabled IN (0,1));
+ALTER TABLE app_settings ADD COLUMN overflow_after_papers INTEGER NOT NULL DEFAULT 20 CHECK (overflow_after_papers BETWEEN 1 AND 10000);
+ALTER TABLE app_settings ADD COLUMN overflow_monthly_cap_usd INTEGER NOT NULL DEFAULT 20 CHECK (overflow_monthly_cap_usd BETWEEN 1 AND 100000);
+-- What the overflow spent, per calendar month ("2026-10", the server's local time), in millionths of a dollar.
+CREATE TABLE overflow_spend (
+  month TEXT PRIMARY KEY CHECK (length(month) = 7),
+  micro_usd INTEGER NOT NULL DEFAULT 0 CHECK (micro_usd >= 0),
+  papers INTEGER NOT NULL DEFAULT 0 CHECK (papers >= 0)
+) STRICT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

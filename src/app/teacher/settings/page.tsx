@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { AiModelCard } from "@/components/teacher/ai-model-card";
 import { ApiKeyForm } from "@/components/teacher/api-key-form";
+import { CapacitySettings } from "@/components/teacher/capacity-settings";
 import { EmailSettings } from "@/components/teacher/email-settings";
 import { GraderCard } from "@/components/teacher/grader-card";
 import { PreferencesForm } from "@/components/teacher/preferences-form";
@@ -12,6 +13,7 @@ import { testOllamaConnection } from "@/lib/ai/ollama/connection";
 import { requireTeacher } from "@/lib/auth/dal";
 import { getNotifyByEmail } from "@/lib/db/repos/email";
 import { getEmailSettingsView } from "@/lib/email/settings";
+import { getCapacityView } from "@/lib/services/capacity";
 import { getOllamaSpeedView, getTeacherSettingsView } from "@/lib/services/views";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -56,6 +58,9 @@ export default async function TeacherSettingsPage() {
           ollamaCheck={ollamaCheck}
           ollamaSpeed={getOllamaSpeedView()}
         />
+      </Card>
+      <Card title="More grading capacity">
+        <CapacitySettings view={getCapacityView()} ollamaChosen={view.grader.engine === "ollama"} />
       </Card>
       <Card title="Email when grading is done">
         <EmailSettings

@@ -26,6 +26,7 @@ import {
   OLLAMA_PACKET_READING_SYSTEM_PROMPT, OLLAMA_READING_SYSTEM_PROMPT, packetNumPredict, pageRange, readingNumPredict, scanNumPredict,
 } from "./compact";
 import { classifyOllamaError } from "./errors";
+import { createHostPool, HOST_DOWN_MS } from "./hosts";
 import {
   itemsInRefOrder, mergeKeyExtractions, mergeReadings, offsetScanPages, pageBatches, previousFrom, refProblems, scanPageProblems,
 } from "./merge";
@@ -69,6 +70,8 @@ export interface OllamaGraderConfig {
 
 export interface OllamaGraderDeps {
   client: OllamaClient;
+  /** Other computers running Ollama with the same model: calls are spread over all of them (see hosts.ts). */
+  extraClients?: OllamaClient[];
   cfg: OllamaGraderConfig;
   render?: PdfRenderer;
 }
@@ -86,6 +89,9 @@ function noteWait(o: CallOptions, from: number, to: number): void {
   if (list.length > 64) list.shift();
   waits.set(o, list);
 }
+
+/** Errors that mean "this computer can't grade now" rather than "this paper can't be graded": the call moves to another. */
+const MOVE_ON = new Set(["connection", "model_not_found"]);
 
 /** How long to wait for Ollama to say what the model can do (thinking or not). */
 const CAPABILITIES_TIMEOUT_MS = 10_000;
@@ -118,23 +124,30 @@ interface CallResult<T> {
 
 type PacketPaperReading = PacketReadingOutput["papers"][number];
 
-export function createOllamaGrader(d: OllamaGraderDeps): Grader {
+/** The Ollama grader, which also says how many of its slots are free (for the Claude overflow). */
+export type OllamaGrader = Grader & { freeSlots(): number };
+
+export function createOllamaGrader(d: OllamaGraderDeps): OllamaGrader {
   const { cfg, client } = d;
   const render = d.render ?? renderPdfPages;
   const modelId = `${OLLAMA_MODEL_PREFIX}${cfg.model}`;
   const parallel = Math.max(1, Math.floor(cfg.concurrency));
   const cropsPerCall = Math.max(1, Math.floor(cfg.cropsPerCall ?? OLLAMA_CROPS_PER_CALL));
-  const acquire = semaphore(parallel);
-  let thinking: Promise<boolean> | undefined;
+  const pool = createHostPool([client, ...(d.extraClients ?? [])], parallel);
+  const thinking = new Map<OllamaClient, Promise<boolean>>();
 
   /**
-   * Whether the model reasons before answering (Ollama reports "thinking", e.g. qwen3.6): asked once, then every call turns it
-   * off, since the reasoning would be thousands of extra tokens per paper. False when Ollama can't say.
+   * Whether the model reasons before answering (Ollama reports "thinking", e.g. qwen3.6): asked once per computer, then every
+   * call turns it off, since the reasoning would be thousands of extra tokens per paper. False when Ollama can't say.
    */
-  function canThink(): Promise<boolean> {
-    thinking ??= client.capabilities(cfg.model, { signal: AbortSignal.timeout(CAPABILITIES_TIMEOUT_MS) })
-      .then((capabilities) => capabilities?.includes("thinking") ?? false, () => false);
-    return thinking;
+  function canThink(on: OllamaClient): Promise<boolean> {
+    let known = thinking.get(on);
+    if (!known) {
+      known = on.capabilities(cfg.model, { signal: AbortSignal.timeout(CAPABILITIES_TIMEOUT_MS) })
+        .then((capabilities) => capabilities?.includes("thinking") ?? false, () => false);
+      thinking.set(on, known);
+    }
+    return known;
   }
 
   async function pagesOf(pdf: Uint8Array, o: CallOptions): Promise<RenderedPage[]> {
@@ -144,13 +157,12 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
   /** One request, plus one retry when the answer isn't usable (or was cut off at num_predict). Rejects with AiError. */
   async function call<T>(spec: CallSpec<T>, o: CallOptions): Promise<CallResult<T>> {
     const queuedAt = performance.now();
-    const release = await acquire(o.signal);
+    let lease = await pool.acquire(o.signal);
     noteWait(o, queuedAt, performance.now());
     const timeout = AbortSignal.timeout(cfg.timeoutMs);
     const signal = o.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
     let usage = NO_USAGE;
     let numPredict = spec.numPredict === undefined ? undefined : Math.max(1, Math.min(Math.round(spec.numPredict), cfg.numCtx));
-    const noThinking = (await canThink()) ? { think: false } : {};
     const messages: OllamaMessage[] = [
       { role: "system", content: spec.system },
       { role: "user", content: spec.text, images: spec.images.map((page) => Buffer.from(page.png).toString("base64")) },
@@ -158,8 +170,10 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     try {
       for (let attempt = 1; ; attempt++) {
         let res: OllamaChatResponse;
+        const on = lease.client;
+        const noThinking = (await canThink(on)) ? { think: false } : {};
         try {
-          res = await client.chat({
+          res = await on.chat({
             model: cfg.model,
             messages,
             format: outputFormat(spec.schema).schema,
@@ -169,10 +183,20 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
             ...noThinking,
           }, { signal });
         } catch (e) {
-          throw classifyOllamaError(e, {
-            baseUrl: client.baseUrl, model: cfg.model, numCtx: cfg.numCtx, timeoutMs: cfg.timeoutMs,
+          const error = classifyOllamaError(e, {
+            baseUrl: on.baseUrl, model: cfg.model, numCtx: cfg.numCtx, timeoutMs: cfg.timeoutMs,
             aborted: o.signal?.aborted ?? false, timedOut: timeout.aborted,
           });
+          // This computer is off or lacks the model: set it aside and send the call to another one.
+          if (MOVE_ON.has(error.code) && pool.hasOther(lease) && !signal.aborted) {
+            lease.markDown();
+            lease.release();
+            console.warn(`[ollama] ${on.baseUrl}: ${error.message} Using the other computers for ${HOST_DOWN_MS / 60_000} min.`);
+            lease = await pool.acquire(o.signal);
+            attempt--;
+            continue;
+          }
+          throw error;
         }
         usage = addUsage(usage, res);
         const billed = { servedModel: modelId, usage };
@@ -206,7 +230,7 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
         );
       }
     } finally {
-      release();
+      lease.release();
     }
   }
 
@@ -286,10 +310,12 @@ export function createOllamaGrader(d: OllamaGraderDeps): Grader {
     return { output: { papers, skipped_pages: skipped }, meta: meta(usage, startedAt, o) };
   }
 
-  const grader: Grader = {
+  const grader: OllamaGrader = {
     mode: "claude",
     engine: "ollama",
-    parallel,
+    // Papers graded at once: "papers at a time" on each computer.
+    parallel: parallel * pool.size,
+    freeSlots: () => pool.free(),
     cropsPerCall,
 
     async extractKey(input, o = {}) {
@@ -549,38 +575,3 @@ export function parseAnswer<T>(content: string, schema: z.ZodType<T>): Parsed<T>
   return { ok: false, problem: `the answer does not match the schema at ${path}: ${issue.message}` };
 }
 
-/** At most `n` holders at once; waiting callers go in order. An abort while waiting rejects with AiError("aborted"). */
-function semaphore(n: number): (signal?: AbortSignal) => Promise<() => void> {
-  let active = 0;
-  const waiting: Array<() => void> = [];
-  const releaser = () => {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      active--;
-      waiting.shift()?.();
-    };
-  };
-  return (signal) => {
-    if (signal?.aborted) return Promise.reject(new AiError("aborted", "The call to Ollama was stopped.", { retryable: true }));
-    if (active < n) {
-      active++;
-      return Promise.resolve(releaser());
-    }
-    return new Promise((resolve, reject) => {
-      const go = () => {
-        signal?.removeEventListener("abort", onAbort);
-        active++;
-        resolve(releaser());
-      };
-      const onAbort = () => {
-        const at = waiting.indexOf(go);
-        if (at !== -1) waiting.splice(at, 1);
-        reject(new AiError("aborted", "The call to Ollama was stopped.", { retryable: true }));
-      };
-      waiting.push(go);
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
-  };
-}

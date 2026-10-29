@@ -114,6 +114,14 @@ DragonGrader is a website served by the computer it runs on, with its own teache
 
 To have DragonGrader start by itself when the PC starts: press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to **Start Grader.bat** in the folder that opens.
 
+## Several teachers: grading capacity
+
+One grader can serve a department; what limits it is how many papers the graphics card(s) get through when everyone uploads at once.
+
+- **Teachers take turns** automatically: answer keys and scan splits go first, then the next paper is from the teacher with the fewest papers grading now (ties: the teacher served longest ago). One teacher's 200-page scan doesn't hold up another's 25-paper quiz.
+- **Other computers running Ollama** (Settings → More grading capacity): list their addresses, one per line (e.g. `http://192.168.1.31:11434`), and papers are spread over this computer and them, so two GPUs grade about twice as many. On each: install Ollama, download the same model, run `setx OLLAMA_HOST 0.0.0.0` and restart Ollama, and allow port 11434 in Windows Firewall (Private networks). **Test these computers** checks each one. One that is off or lacks the model is skipped for two minutes and its papers go to the others.
+- **Claude overflow for busy days** (same card): while Ollama grades and more than N papers wait (20 by default), extra papers go to Claude with the saved API key instead of waiting, until the monthly cap you set is spent (counted per calendar month, estimated at list prices; the card shows this month's spend). Off by default. If Claude fails (no credit, a bad key), those papers are graded locally and the overflow rests for 10 minutes.
+
 ## Teachers only
 
 Only teachers use the app; students never need an account, a code or a link. Sign in, create a homework or quiz, and follow its three steps. Everything students wrote reaches the app through your uploads.

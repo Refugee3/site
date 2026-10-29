@@ -620,3 +620,45 @@ describe("createOllamaGrader: thinking models", () => {
     expect(failing.sent[0].body).not.toHaveProperty("think");
   });
 });
+
+describe("createOllamaGrader: several computers", () => {
+  const input = { assignmentTitle: "Quiz", teacherNotes: "", keyPdf: pdf(1), pageCount: 1 };
+  const refused = () => new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 10.0.0.2:11434"), { code: "ECONNREFUSED" }) });
+
+  it("grades as many papers at once as all the computers' slots together", () => {
+    const grader = createOllamaGrader({
+      client: createOllamaClient({ baseUrl: BASE_URL, fetch: fakeOllama().fetch }),
+      extraClients: [createOllamaClient({ baseUrl: "http://10.0.0.2:11434", fetch: fakeOllama().fetch })],
+      cfg: { ...CFG, concurrency: 2 },
+      render: fakeRender,
+    });
+    expect(grader.parallel).toBe(4);
+  });
+
+  it("moves a call to another computer when one can't be reached, and keeps using the others", async () => {
+    const good = fakeOllama(answer(keyExtraction), answer(keyExtraction));
+    const down = fakeOllama(refused());
+    const grader = createOllamaGrader({
+      client: createOllamaClient({ baseUrl: "http://10.0.0.2:11434", fetch: down.fetch }),
+      extraClients: [createOllamaClient({ baseUrl: BASE_URL, fetch: good.fetch })],
+      cfg: { ...CFG, concurrency: 1 },
+      render: fakeRender,
+    });
+    const first = await grader.extractKey(input);
+    expect(first.output.items).toHaveLength(1);
+    // The computer that was down is skipped for a while: no second try there.
+    await grader.extractKey(input);
+    expect(down.sent).toHaveLength(1);
+    expect(good.sent).toHaveLength(2);
+  });
+
+  it("reports the error when no computer can be reached", async () => {
+    const grader = createOllamaGrader({
+      client: createOllamaClient({ baseUrl: BASE_URL, fetch: fakeOllama(refused()).fetch }),
+      extraClients: [createOllamaClient({ baseUrl: "http://10.0.0.2:11434", fetch: fakeOllama(refused()).fetch })],
+      cfg: { ...CFG, concurrency: 1 },
+      render: fakeRender,
+    });
+    await expect(grader.extractKey(input)).rejects.toMatchObject({ code: "connection" });
+  });
+});

@@ -11,6 +11,7 @@ import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
 import type { OllamaConnectionResult } from "@/lib/ollama-settings";
+import { type ComputerCheck, saveOtherComputers, saveOverflowSettings, testOtherComputers } from "@/lib/services/capacity";
 import { removeEmailSettings, saveEmailSettings, sendTestEmail, setTeacherEmailNotifications } from "@/lib/services/email";
 import {
   checkOllamaConnection, removeApiKey, saveApiKey, saveGradingPreferences, saveOllamaSettings, setAiModel, setGradingEngine,
@@ -151,4 +152,37 @@ export async function setEmailNotificationsAction(on: boolean): Promise<ActionRe
   if (!result.ok) return result;
   refresh();
   return { ok: true, message: on ? "You'll get an email when grading is done." : "Emails turned off for you." };
+}
+
+/** Settings → More grading capacity: the other computers running Ollama (field otherComputers, one address per line). */
+export async function saveOtherComputersAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attemptWithData(() => saveOtherComputers(formFields(fd, ["otherComputers"])));
+  if (!result.ok) return result;
+  refresh();
+  const n = result.data.length;
+  return { ok: true, message: n === 0 ? "Saved. Only this computer grades." : `Saved. Papers are spread over this computer and ${n} other${n === 1 ? "" : "s"}.` };
+}
+
+/** "Test these computers": whether each address typed answers and has the model. Nothing is saved. */
+export async function testOtherComputersAction(otherComputers: string): Promise<ActionResult<ComputerCheck[]>> {
+  await requireTeacher();
+  const result = await attemptWithData(() => testOtherComputers({ otherComputers }));
+  if (!result.ok) return { ok: false, error: Object.values(result.fieldErrors ?? {})[0]?.[0] ?? result.error };
+  return { ok: true, data: result.data };
+}
+
+/** Settings → More grading capacity: the Claude overflow (fields enabled, afterPapers, monthlyCapUsd). */
+export async function saveOverflowSettingsAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attemptWithData(() => saveOverflowSettings(formFields(fd, ["enabled", "afterPapers", "monthlyCapUsd"])));
+  if (!result.ok) return result;
+  refresh();
+  const s = result.data;
+  return {
+    ok: true,
+    message: s.enabled
+      ? `Saved. When more than ${s.afterPapers} papers wait, extra ones go to Claude, up to $${s.monthlyCapUsd} a month.`
+      : "Saved. The overflow is off: everything is graded on your computers.",
+  };
 }
