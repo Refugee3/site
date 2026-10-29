@@ -5,7 +5,7 @@ import path from "node:path";
 import { getConfig } from "@/lib/config";
 import { AppError } from "@/lib/errors";
 
-export type SecretPurpose = "anthropic-api-key";
+export type SecretPurpose = "anthropic-api-key" | "smtp-password";
 
 const TOKEN_VERSION = "v1";
 const HKDF_SALT = "pag-secrets-v1";

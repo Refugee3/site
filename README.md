@@ -87,6 +87,33 @@ The server checks the settings, the data directory and the database when it star
 - If `TEACHER_SIGNUP_CODE` is set, **every** sign-up needs it, the first one included. Use a random code of at least 12 characters (for example the output of `openssl rand -base64 12`), not a word, and share it only with colleagues who should get an account. Wrong codes are limited to 20 per hour server-wide.
 - If `TEACHER_SIGNUP_CODE` is unset, the **first** account can be created by anyone who reaches `/signup` (so create it right after deploying), and sign-up is closed once it exists.
 
+## Email when grading is done
+
+Grading runs on the server, not in the browser: upload the papers (or drop a whole-class scan), then close the tab or log out, and DragonGrader keeps going. With email set up, each teacher gets:
+
+- **"Graded: Unit 4 Quiz (3 to check)"** a minute after the last paper of a batch is graded: how many were graded, the class average, how many need a check (with a link straight to them) and any that couldn't be graded. A class uploaded in parts gets one email per batch, not one per paper.
+- **"Answer key ready to check: Unit 4 Quiz"** when the AI has read a key that isn't approved yet (papers are graded once it is). Not sent when you approve it within the minute.
+
+**Set it up once** (Settings → **Email when grading is done**). One outgoing mail account serves every teacher on the server; each teacher's emails go to the address they log in with.
+
+1. Easiest: make a free Gmail account for DragonGrader, turn on **2-Step Verification**, then create an **app password** at <https://myaccount.google.com/apppasswords>.
+2. In Settings click **Gmail** (fills in `smtp.gmail.com`, port 465, SSL/TLS), enter the Gmail address as the username and the 16-letter app password, and **Save**. Microsoft 365 / Outlook: click **Outlook / Microsoft 365** (`smtp.office365.com`, 587, STARTTLS); many schools turn this off for staff accounts, so a separate Gmail account is often simpler.
+3. Fill in **DragonGrader's address** (for the links in emails): the address you open it at from other computers, e.g. `http://192.168.1.25:3000` on your network or your tunnel's `https://` address (see "Use DragonGrader from anywhere").
+4. Click **Send a test email**. If it fails, the reason shows in Settings ("refused the username or password", "couldn't reach the mail server").
+
+Each teacher can turn their own emails off with **Email me when grading is done**. The password is stored encrypted like the API key. Failed sends aren't retried; the last error shows in Settings. The computer running DragonGrader has to stay on (and awake) until grading finishes: in Windows, **Settings → System → Power → Screen and sleep → "When plugged in, put my device to sleep after": Never**.
+
+## Use DragonGrader from anywhere
+
+DragonGrader is a website served by the computer it runs on, with its own teacher logins (see "Teacher accounts"). To open it from other computers or from home, that computer stays on and you choose how others reach it:
+
+- **Same building / network:** open `http://<that PC's address>:3000` (find the address with `ipconfig`, "IPv4 Address"), after allowing port 3000 in Windows Firewall for Private networks: `New-NetFirewallRule -DisplayName "DragonGrader" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private` (in a Terminal run as administrator).
+- **From home, just for you (recommended): Tailscale.** Free; install it on the grading PC and on your laptop or phone, sign in with the same account, and open `http://<the PC's Tailscale name>:3000`. Nothing is exposed to the internet and no router settings change.
+- **A public web address for several teachers: Cloudflare Tunnel.** Free (you need a domain name, about $10 a year): it gives an `https://grader.yourdomain.com` address that reaches the PC without opening ports. Set `APP_URL=https://grader.yourdomain.com` in `.env.local` and require a sign-up code (`TEACHER_SIGNUP_CODE`) so only your colleagues can make accounts.
+- **A cloud server instead of your PC:** works with the Claude engines (no graphics card needed there); local grading with Ollama needs the GPU PC.
+
+To have DragonGrader start by itself when the PC starts: press **Win + R**, type `shell:startup`, press Enter, and put a shortcut to **Start Grader.bat** in the folder that opens.
+
 ## Teachers only
 
 Only teachers use the app; students never need an account, a code or a link. Sign in, create a homework or quiz, and follow its three steps. Everything students wrote reaches the app through your uploads.

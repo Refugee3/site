@@ -1251,6 +1251,20 @@ describe("grading on this computer (Ollama)", () => {
     await worker.stop();
   });
 
+  it("tells onSettled when a job is done or has failed for good, not when it is retried", async () => {
+    const settled: number[] = [];
+    const id = await uploadPaper();
+    const worker = createWorker({ grader: instantFake, concurrency: 1, pollMs: 1000, onSettled: (job) => settled.push(job.id) });
+    expect(await worker.runOnce()).toBe(true);
+    expect(settled).toEqual([jobRows(id)[0].id]);
+
+    // A rate-limited paper is put back for later: not settled yet.
+    const second = await uploadPaper("b");
+    const limited = createWorker({ grader: rejectingGrader(new AiError("rate_limited", "slow down", { retryable: true })), concurrency: 1, pollMs: 1000, onSettled: (job) => settled.push(job.id) });
+    expect(await limited.runOnce()).toBe(true);
+    expect(settled).not.toContain(jobRows(second)[0].id);
+  });
+
   it("concurrencyFor: OLLAMA_CONCURRENCY (plus papers being prepared) while Ollama grades, GRADING_CONCURRENCY otherwise", () => {
     const cfg = { concurrency: 10, ollamaConcurrency: 1 };
     expect(concurrencyFor(scriptedGrader({ engine: "ollama" }), cfg)).toBe(1 + OLLAMA_PREPARE_AHEAD);

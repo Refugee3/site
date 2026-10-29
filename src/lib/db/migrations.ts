@@ -580,6 +580,33 @@ CREATE TABLE assignment_rosters (
 ) STRICT;
 `,
   },
+  {
+    version: 17,
+    name: "email_notifications",
+    sql: `
+-- Email when grading is done (src/lib/email). The server's outgoing mail account (SMTP), set in Settings; the password is
+-- encrypted like the API key. public_url: the address teachers open DragonGrader at, for the links in emails.
+ALTER TABLE app_settings ADD COLUMN smtp_host TEXT CHECK (smtp_host IS NULL OR length(smtp_host) BETWEEN 1 AND 255);
+ALTER TABLE app_settings ADD COLUMN smtp_port INTEGER CHECK (smtp_port IS NULL OR smtp_port BETWEEN 1 AND 65535);
+ALTER TABLE app_settings ADD COLUMN smtp_security TEXT CHECK (smtp_security IS NULL OR smtp_security IN ('tls','starttls','none'));
+ALTER TABLE app_settings ADD COLUMN smtp_user TEXT CHECK (smtp_user IS NULL OR length(smtp_user) <= 255);
+ALTER TABLE app_settings ADD COLUMN smtp_password_ciphertext TEXT;
+ALTER TABLE app_settings ADD COLUMN smtp_from TEXT CHECK (smtp_from IS NULL OR length(smtp_from) <= 255);
+ALTER TABLE app_settings ADD COLUMN public_url TEXT CHECK (public_url IS NULL OR length(public_url) <= 500);
+-- The last email sent and the last failure, shown in Settings.
+ALTER TABLE app_settings ADD COLUMN email_last_sent_at INTEGER;
+ALTER TABLE app_settings ADD COLUMN email_last_error TEXT CHECK (email_last_error IS NULL OR length(email_last_error) <= 500);
+ALTER TABLE app_settings ADD COLUMN email_last_error_at INTEGER;
+-- Each teacher's choice: emails about their own homework and quizzes (on unless they turn it off).
+ALTER TABLE teachers ADD COLUMN notify_by_email INTEGER NOT NULL DEFAULT 1 CHECK (notify_by_email IN (0,1));
+-- What was already emailed: papers graded up to grading_notified_at (ms) were reported; key_notified_revision is the
+-- key revision a "your key is ready to check" email went out for. Work done before this version counts as reported.
+ALTER TABLE assignments ADD COLUMN grading_notified_at INTEGER;
+ALTER TABLE assignments ADD COLUMN key_notified_revision INTEGER;
+UPDATE assignments SET grading_notified_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000;
+UPDATE assignments SET key_notified_revision = (SELECT k.revision FROM answer_keys k WHERE k.assignment_id = assignments.id);
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

@@ -1,3 +1,4 @@
+import { scheduleNotificationCheck, sweepNotifications } from "@/lib/email/notify";
 import { getGrader } from "@/lib/ai";
 import type { AiErrorCode } from "@/lib/ai/errors";
 import type { Grader } from "@/lib/ai/grader";
@@ -73,6 +74,8 @@ export function createWorker(o: {
   grader: Grader | null | (() => Grader | null);
   concurrency: number | ((grader: Grader | null) => number);
   pollMs: number;
+  /** Called after a job's outcome (done or failed for good) is recorded, e.g. to email the teacher when work is done. */
+  onSettled?: (job: Job) => void;
 }): Worker {
   const given = o.grader;
   const currentGrader = typeof given === "function" ? given : () => given;
@@ -220,6 +223,7 @@ export function createWorker(o: {
         completeJob(job.id);
         succeeded(launchedIn);
         endBatchIfDrained(job);
+        settled(job);
         return;
       case "requeue":
         requeueJob(job.id, {
@@ -230,6 +234,7 @@ export function createWorker(o: {
       case "fail":
         failJob(job.id, result.error);
         endBatchIfDrained(job);
+        settled(job);
         return;
       case "pause":
         if (grader !== currentGraderOrNull()) {
@@ -261,6 +266,15 @@ export function createWorker(o: {
     }
   }
 
+  /** Tells `onSettled`; never fails the job, whose outcome is recorded. */
+  function settled(job: Job): void {
+    try {
+      o.onSettled?.(job);
+    } catch (e) {
+      console.error(`[worker] onSettled failed for job ${job.id}`, e);
+    }
+  }
+
   /** A handler threw (a bug, or an I/O error it does not expect): retry with backoff while attempts remain. */
   function recoverFromCrash(job: Job, e: unknown): void {
     console.error(`[worker] job ${job.id} (${job.kind}) threw`, e);
@@ -272,6 +286,7 @@ export function createWorker(o: {
     }
     failJob(job.id, error);
     failTarget(job, CRASH_MESSAGES[job.kind]);
+    settled(job);
   }
 
   function tick(): void {
@@ -390,7 +405,10 @@ export async function startWorker(): Promise<void> {
   for (const warning of cfg.startupWarnings) console.warn(`[startup] ${warning}`);
   getDb();
   // Taking the slot before the first await makes a concurrent second call return early.
-  const worker = withMaintenance(createWorker({ grader: getGrader, concurrency: (g) => concurrencyFor(g, cfg), pollMs: POLL_MS }));
+  const worker = withMaintenance(createWorker({
+    grader: getGrader, concurrency: (g) => concurrencyFor(g, cfg), pollMs: POLL_MS,
+    onSettled: (job) => scheduleNotificationCheck(job.assignmentId),
+  }));
   slots[WORKER_SLOT] = worker;
   try {
     await ensureDataDirs();
@@ -402,6 +420,7 @@ export async function startWorker(): Promise<void> {
     throw e;
   }
   worker.start();
+  sweepNotifications();
 }
 
 /**

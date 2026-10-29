@@ -21,6 +21,12 @@ const OLLAMA_DEFAULTS = {
   ollama_papers_at_a_time: null,
 };
 
+/** The email columns migration 17 adds to app_settings: all empty (email not set up). */
+const EMAIL_DEFAULTS = {
+  smtp_host: null, smtp_port: null, smtp_security: null, smtp_user: null, smtp_password_ciphertext: null, smtp_from: null,
+  public_url: null, email_last_sent_at: null, email_last_error: null, email_last_error_at: null,
+};
+
 function count(db: DB, table: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
@@ -131,7 +137,7 @@ describe("migration 3 on a version-2 database", () => {
       api_key_set_by: null, api_key_set_at: null, updated_at: 0,
       grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
-      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS,
+      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS, ...EMAIL_DEFAULTS,
     }]);
     expect(db.prepare("SELECT grading_preferences FROM teachers").get()).toEqual({ grading_preferences: "" });
     expect(() => db.prepare("UPDATE teachers SET grading_preferences = ?").run("x".repeat(4001))).toThrow(/constraint/i);
@@ -215,7 +221,7 @@ describe("migration 4 on a version-3 database", () => {
       api_key_set_by: "t1", api_key_set_at: 7, updated_at: 7,
       grading_engine: null, agent_install_id: expect.stringMatching(/^[0-9a-f]{12}$/), agent_key_fp: null,
       agent_environment_json: null, agent_agents_json: null, agent_status: "none", agent_error: null, agent_checked_at: null,
-      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS,
+      ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS, ...EMAIL_DEFAULTS,
     }]);
     // Migration 6 adds the timing columns: queued_at starts as the upload time. Migration 13's grading times start empty,
     // and migration 15's spots revision too (graded without saved answer spots).
@@ -318,7 +324,7 @@ describe("migration 5 on a version-4 database", () => {
     migrate(db);
 
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
-    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS });
+    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ai_model: "claude-sonnet-5-5", ...OLLAMA_DEFAULTS, ...EMAIL_DEFAULTS });
     // The papers keep the model and engine they were graded with (migration 6 only adds its timing columns).
     expect(db.prepare("SELECT * FROM submissions").get())
       .toEqual({
@@ -687,7 +693,7 @@ describe("migration 11 on a version-10 database", () => {
     migrate(db);
 
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
-    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{ ...settings, ...OLLAMA_DEFAULTS }]);
+    expect(db.prepare("SELECT * FROM app_settings").all()).toEqual([{ ...settings, ...OLLAMA_DEFAULTS, ...EMAIL_DEFAULTS }]);
     expect(db.prepare("SELECT ai_engine, grader_engine FROM submissions").get()).toEqual({ ai_engine: "direct", grader_engine: "direct" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -786,7 +792,7 @@ describe("migration 13 on a version-12 database", () => {
     migrate(db);
 
     expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
-    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ollama_image_max_edge: null, ollama_papers_at_a_time: null });
+    expect(db.prepare("SELECT * FROM app_settings").get()).toEqual({ ...settings, ollama_image_max_edge: null, ollama_papers_at_a_time: null, ...EMAIL_DEFAULTS });
     expect(db.prepare("SELECT id, grader_engine, read_ms, judge_ms FROM submissions").get())
       .toEqual({ id: "s1", grader_engine: "ollama", read_ms: null, judge_ms: null });
     db.prepare("UPDATE app_settings SET ollama_image_max_edge = 1280, ollama_papers_at_a_time = 2").run();
@@ -906,7 +912,7 @@ describe("migration 16 on a version-15 database", () => {
 
     migrate(db);
 
-    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.at(-1)!.version);
     expect(db.prepare("SELECT spots_json, identity_spots_json FROM blank_worksheets").get()).toEqual({ spots_json: "[]", identity_spots_json: null });
     expect(db.prepare("SELECT fast_lane, roster_name FROM submissions").get()).toEqual({ fast_lane: 0, roster_name: null });
     db.exec("INSERT INTO assignment_rosters (assignment_id, roster_text, updated_at) VALUES ('a1', 'Maria Lopez | Period 3', 2)");
@@ -914,6 +920,37 @@ describe("migration 16 on a version-15 database", () => {
     // A class list goes with its assignment.
     db.exec("DELETE FROM assignments WHERE id = 'a1'");
     expect(count(db, "assignment_rosters")).toBe(0);
+    expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    db.close();
+  });
+});
+
+describe("migration 17 on a version-16 database", () => {
+  it("adds email settings (not set up), teachers' choice (on) and marks earlier work as already reported", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => {
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 16)) db.exec(migration.sql);
+      db.pragma("user_version = 16");
+    })();
+    db.exec(`
+      INSERT INTO teachers (id, email, display_name, password_hash, created_at) VALUES ('t1', 'a@b.c', 'A', 'h', 1);
+      INSERT INTO assignments (id, teacher_id, title, share_code, created_at, updated_at) VALUES ('a1', 't1', 'Quiz', 'ABCDEF', 1, 1);
+      INSERT INTO answer_keys (assignment_id, status, revision, approved_revision, updated_at) VALUES ('a1', 'ready', 3, 2, 1);
+    `);
+    const before = Date.now();
+
+    migrate(db);
+
+    expect(db.pragma("user_version", { simple: true })).toBe(17);
+    expect(db.prepare("SELECT smtp_host, smtp_from, public_url FROM app_settings").get()).toEqual({ smtp_host: null, smtp_from: null, public_url: null });
+    expect(db.prepare("SELECT notify_by_email FROM teachers").get()).toEqual({ notify_by_email: 1 });
+    const a = db.prepare("SELECT grading_notified_at, key_notified_revision FROM assignments").get() as { grading_notified_at: number; key_notified_revision: number };
+    // Papers graded and the key read before the upgrade aren't emailed about afterwards.
+    expect(a.key_notified_revision).toBe(3);
+    expect(a.grading_notified_at).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000);
+    expect(() => db.prepare("UPDATE app_settings SET smtp_security = 'ssl'").run()).toThrow(/constraint/i);
+    expect(() => db.prepare("UPDATE app_settings SET smtp_port = 70000").run()).toThrow(/constraint/i);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
     db.close();
   });

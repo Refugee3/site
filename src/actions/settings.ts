@@ -11,6 +11,7 @@ import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { checkApiKeySave } from "@/lib/http/rate-limit";
 import { formFields, parseInput } from "@/lib/http/validation";
 import type { OllamaConnectionResult } from "@/lib/ollama-settings";
+import { removeEmailSettings, saveEmailSettings, sendTestEmail, setTeacherEmailNotifications } from "@/lib/services/email";
 import {
   checkOllamaConnection, removeApiKey, saveApiKey, saveGradingPreferences, saveOllamaSettings, setAiModel, setGradingEngine,
   setUpHostedAgentAgain,
@@ -115,4 +116,39 @@ export async function saveGradingPreferencesAction(_prev: ActionResult | null, f
     message:
       "Saved. Papers graded from now on follow them. To apply them to papers already graded, use “Regrade … with your latest corrections” on each assignment.",
   };
+}
+
+/** Settings → Email: the outgoing mail account (fields host, port, security, user, password, from, publicUrl). */
+export async function saveEmailSettingsAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attempt(() => saveEmailSettings(formFields(fd, ["host", "port", "security", "user", "password", "from", "publicUrl"])));
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: "Saved. Send a test email to check it works." };
+}
+
+export async function removeEmailSettingsAction(): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attempt(() => removeEmailSettings());
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: "Email turned off: no emails are sent." };
+}
+
+/** "Send a test email": to the signed-in teacher's own address, with the saved account. */
+export async function sendTestEmailAction(): Promise<ActionResult> {
+  const teacher = await requireTeacher();
+  const result = await attempt(() => sendTestEmail(teacher));
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: `Sent to ${teacher.email}. If it isn't in your inbox in a minute, look in spam.` };
+}
+
+/** The signed-in teacher's "Email me when grading is done". */
+export async function setEmailNotificationsAction(on: boolean): Promise<ActionResult> {
+  const teacher = await requireTeacher();
+  const result = await attempt(() => setTeacherEmailNotifications(teacher, on === true));
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: on ? "You'll get an email when grading is done." : "Emails turned off for you." };
 }
