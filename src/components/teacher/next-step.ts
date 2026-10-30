@@ -18,7 +18,14 @@ type DashboardAssignment = DashboardView["assignments"][number];
  */
 export function nextStep(a: DashboardAssignment): NextStep {
   const keyHref = `/teacher/assignments/${a.id}/key`;
-  switch (a.keyStatus) {
+  if (a.kind === "project" && !a.keyApproved) {
+    if (a.keyStatus === "processing") return { text: "Reading your rubric…", href: keyHref, tone: "info" };
+    if (a.keyStatus === "failed") return { text: "The rubric couldn't be read — open it to try again", href: keyHref, tone: "danger" };
+    if (a.keyStatus === "ready") return { text: "Next: check and approve the rubric", href: keyHref, tone: "warning" };
+    return { text: "Next: say how to grade the project", href: keyHref, tone: "info" };
+  }
+  // A project ready for papers may have no key at all (instructions only).
+  if (a.kind !== "project") switch (a.keyStatus) {
     case "empty":
       return { text: "Next: add the answer key", href: keyHref, tone: "info" };
     case "processing":

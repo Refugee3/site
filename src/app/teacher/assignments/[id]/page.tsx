@@ -52,6 +52,7 @@ export default async function WorkspacePage(props: PageProps<"/teacher/assignmen
               spotsStaleCount={view.spotsStaleCount}
               failedCount={view.counts.failed}
               hasPapers={view.counts.total > 0}
+              project={assignment.kind === "project"}
             />
           </div>
 

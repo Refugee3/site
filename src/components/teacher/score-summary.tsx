@@ -20,10 +20,12 @@ export interface ScoreSummaryProps {
   score: ScoreResult;
   totalOverrideCenti: number | null;
   itemCount: number;
+  /** A project: scored by its review, so there's no completion/accuracy breakdown. */
+  project?: boolean;
 }
 
 /** The paper's score with its completion and accuracy breakdown, and the teacher's total override. */
-export function ScoreSummary({ submissionId, score, totalOverrideCenti, itemCount }: ScoreSummaryProps) {
+export function ScoreSummary({ submissionId, score, totalOverrideCenti, itemCount, project = false }: ScoreSummaryProps) {
   const stored = pointsInputText(totalOverrideCenti);
   const [text, setText, expectSaved] = useSyncedState(stored);
   const [inputError, setInputError] = useState<string | null>(null);
@@ -57,11 +59,11 @@ export function ScoreSummary({ submissionId, score, totalOverrideCenti, itemCoun
         <span className="text-xl font-semibold tabular-nums text-muted">{formatPercent(score.percentTenths)}</span>
         {score.totalOverridden && <Badge tone="info">Total set by you</Badge>}
       </p>
-      <p className="text-sm text-muted">
+      {!project && <p className="text-sm text-muted">
         Completion {formatPercent(percentTenths(score.completionCenti, score.maxCenti))} · Accuracy{" "}
         {formatPercent(percentTenths(score.accuracyCenti, score.maxCenti))} · {score.judgedCount} of {itemCount} items judged by
         the AI
-      </p>
+      </p>}
 
       <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1.5">
@@ -102,7 +104,7 @@ export function ScoreSummary({ submissionId, score, totalOverrideCenti, itemCoun
           </Button>
         )}
       </form>
-      <p className="text-xs text-muted">Replaces the sum of the item points. Leave it empty to use the sum.</p>
+      <p className="text-xs text-muted">{project ? "Replaces the AI's score. Leave it empty to use it." : "Replaces the sum of the item points. Leave it empty to use the sum."}</p>
       {(inputError || runner.error) && <Alert tone="danger">{inputError ?? runner.error}</Alert>}
     </div>
   );

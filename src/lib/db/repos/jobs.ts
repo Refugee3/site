@@ -93,7 +93,11 @@ export function claimNextJob(at: number): Job | null {
          WHERE j.status = 'queued' AND j.run_after <= @now
            AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.kind = j.kind AND r.target_id = j.target_id AND r.status = 'running')
            AND (j.kind IN ('extract_key', 'split_scan') OR EXISTS (SELECT 1 FROM answer_keys k WHERE k.assignment_id = j.assignment_id
-                                                  AND k.status = 'ready' AND k.approved_revision = k.revision))
+                                                  AND k.status = 'ready' AND k.approved_revision = k.revision)
+                -- A project without a rubric is graded from its instructions (isReadyToGrade).
+                OR (a.project_mode IS NOT NULL AND EXISTS (SELECT 1 FROM answer_keys k WHERE k.assignment_id = j.assignment_id
+                      AND k.status <> 'processing' AND trim(k.teacher_notes) <> ''
+                      AND NOT EXISTS (SELECT 1 FROM key_items i WHERE i.assignment_id = j.assignment_id))))
          ORDER BY CASE WHEN j.kind IN ('extract_key', 'split_scan') THEN j.priority ELSE ${FIRST_GRADING_PRIORITY} END,
            (SELECT COUNT(*) FROM jobs r JOIN assignments ra ON ra.id = r.assignment_id
              WHERE r.status = 'running' AND ra.teacher_id = a.teacher_id),

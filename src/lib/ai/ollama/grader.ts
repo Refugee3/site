@@ -1,3 +1,7 @@
+import {
+  PROJECT_REVIEW_SYSTEM_PROMPT, ProjectPageNotesSchema, projectNotesReview, projectNotesTask, ProjectReviewSchema, projectTask,
+  renderProjectContext,
+} from "../project";
 import "server-only";
 import type * as z from "zod";
 import { chunkPageCount } from "@/lib/grading/packet";
@@ -481,9 +485,52 @@ export function createOllamaGrader(d: OllamaGraderDeps): OllamaGrader {
       }, o);
       return { output: result.output, meta: meta(result.usage, startedAt, o) };
     },
+
+    // A project fits in one call when its pages do; a longer one is noted batch by batch, then reviewed from the notes.
+    async reviewProject(input, o = {}) {
+      const startedAt = performance.now();
+      const pages = await pagesOf(input.studentPdf, o);
+      const context = renderProjectContext(input);
+      const task = projectTask(input.mode, pages.length, input.rubric.length > 0);
+      if (pages.length <= cfg.pagesPerCall) {
+        const result = await call({
+          system: PROJECT_REVIEW_SYSTEM_PROMPT,
+          text: [context, `The STUDENT PROJECT is attached as ${imageCount(pages.length)}, in page order (image 1 is page 1).`, task].join("\n\n"),
+          images: pages,
+          schema: ProjectReviewSchema,
+          numPredict: PROJECT_NUM_PREDICT,
+        }, o);
+        return { output: result.output, meta: meta(result.usage, startedAt, o) };
+      }
+      const notes: Array<{ first: number; last: number; notes: string }> = [];
+      let usage = NO_USAGE;
+      for (const [first, last] of pageBatches(pages.length, cfg.pagesPerCall)) {
+        const result = await call({
+          system: PROJECT_REVIEW_SYSTEM_PROMPT,
+          text: [context, projectNotesTask(first, last, pages.length)].join("\n\n"),
+          images: pages.slice(first - 1, last),
+          schema: ProjectPageNotesSchema,
+          numPredict: 3_000,
+        }, o);
+        const name = result.output.student_name?.trim();
+        notes.push({ first, last, notes: `${name ? `(Name on these pages: ${name}) ` : ""}${result.output.notes}` });
+        usage = sumUsage(usage, result.usage);
+      }
+      const review = await call({
+        system: PROJECT_REVIEW_SYSTEM_PROMPT,
+        text: [context, projectNotesReview(notes), task].join("\n\n"),
+        images: [],
+        schema: ProjectReviewSchema,
+        numPredict: PROJECT_NUM_PREDICT,
+      }, o);
+      return { output: review.output, meta: meta(sumUsage(usage, review.usage), startedAt, o) };
+    },
   };
   return grader;
 }
+
+/** Room for a project review's write-up and criteria. */
+const PROJECT_NUM_PREDICT = 6_000;
 
 function withRefs(items: Array<{ r: string }>): { items: Array<{ ref: string }> } {
   return { items: items.map((item) => ({ ref: item.r })) };

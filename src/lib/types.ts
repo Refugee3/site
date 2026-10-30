@@ -3,8 +3,11 @@ import type { SpotEvidence } from "@/lib/omr/types";
 
 export const ASSIGNMENT_STATUSES = ["draft", "open", "closed"] as const;
 export type AssignmentStatus = (typeof ASSIGNMENT_STATUSES)[number];
-export const ASSIGNMENT_KINDS = ["homework", "quiz"] as const;
+export const ASSIGNMENT_KINDS = ["homework", "quiz", "project"] as const;
 export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
+/** A project's grading: a score from the instructions or rubric, or written feedback only (no points). */
+export const PROJECT_MODES = ["points", "feedback"] as const;
+export type ProjectMode = (typeof PROJECT_MODES)[number];
 export const GRADING_MODES = ["completion", "accuracy", "blended"] as const;
 export type GradingMode = (typeof GRADING_MODES)[number];
 export const KEY_STATUSES = ["empty", "processing", "ready", "failed"] as const;
@@ -42,6 +45,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface Teacher { id: string; email: string; displayName: string; createdAt: number }
 export interface Assignment { id: string; teacherId: string; title: string; kind: AssignmentKind; instructions: string; status: AssignmentStatus;
+  /** Projects only ("points" or "feedback"); null for homework and quizzes. */
+  projectMode: ProjectMode | null;
   /** The AI writes notes for the student and the teacher; off, it only judges (cheaper). */
   writeNotes: boolean;
   gradingMode: GradingMode; accuracyWeight: number; shareCode: string; maxSubmissions: number; feedbackReleasedAt: number | null;
@@ -108,7 +113,15 @@ export interface Submission { id: string; assignmentId: string; source: "student
   fastLane: boolean;
   /** The class list's spelling of the name, when the name read on the paper (aiName) was matched to the class list. */
   rosterName: string | null;
+  /** A project paper's review (criteria and points); null for homework and quizzes, and before it is reviewed. */
+  projectReview: ProjectReview | null;
   createdAt: number; updatedAt: number }
+/** The AI's review of one project paper, as stored. The written analysis itself is the submission's overallFeedback. */
+export interface ProjectReview { mode: ProjectMode;
+  /** What was scored or commented on: the rubric's items, or the criteria the teacher's instructions name. */
+  criteria: Array<{ name: string; earnedCenti: number | null; maxCenti: number | null; comment: string }>;
+  /** Points mode: the score (sum of the criteria); null in feedback mode or when the review gave no points. */
+  earnedCenti: number | null; maxCenti: number | null }
 export interface Job { id: number; kind: JobKind; targetId: string; assignmentId: string; status: JobStatus; priority: number;
   attempts: number; maxAttempts: number; runAfter: number; maxTokens: number | null; lastError: string | null; createdAt: number; updatedAt: number;
   finishedAt: number | null; paused: boolean }
@@ -119,7 +132,11 @@ export interface ScoreResult { items: ItemScore[]; earnedCenti: number; maxCenti
 
 export type ActionResult<T = undefined> = { ok: true; data?: T; message?: string } | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
 export interface AssignmentFormInput { title: string; kind: AssignmentKind; instructions: string; gradingMode: GradingMode; accuracyWeight: number; sectionsText: string; maxSubmissions: number;
-  writeNotes: boolean }
+  writeNotes: boolean;
+  /** Projects: points or feedback only (ignored for homework and quizzes; omitted: points). */
+  projectMode?: ProjectMode;
+  /** Creating a project: what the AI should grade or write (the key's grading instructions). */
+  gradingInstructions?: string }
 export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boolean; items: Array<{ id: string | null; label: string;
   groupLabel: string; prompt: string; answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string;
   pointsCenti: number; partialCredit: boolean; page: number | null;
@@ -249,7 +266,9 @@ export interface ReviewView { submission: Submission; sections: Section[]; secti
   /** Only while the paper is queued: how many queued papers (of every assignment) the worker takes before it; 0 = next. */
   queue: { position: number } | null;
   /** Only while the paper is being graded: when this run started (epoch ms), and how long a paper typically takes. */
-  gradingTiming: { gradingStartedAt: number; typicalPaperMs: number } | null }
+  gradingTiming: { gradingStartedAt: number; typicalPaperMs: number } | null;
+  /** A project's mode (its review is the submission's projectReview); null for homework and quizzes. */
+  projectMode?: ProjectMode | null }
 export interface SettingsView { sectionsText: string; usage: { calls: number; papers: number; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheWriteTokens: number; estimatedCostUsd: number | null; agentSessions: number; agentActiveSeconds: number } }
 

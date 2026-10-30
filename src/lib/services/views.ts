@@ -318,6 +318,7 @@ export function getReviewView(s: Submission, a: Assignment): ReviewView {
     gradingTiming: s.status === "grading"
       ? { gradingStartedAt: s.gradingStartedAt ?? s.updatedAt, typicalPaperMs: typicalPaperMs(a.id) }
       : null,
+    projectMode: a.kind === "project" ? (a.projectMode ?? "points") : null,
   };
 }
 
@@ -546,7 +547,8 @@ const CSV_COLUMNS = [
  * page). "Earlier attempts" counts the papers folded under each row, so a merge is visible in the export.
  */
 export function buildGradesCsv(a: Assignment): { filename: string; csv: string } {
-  const items = listGradedKeyItems(a.id);
+  // A project's rubric is scored inside its review (see the review page), so it has no per-question columns.
+  const items = a.kind === "project" ? [] : listGradedKeyItems(a.id);
   const resultsBySubmission = listItemsForAssignment(a.id);
   const header = [...CSV_COLUMNS, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
   const rows = organizeBoard(listSubmissions(a.id), listSections(a.id)).flatMap((group) =>
@@ -569,6 +571,12 @@ function csvRow(
   if (!hasGrade(s)) {
     // Not graded yet (or grading failed): leave the score columns empty rather than report a 0.
     return [...identity, "", "", "", "", "", ...trailing, ...items.map(() => "")];
+  }
+  if (a.kind === "project") {
+    const scored = a.projectMode !== "feedback" && s.scoreMaxCenti !== null && s.scoreMaxCenti > 0;
+    return scored
+      ? [...identity, formatPoints(s.scoreEarnedCenti ?? 0), formatPoints(s.scoreMaxCenti), formatPercent(percentTenths(s.scoreEarnedCenti ?? 0, s.scoreMaxCenti!)), "", "", ...trailing]
+      : [...identity, "", "", "", "", "", ...trailing];
   }
   const score = scoreOf(s, a, items, results);
   return [
@@ -631,6 +639,15 @@ function slugify(title: string): string {
 // Shared helpers
 
 function scoreOf(s: Submission, a: Assignment, items: KeyItem[], results: SubmissionItem[]): ScoreResult {
+  if (a.kind === "project") {
+    // A project's score is its review's (stored by the rescoring); feedback-only projects have none.
+    const earned = s.scoreEarnedCenti ?? 0;
+    const max = s.scoreMaxCenti ?? 0;
+    return {
+      items: [], earnedCenti: earned, maxCenti: max, percentTenths: max > 0 ? percentTenths(earned, max) : null,
+      completionCenti: 0, accuracyCenti: 0, totalOverridden: s.totalOverrideCenti !== null, judgedCount: 0,
+    };
+  }
   return computeScore(items, new Map(results.map((result) => [result.itemId, result])), a, s.totalOverrideCenti);
 }
 

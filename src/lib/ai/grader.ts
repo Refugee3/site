@@ -1,3 +1,4 @@
+import type { ProjectReviewInput, ProjectReviewOutput } from "./project";
 import type { AutoMark } from "@/lib/grading/auto-mark";
 import type { ChoiceReading, WriteInReading } from "@/lib/omr/decide";
 import type { IdentityCrop, SpotEvidence, SpotKind } from "@/lib/omr/types";
@@ -243,4 +244,6 @@ export interface Grader {
   transcribeCrops?(i: TranscribeInput, o?: CallOptions): Promise<{ output: CropTranscriptions; meta: AiCallMeta }>;
   /** A scanned blank worksheet: proposes the answer spots of one page (the teacher confirms them). */
   proposeSpots?(i: ProposeSpotsInput, o?: CallOptions): Promise<{ output: SpotProposal; meta: AiCallMeta }>;
+  /** A project paper, reviewed as a whole from the teacher's instructions and rubric (src/lib/ai/project.ts). */
+  reviewProject?(i: ProjectReviewInput, o?: CallOptions): Promise<{ output: ProjectReviewOutput; meta: AiCallMeta }>;
 }

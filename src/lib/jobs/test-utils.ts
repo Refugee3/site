@@ -26,7 +26,7 @@ export const FAKE_META: AiCallMeta = {
  * null` makes a grader that can't grade in one pass (as the hosted agent).
  */
 export function scriptedGrader(
-  o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages" | "readSubmission" | "judgeSubmission" | "transcribeCrops">>
+  o: Partial<Pick<Grader, "engine" | "extractKey" | "gradeSubmission" | "readScanPages" | "readSubmission" | "judgeSubmission" | "transcribeCrops" | "reviewProject">>
     & { gradePacketChunk?: Grader["gradePacketChunk"] | null; readPacketChunk?: Grader["readPacketChunk"] } = {},
 ): Grader {
   const grader: Grader = {
@@ -38,6 +38,7 @@ export function scriptedGrader(
     gradeSubmission: o.gradeSubmission ?? ((input, options) => gradeByReading(grader, input, options)),
     readScanPages: o.readScanPages ?? instantFake.readScanPages,
     transcribeCrops: o.transcribeCrops ?? instantFake.transcribeCrops,
+    reviewProject: o.reviewProject ?? instantFake.reviewProject,
     ...(o.gradePacketChunk === null
       ? {}
       : {

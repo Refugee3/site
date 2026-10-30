@@ -39,7 +39,7 @@ function unusedShareCode(): string {
 /** An assignment with an empty key and, optionally, sections (callers supply canonical keys). */
 export function seedAssignment(
   teacherId: string,
-  o: Partial<Pick<Assignment, "title" | "status" | "gradingMode" | "accuracyWeight" | "maxSubmissions">>
+  o: Partial<Pick<Assignment, "title" | "status" | "gradingMode" | "accuracyWeight" | "maxSubmissions" | "kind" | "projectMode">>
     & { sections?: Array<{ label: string; aliases?: string[]; canonicalKey: string }> } = {},
 ): Assignment {
   const assignment = insertAssignment({
@@ -51,6 +51,8 @@ export function seedAssignment(
     accuracyWeight: o.accuracyWeight ?? 50,
     shareCode: unusedShareCode(),
     maxSubmissions: o.maxSubmissions ?? 500,
+    kind: o.kind,
+    projectMode: o.projectMode,
   });
   createEmptyKey(assignment.id);
   if (o.sections) {

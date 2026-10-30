@@ -10,7 +10,7 @@ import {
   SUBMISSION_STATUSES,
   type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode, type GraderEngine,
   type ItemJudgment, type ItemReviewReason, type JudgedBy, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
-  type SubmissionStatus,
+  type ProjectReview, type SubmissionStatus,
 } from "@/lib/types";
 
 export type NewSubmission = Pick<Submission, "id" | "assignmentId" | "source" | "receiptToken" | "pdfPath" | "originalFilename"
@@ -35,7 +35,9 @@ export interface GradingWrite {
     /** Cut from a scan by the fast lane (omitted = no). */
     fastLane?: boolean;
     /** The class list's spelling the name was matched to (omitted or null: not matched). */
-    rosterName?: string | null };
+    rosterName?: string | null;
+    /** A project paper's review (omitted or null: not a project). */
+    projectReview?: ProjectReview | null };
 }
 
 interface SubmissionRow {
@@ -94,6 +96,7 @@ interface SubmissionRow {
   judge_ms: number | null;
   fast_lane: 0 | 1;
   roster_name: string | null;
+  project_review_json: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -182,6 +185,7 @@ function submissionFromRow(row: SubmissionRow): Submission {
     judgeMs: row.judge_ms,
     fastLane: row.fast_lane === 1,
     rosterName: row.roster_name,
+    projectReview: row.project_review_json ? (JSON.parse(row.project_review_json) as ProjectReview) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -382,6 +386,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
          teacher_summary = @teacher_summary, integrity_note = @integrity_note, unmatched_work = @unmatched_work,
          ai_model = @ai_model, ai_engine = @ai_engine, grader_engine = @grader_engine, usage_json = @usage_json, ai_output_json = @ai_output_json,
          read_ms = @read_ms, judge_ms = @judge_ms, fast_lane = @fast_lane, roster_name = @roster_name,
+         project_review_json = @project_review_json,
          overall_feedback = CASE WHEN overall_feedback_edited = 1 THEN overall_feedback ELSE @overall_feedback END,
          graded_key_revision = @graded_key_revision, graded_guidance_fp = @guidance_fp,
          graded_spot_revision = @graded_spot_revision, graded_at = @at, updated_at = @at,
@@ -417,6 +422,7 @@ export function saveGradingResult(w: GradingWrite): boolean {
         judge_ms: f.readMs === undefined || f.readMs === null ? null : msOrNull(f.judgeMs),
         fast_lane: toBit(f.fastLane === true),
         roster_name: f.rosterName ?? null,
+        project_review_json: f.projectReview ? JSON.stringify(f.projectReview) : null,
         overall_feedback: f.overallFeedback,
         graded_key_revision: w.keyRevision,
         guidance_fp: w.guidanceFingerprint,

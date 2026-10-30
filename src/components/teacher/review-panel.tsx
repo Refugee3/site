@@ -25,6 +25,7 @@ import { ItemCard, itemFormKey } from "./item-card";
 import { OverallFeedbackForm } from "./overall-feedback-form";
 import { EstimatedProgress } from "./progress-widgets";
 import { ScoreSummary } from "./score-summary";
+import { ProjectReviewCard } from "./project-review-card";
 import { plural } from "./text";
 import { describeUnsaved, leaveUnsavedMessage, orderUnsaved } from "./unsaved-edits";
 import { UnsavedEditsContext, useUnsavedEditsTracker } from "./unsaved-edits-context";
@@ -51,6 +52,7 @@ export function ReviewPanel({ assignmentId, view, serverNow }: ReviewPanelProps)
   const [pdfView, setPdfView] = useState<{ page: number | null; jumps: number }>({ page: null, jumps: 0 });
   const pdfRef = useRef<HTMLDivElement>(null);
   const graded = s.status === "graded" || s.status === "needs_review";
+  const project = (view.projectMode ?? null) !== null;
   const [unsavedForms, unsavedTracker] = useUnsavedEditsTracker();
   const unsaved = orderUnsaved(unsavedForms, ["identity", "total", "overall", ...view.items.map((entry) => itemFormKey(entry.item.id))]);
   useLeaveGuard(unsaved.length > 0, leaveUnsavedMessage(unsaved));
@@ -90,22 +92,30 @@ export function ReviewPanel({ assignmentId, view, serverNow }: ReviewPanelProps)
 
             <TeacherNotes view={view} />
 
-            {graded && (
+            {graded && (!project || (view.projectMode === "points" && view.score.maxCenti > 0)) && (
               <Card title="Score">
                 <ScoreSummary
                   submissionId={s.id}
                   score={view.score}
                   totalOverrideCenti={s.totalOverrideCenti}
                   itemCount={view.items.length}
+                  project={project}
                 />
               </Card>
             )}
 
             {graded && (
-              <Card>
-                <OverallFeedbackForm submissionId={s.id} overallFeedback={s.overallFeedback} edited={s.overallFeedbackEdited} />
+              <Card title={project ? (view.projectMode === "feedback" ? "The AI's feedback" : "The AI's review") : undefined}>
+                <OverallFeedbackForm
+                  submissionId={s.id}
+                  overallFeedback={s.overallFeedback}
+                  edited={s.overallFeedbackEdited}
+                  project={project}
+                />
               </Card>
             )}
+
+            {graded && s.projectReview && <ProjectReviewCard review={s.projectReview} />}
 
             <ItemList assignmentId={assignmentId} submissionId={s.id} items={view.items} onShowPage={showPage} />
           </div>
@@ -133,7 +143,7 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
         <h2 className="text-xl font-semibold">{s.studentName ?? "No name"}</h2>
         <span className="text-muted">{section}</span>
         <StatusBadge status={s.status} />
-        {view.stale && <Badge tone="warning">Graded with an older key</Badge>}
+        {view.stale && <Badge tone="warning">{view.projectMode ? "Reviewed with older instructions" : "Graded with an older key"}</Badge>}
         {s.reviewedAt !== null && <Badge tone="success">Checked by you</Badge>}
       </div>
       <p className="text-sm text-muted">
@@ -210,6 +220,14 @@ function StatusNotices({ view }: { view: ReviewView }) {
           {runner.pending && <Spinner className="size-4" />}
         </div>
         {runner.error && <p className="mt-2 font-medium">{runner.error}</p>}
+      </Alert>
+    );
+  }
+
+  if (view.stale && view.projectMode) {
+    return (
+      <Alert tone="warning" title="Reviewed with earlier instructions">
+        You changed how this project is graded since it was reviewed. Regrade it to review it again with the new instructions.
       </Alert>
     );
   }

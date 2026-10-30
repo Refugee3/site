@@ -10,6 +10,8 @@ export interface AssignmentTabsProps {
   needsReviewCount: number;
   /** The key still needs the teacher (empty, failed or not approved). */
   keyNeedsAttention: boolean;
+  /** A project: its key tab is "How to grade" (instructions and an optional rubric), and it has no per-question pages. */
+  project?: boolean;
 }
 
 /**
@@ -17,7 +19,7 @@ export interface AssignmentTabsProps {
  * from `sm` up they stay on one row, scrolling sideways only if the notes make them too wide, with the
  * current tab brought into view.
  */
-export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttention }: AssignmentTabsProps) {
+export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttention, project = false }: AssignmentTabsProps) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
 
@@ -40,7 +42,10 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
       active: pathname === base || pathname.startsWith(`${base}/submissions/`),
       note: needsReviewCount > 0 ? `${needsReviewCount} to check` : null,
     },
-    { href: `${base}/key`, label: "Answer key", active: pathname === `${base}/key`, note: keyNeedsAttention ? "needs you" : null },
+    {
+      href: `${base}/key`, label: project ? "How to grade" : "Answer key", active: pathname === `${base}/key`,
+      note: keyNeedsAttention ? "needs you" : null,
+    },
     {
       href: `${base}/upload`,
       label: "Upload work",
@@ -48,8 +53,8 @@ export function AssignmentTabs({ assignmentId, needsReviewCount, keyNeedsAttenti
       active: pathname === `${base}/upload` || pathname.startsWith(`${base}/scans/`),
       note: null,
     },
-    { href: `${base}/questions`, label: "Questions", active: pathname === `${base}/questions`, note: null },
-    { href: `${base}/lessons`, label: "Lessons", active: pathname === `${base}/lessons`, note: null },
+    ...(project ? [] : [{ href: `${base}/questions`, label: "Questions", active: pathname === `${base}/questions`, note: null }]),
+    ...(project ? [] : [{ href: `${base}/lessons`, label: "Lessons", active: pathname === `${base}/lessons`, note: null }]),
     { href: `${base}/settings`, label: "Settings", active: pathname === `${base}/settings`, note: null },
   ];
 

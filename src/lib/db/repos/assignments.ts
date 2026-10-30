@@ -3,13 +3,15 @@ import { tx } from "@/lib/db/connection";
 import { all, encodePatch, one, run, toBit, updateRow, type ColumnMap } from "@/lib/db/sql";
 import { AppError } from "@/lib/errors";
 import { newId } from "@/lib/ids";
-import type { AiUsage, Assignment, AssignmentKind, AssignmentStatus, GradingMode, Section } from "@/lib/types";
+import type { AiUsage, Assignment, AssignmentKind, AssignmentStatus, GradingMode, ProjectMode, Section } from "@/lib/types";
 
 interface AssignmentRow {
   id: string;
   teacher_id: string;
   title: string;
-  kind: AssignmentKind;
+  kind: "homework" | "quiz";
+  /** Set for projects (stored as kind 'homework'; see migration 20). */
+  project_mode: ProjectMode | null;
   instructions: string;
   write_notes: 0 | 1;
   status: AssignmentStatus;
@@ -36,7 +38,8 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     id: row.id,
     teacherId: row.teacher_id,
     title: row.title,
-    kind: row.kind,
+    kind: row.project_mode ? "project" : row.kind,
+    projectMode: row.project_mode,
     instructions: row.instructions,
     writeNotes: row.write_notes === 1,
     status: row.status,
@@ -63,14 +66,15 @@ function sectionFromRow(row: SectionRow): Section {
 
 export function insertAssignment(
   a: Pick<Assignment, "id" | "teacherId" | "title" | "instructions" | "gradingMode" | "accuracyWeight" | "shareCode" | "maxSubmissions">
-    & Partial<Pick<Assignment, "kind" | "writeNotes">>,
+    & Partial<Pick<Assignment, "kind" | "writeNotes" | "projectMode">>,
 ): Assignment {
   const at = now();
+  const stored = storedKind(a.kind ?? "homework", a.projectMode ?? null);
   const row = one<AssignmentRow>(
-    `INSERT INTO assignments (id, teacher_id, title, kind, instructions, write_notes, grading_mode, accuracy_weight, share_code, max_submissions,
-       created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-    a.id, a.teacherId, a.title, a.kind ?? "homework", a.instructions, toBit(a.writeNotes ?? false), a.gradingMode, a.accuracyWeight, a.shareCode, a.maxSubmissions, at, at,
+    `INSERT INTO assignments (id, teacher_id, title, kind, project_mode, instructions, write_notes, grading_mode, accuracy_weight, share_code,
+       max_submissions, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    a.id, a.teacherId, a.title, stored.kind, stored.projectMode, a.instructions, toBit(a.writeNotes ?? false), a.gradingMode, a.accuracyWeight, a.shareCode, a.maxSubmissions, at, at,
   );
   return assignmentFromRow(row!);
 }
@@ -93,12 +97,17 @@ export function listAssignmentsForTeacher(teacherId: string): Assignment[] {
   ).map(assignmentFromRow);
 }
 
+/** How a kind is stored: a project is kind 'homework' with its mode (points unless given). */
+function storedKind(kind: AssignmentKind, projectMode: ProjectMode | null): { kind: "homework" | "quiz"; projectMode: ProjectMode | null } {
+  return kind === "project" ? { kind: "homework", projectMode: projectMode ?? "points" } : { kind, projectMode: null };
+}
+
 type AssignmentPatch = Pick<Assignment, "title" | "kind" | "instructions" | "writeNotes" | "status" | "gradingMode" | "accuracyWeight" | "shareCode"
   | "maxSubmissions" | "feedbackReleasedAt">;
 
 const ASSIGNMENT_COLUMNS: ColumnMap<AssignmentPatch> = {
   title: "title",
-  kind: "kind",
+  kind: "kind", // written by updateAssignment with project_mode
   instructions: "instructions",
   writeNotes: ["write_notes", toBit],
   status: "status",
@@ -110,8 +119,18 @@ const ASSIGNMENT_COLUMNS: ColumnMap<AssignmentPatch> = {
 };
 
 /** Throws AppError("not_found") when the assignment does not exist. */
-export function updateAssignment(id: string, patch: Partial<AssignmentPatch>): Assignment {
-  const row = updateRow<AssignmentRow>("assignments", { id }, encodePatch(patch, ASSIGNMENT_COLUMNS));
+/** `kind` and `projectMode` are stored together: a kind other than project clears the mode. */
+export function updateAssignment(id: string, patch: Partial<AssignmentPatch> & { projectMode?: ProjectMode | null }): Assignment {
+  const { kind, projectMode, ...rest } = patch;
+  const encoded = encodePatch(rest, ASSIGNMENT_COLUMNS);
+  if (kind !== undefined) {
+    const current = one<{ project_mode: ProjectMode | null }>("SELECT project_mode FROM assignments WHERE id = ?", id);
+    const stored = storedKind(kind, projectMode ?? current?.project_mode ?? null);
+    Object.assign(encoded, { kind: stored.kind, project_mode: stored.projectMode });
+  } else if (projectMode !== undefined) {
+    Object.assign(encoded, { project_mode: projectMode });
+  }
+  const row = updateRow<AssignmentRow>("assignments", { id }, encoded);
   if (!row) throw new AppError("not_found", "Assignment not found.");
   return assignmentFromRow(row);
 }

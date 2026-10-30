@@ -3,7 +3,7 @@ import { formatPoints } from "@/lib/format";
 import { MAX_ITEM_POINTS_CENTI } from "@/lib/grading/scoring";
 import { charLength, truncateChars } from "@/lib/grading/text";
 import { sha256Hex } from "@/lib/ids";
-import { ANSWER_TYPES, type AnswerKey, type AnswerType, type KeyItem, type NewKeyItem, type SaveKeyInput } from "@/lib/types";
+import { ANSWER_TYPES, type AnswerKey, type AssignmentKind, type AnswerType, type KeyItem, type NewKeyItem, type SaveKeyInput } from "@/lib/types";
 
 // Limits shared by AI extraction and the teacher's editor; label and points mirror the key_items CHECKs.
 export const LIMITS = {
@@ -34,6 +34,18 @@ export function defaultPartialCredit(t: AnswerType): boolean {
 /** Approved = ready, saved by the teacher at the current revision, and not empty. */
 export function isKeyApproved(k: AnswerKey, itemCount: number): boolean {
   return k.status === "ready" && k.approvedRevision === k.revision && itemCount >= 1;
+}
+
+/**
+ * Whether papers can be graded now. Homework and quizzes need an approved key. A project needs no key: it is graded from the
+ * teacher's instructions, or from a rubric they uploaded once they approved it (a rubric being read, or read but not
+ * checked yet, holds grading back).
+ */
+export function isReadyToGrade(kind: AssignmentKind, k: AnswerKey, itemCount: number): boolean {
+  if (kind !== "project") return isKeyApproved(k, itemCount);
+  if (k.status === "processing") return false;
+  if (itemCount > 0) return isKeyApproved(k, itemCount);
+  return k.teacherNotes.trim() !== "";
 }
 
 // ---------------------------------------------------------------------------------------------

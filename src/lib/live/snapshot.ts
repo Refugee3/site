@@ -1,7 +1,7 @@
 import type { BoardGroup } from "@/lib/grading/board";
 import { percentTenths } from "@/lib/grading/scoring";
 import type {
-  AnswerKey, Assignment, AssignmentKind, DashboardView, GradingProgress, KeyItem, KeyQuestion, KeyQuestionKind, KeyQuestionStatus, KeyStatus,
+  AnswerKey, Assignment, AssignmentKind, DashboardView, GradingProgress, KeyItem, KeyQuestion, KeyQuestionKind, KeyQuestionStatus, KeyStatus, ProjectMode,
   Scan, ScanSplitMode, ScanSplitProgress, ScanStatus, StatusCounts, SubmissionStatus, WorkerStatus,
 } from "@/lib/types";
 
@@ -85,7 +85,7 @@ export interface LiveStruggling {
 export interface AssignmentLiveSnapshot {
   /** When the server built it (epoch ms): timers count from here. */
   serverNow: number;
-  assignment: { id: string; title: string; kind: AssignmentKind };
+  assignment: { id: string; title: string; kind: AssignmentKind; projectMode: ProjectMode | null };
   key: LiveKey;
   questions: LiveKeyQuestion[];
   /** Current papers by status (as on the board). */
@@ -101,7 +101,7 @@ export interface AssignmentLiveSnapshot {
 
 export interface AssignmentLiveInput {
   now: number;
-  assignment: Pick<Assignment, "id" | "title" | "kind">;
+  assignment: Pick<Assignment, "id" | "title" | "kind" | "projectMode">;
   key: AnswerKey;
   items: readonly KeyItem[];
   approved: boolean;
@@ -127,7 +127,7 @@ export function buildAssignmentLiveSnapshot(i: AssignmentLiveInput): AssignmentL
   const { key, items } = i;
   return {
     serverNow: i.now,
-    assignment: { id: i.assignment.id, title: i.assignment.title, kind: i.assignment.kind },
+    assignment: { id: i.assignment.id, title: i.assignment.title, kind: i.assignment.kind, projectMode: i.assignment.projectMode },
     key: {
       status: key.status,
       approved: i.approved,

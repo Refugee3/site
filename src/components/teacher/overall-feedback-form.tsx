@@ -15,10 +15,12 @@ export interface OverallFeedbackFormProps {
   overallFeedback: string;
   /** The teacher has edited it before, so regrades keep the teacher's version. */
   edited: boolean;
+  /** A project: the field holds the AI's review (longer), labelled as such. */
+  project?: boolean;
 }
 
 /** The note about the whole paper, for the student; it is in the grades CSV ("Overall feedback"). */
-export function OverallFeedbackForm({ submissionId, overallFeedback, edited }: OverallFeedbackFormProps) {
+export function OverallFeedbackForm({ submissionId, overallFeedback, edited, project = false }: OverallFeedbackFormProps) {
   const [text, setText, expectSaved] = useSyncedState(overallFeedback);
   const [saved, setSaved] = useState(false);
   const runner = useActionRunner();
@@ -40,12 +42,12 @@ export function OverallFeedbackForm({ submissionId, overallFeedback, edited }: O
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
       <label htmlFor={inputId} className="text-sm font-medium">
-        Overall feedback (included in the grades CSV)
+        {project ? "The AI's review (edit it before sharing; included in the grades CSV)" : "Overall feedback (included in the grades CSV)"}
       </label>
       <Textarea
         id={inputId}
-        rows={4}
-        maxLength={2000}
+        rows={project ? 14 : 4}
+        maxLength={project ? 20_000 : 2000}
         readOnly={runner.pending}
         value={text}
         onChange={(e) => setText(e.target.value)}

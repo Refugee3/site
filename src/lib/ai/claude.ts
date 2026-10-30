@@ -1,3 +1,4 @@
+import { PROJECT_REVIEW_SYSTEM_PROMPT, projectTask, ProjectReviewSchema, renderProjectContext, type ProjectReviewInput } from "./project";
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
@@ -125,6 +126,25 @@ export function buildExtractionParams(i: ExtractKeyInput, cfg: DirectAiConfig, m
       content: [
         { type: "document", title: "ANSWER KEY", source: pdfSource(i.keyPdf) },
         { type: "text", text: extractionTask(i.assignmentTitle, i.teacherNotes, i.pageCount) },
+      ],
+    }],
+  };
+}
+
+/** A project paper, reviewed as a whole: the project's context (shared by the class, cached), the pages, the task. */
+export function buildProjectReviewParams(i: ProjectReviewInput, cfg: DirectAiConfig, maxTokens: number): BetaMessageStreamParams {
+  if (i.studentPdf.byteLength > PDF_BYTE_BUDGET) {
+    throw new AiError("request_too_large", PDF_TOO_LARGE.student, { retryable: false });
+  }
+  return {
+    ...commonParams(cfg, cfg.model, maxTokens, outputFormat(ProjectReviewSchema), cfg.effort),
+    system: PROJECT_REVIEW_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: [
+        cachedText(renderProjectContext(i), cfg),
+        document("STUDENT PROJECT", i.studentPdf, DOCUMENT_CONTEXT.student),
+        { type: "text", text: projectTask(i.mode, i.studentPageCount, i.rubric.length > 0) },
       ],
     }],
   };
@@ -359,6 +379,9 @@ export function createClaudeGrader(runner: MessageRunner, cfg: DirectAiConfig): 
     },
     async proposeSpots(input, o = {}) {
       return call(buildProposeSpotsParams(input, cfg), SpotProposalSchema, o.signal);
+    },
+    async reviewProject(input, o = {}) {
+      return call(buildProjectReviewParams(input, cfg, o.maxTokens ?? cfg.maxTokens), ProjectReviewSchema, o.signal);
     },
   };
   return grader;

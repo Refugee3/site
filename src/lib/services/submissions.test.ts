@@ -264,7 +264,7 @@ describe("overrides and feedback", () => {
     const s = seedSubmission(assignment.id);
     setOverallFeedback(s, "  Great effort.  ");
     expect(getSubmission(s.id)).toMatchObject({ overallFeedback: "Great effort.", overallFeedbackEdited: true });
-    expect(() => setOverallFeedback(s, "x".repeat(2001))).toThrow(expect.objectContaining({ code: "validation" }));
+    expect(() => setOverallFeedback(s, "x".repeat(20_001))).toThrow(expect.objectContaining({ code: "validation" }));
   });
 });
 

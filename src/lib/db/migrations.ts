@@ -636,6 +636,18 @@ CREATE TABLE overflow_spend (
 ALTER TABLE key_items ADD COLUMN graded INTEGER NOT NULL DEFAULT 1 CHECK (graded IN (0,1));
 `,
   },
+  {
+    version: 20,
+    name: "projects",
+    sql: `
+-- Projects: an assignment graded from the teacher's instructions (and an optional rubric or key) by one AI review per paper,
+-- either with points or as written feedback only. kind's CHECK can't be widened in place, so a project is stored as kind
+-- 'homework' with project_mode set (the repository reads it back as kind 'project').
+ALTER TABLE assignments ADD COLUMN project_mode TEXT CHECK (project_mode IS NULL OR project_mode IN ('points','feedback'));
+-- The AI's review of a project paper: the criteria it scored (or commented on) and the points, as stored JSON.
+ALTER TABLE submissions ADD COLUMN project_review_json TEXT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

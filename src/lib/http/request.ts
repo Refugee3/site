@@ -59,13 +59,13 @@ function tooLarge(): AppError {
 }
 
 /** The files sent under `field`, 1..max of them, in the order they were sent. */
-export async function formFiles(fd: FormData, field: string, max: number): Promise<UploadedFile[]> {
+export async function formFiles(fd: FormData, field: string, max: number, o: { optional?: boolean } = {}): Promise<UploadedFile[]> {
   const entries = fd.getAll(field);
   if (entries.some((entry) => typeof entry === "string")) {
     throw new AppError("validation", "Send the files as file uploads.");
   }
   const files = entries as File[];
-  if (files.length === 0) throw new AppError("validation", "Choose a file to upload.");
+  if (files.length === 0 && !o.optional) throw new AppError("validation", "Choose a file to upload.");
   if (files.length > max) throw new AppError("validation", `Upload at most ${max} ${max === 1 ? "file" : "files"} at a time.`);
   if (files.some((file) => file.size === 0)) throw new AppError("validation", "One of the files is empty.");
   return Promise.all(files.map(async (file) => ({ filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
@@ -89,11 +89,11 @@ export async function readUploadForm(
   req: Request,
   field: string,
   maxFiles: number,
-  o: { maxBytes?: number } = {},
+  o: { maxBytes?: number; filesOptional?: boolean } = {},
 ): Promise<{ files: UploadedFile[]; text: (name: string) => string | undefined }> {
   const maxBytes = o.maxBytes ?? getConfig().maxUploadBytes;
   const fd = await readLimitedFormData(req, maxBytes + MULTIPART_OVERHEAD_BYTES);
-  const files = await formFiles(fd, field, maxFiles);
+  const files = await formFiles(fd, field, maxFiles, { optional: o.filesOptional });
   const totalBytes = files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
   if (totalBytes > maxBytes) {
     throw new AppError("too_large", `Uploads can be at most ${maxBytes / 1_048_576} MB in total.`);

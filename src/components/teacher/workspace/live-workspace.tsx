@@ -1,13 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { AutoRefresh } from "@/components/auto-refresh";
-import { kindNoun } from "@/lib/format";
+import { formatPoints, kindNoun, PROJECT_MODE_LABEL } from "@/lib/format";
 import type { AssignmentLiveSnapshot } from "@/lib/live/snapshot";
 import { plural } from "../text";
 import { useEventSource } from "../use-event-source";
 import { GradingBody } from "./grading-card";
+import { ProjectInstructionsCard } from "../project-instructions";
 import { KeyCardBody } from "./key-card";
 import { WorkspaceStep, type StepState } from "./step";
 import { StudentsWorkBody } from "./students-work-card";
@@ -58,22 +60,31 @@ export function LiveWorkspace({ initial, keyPageCount, onePassAvailable }: LiveW
   const gradingState: StepState = counts.total === 0 && scans.length === 0 ? "waiting" : gradingActive || counts.needs_review > 0 ? "current" : "done";
   const busy = key.status === "processing" || gradingActive;
   const noun = kindNoun(snapshot.assignment.kind, true);
+  const project = snapshot.assignment.kind === "project";
 
   return (
     <div className="flex flex-col">
       {/* Status changes only (never the ticking timers), read out once each. */}
       <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement(snapshot)}</p>
 
-      <WorkspaceStep number={1} id="key" title="Answer key" state={keyState} status={keyStatusLine(snapshot, pendingQuestions)}>
-        <KeyCardBody assignmentId={id} keyState={key} questions={snapshot.questions} serverNow={snapshot.serverNow} />
-      </WorkspaceStep>
+      {project ? (
+        <WorkspaceStep number={1} id="key" title="How to grade it" state={keyState} status={projectStatusLine(snapshot)}>
+          <ProjectStepBody assignmentId={id} snapshot={snapshot} />
+        </WorkspaceStep>
+      ) : (
+        <WorkspaceStep number={1} id="key" title="Answer key" state={keyState} status={keyStatusLine(snapshot, pendingQuestions)}>
+          <KeyCardBody assignmentId={id} keyState={key} questions={snapshot.questions} serverNow={snapshot.serverNow} />
+        </WorkspaceStep>
+      )}
 
       <WorkspaceStep
         number={2}
         id="papers"
         title="Students' work"
         state={papersState}
-        status={counts.total > 0 ? `${plural(counts.total, "paper")} uploaded` : key.approved ? "Ready for your students' work" : "After the key is approved"}
+        status={counts.total > 0
+          ? `${plural(counts.total, "paper")} uploaded`
+          : key.approved ? "Ready for your students' work" : project ? "After you say how to grade it" : "After the key is approved"}
       >
         <StudentsWorkBody
           assignmentId={id}
@@ -103,6 +114,44 @@ function serverRenderedKey(s: AssignmentLiveSnapshot): string {
     s.struggling.map((q) => [q.itemId, q.missedTenths]),
     s.scans.map((scan) => [scan.id, scan.status, scan.papers]),
   ]);
+}
+
+function projectStatusLine(s: AssignmentLiveSnapshot): string {
+  const { key } = s;
+  if (key.approved) return key.itemCount > 0 ? "Ready: rubric approved" : "Ready";
+  if (key.status === "processing") return "Reading your rubric…";
+  if (key.status === "ready") return "Check and approve the rubric";
+  return "Start here";
+}
+
+/**
+ * A project's first step: how the AI grades it. Ready, it shows the instructions (and the rubric's size); without
+ * instructions, the box to write them; a rubric being read or waiting for approval is handled like an answer key.
+ */
+function ProjectStepBody({ assignmentId, snapshot }: { assignmentId: string; snapshot: AssignmentLiveSnapshot }) {
+  const { key } = snapshot;
+  const mode = snapshot.assignment.projectMode ?? "points";
+  const keyHref = `/teacher/assignments/${assignmentId}/key`;
+  if (key.status === "processing" || (key.status === "ready" && !key.approved) || (key.status === "failed" && !key.approved && key.instructions === "")) {
+    return <KeyCardBody assignmentId={assignmentId} keyState={key} questions={snapshot.questions} serverNow={snapshot.serverNow} />;
+  }
+  if (!key.approved) {
+    return <ProjectInstructionsCard assignmentId={assignmentId} mode={mode} instructions={key.instructions} hasRubric={false} reviewedCount={0} />;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm">
+        <span className="font-semibold">{PROJECT_MODE_LABEL[mode]}</span>
+        {key.itemCount > 0 && <span className="text-muted"> · rubric of {plural(key.itemCount, "item")}, {formatPoints(key.totalPointsCenti)} points</span>}
+      </p>
+      {key.instructions !== "" && (
+        <p className="line-clamp-4 whitespace-pre-wrap rounded-md border border-line bg-subtle px-3 py-2 text-sm text-ink">{key.instructions}</p>
+      )}
+      <Link href={keyHref} className="inline-flex min-h-11 items-center self-start text-sm font-medium sm:min-h-0">
+        Change how it&apos;s graded
+      </Link>
+    </div>
+  );
 }
 
 function keyStatusLine(s: AssignmentLiveSnapshot, pendingQuestions: number): string {

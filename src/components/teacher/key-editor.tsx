@@ -36,6 +36,8 @@ export interface KeyEditorProps {
   kind: AssignmentKind;
 }
 
+// A project's rubric: its instructions have their own card (ProjectInstructionsCard), so the editor doesn't show them.
+
 // Dense controls from the sm breakpoint up; phones keep 44 px targets and 16 px text (no zoom on focus).
 const DENSE = "sm:min-h-9 sm:py-1.5 sm:text-sm";
 
@@ -155,6 +157,7 @@ export function KeyEditor(props: KeyEditorProps) {
     <div className="flex flex-col gap-4">
       {/* Locked while saving: the saved key replaces every row when it comes back, so later typing would be lost. */}
       <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-4">
+        {kind !== "project" && (<>
         <Field
           label="Grading instructions (optional)"
           htmlFor="key-teacher-notes"
@@ -170,6 +173,7 @@ export function KeyEditor(props: KeyEditorProps) {
           />
         </Field>
         <ScopeSuggestion scope={scope} rows={rows} labels={labels} onApply={applyScope} />
+        </>)}
 
         {gradedCount > 0 && (
           <Alert tone="info">
@@ -224,7 +228,7 @@ export function KeyEditor(props: KeyEditorProps) {
         <div className="flex flex-wrap items-center gap-3">
           <Button disabled={runner.pending} onClick={save}>
             {runner.pending && <Spinner className="size-4" />}
-            Save and approve the key
+            {kind === "project" ? "Save and approve the rubric" : "Save and approve the key"}
           </Button>
           <p role="status" className="text-sm text-muted">
             {saveStatus({ pending: runner.pending, dirty, approved, savedMessage })}

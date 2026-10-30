@@ -7,6 +7,7 @@ import {
 } from "./grader";
 import { itemRefs } from "./prompts";
 import { gradeByReading, gradePacketByReading } from "./read-then-mark";
+import type { ProjectReviewInput, ProjectReviewOutput } from "./project";
 import type { JudgingOutput, KeyExtraction, PacketReadingOutput, ReadingItem, ReadingOutput, ScanPages } from "./schemas";
 
 // AI_MODE=fake: a deterministic stand-in so the whole flow runs without an API key. Every "random"
@@ -96,6 +97,11 @@ export function createFakeGrader(o: FakeGraderOptions = {}): Grader {
         },
         meta,
       };
+    },
+    async reviewProject(input, options = {}) {
+      const seed = seedFor(input.studentPdf);
+      const meta = await simulateCall(seed, options);
+      return { output: fakeProjectReview(seed, input), meta };
     },
     async proposeSpots(input, options = {}) {
       // One write-in spot per key item, stacked down the page, for the teacher to move onto the real answer spots.
@@ -402,4 +408,30 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** A project review: the rubric's items (or three criteria) scored from the seed, or comments only for feedback. */
+function fakeProjectReview(seed: Seed, input: ProjectReviewInput): ProjectReviewOutput {
+  const named = input.rubric.length > 0
+    ? input.rubric.map((item) => ({ name: item.label, possible: item.pointsCenti / 100 }))
+    : [{ name: "Content", possible: 40 }, { name: "Organization", possible: 30 }, { name: "Presentation", possible: 30 }];
+  const criteria = named.map((c, i) => {
+    const share = 0.6 + fraction(seed(`criterion:${i}`)) * 0.4;
+    return input.mode === "feedback"
+      ? { name: c.name, points_awarded: null, points_possible: null, comment: `Practice feedback on ${c.name.toLowerCase()}.` }
+      : { name: c.name, points_awarded: Math.round(c.possible * share * 2) / 2, points_possible: c.possible, comment: `Practice comment on ${c.name.toLowerCase()}.` };
+  });
+  return {
+    student: fakeStudent(seed, input.sections.map((s) => s.label)),
+    document_check: { match: "matches", pages_appear_missing: false, note: "" },
+    integrity: { grader_directed_text_found: false, excerpt: "" },
+    criteria,
+    analysis: input.mode === "feedback"
+      ? "Practice analysis: the project states its question clearly and supports it with examples. The conclusion could connect back to the evidence more directly."
+      : "Practice review: solid content and clear organization; the presentation could be tighter.",
+    teacher_summary: input.mode === "feedback" ? "Clear question and examples; conclusion needs work." : "Solid project with minor presentation issues.",
+    confidence: "high",
+    needs_teacher_check: false,
+    check_reason: "",
+  };
 }

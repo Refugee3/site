@@ -28,6 +28,8 @@ export interface KeyUploadProps {
   onUploaded?: () => void;
   /** The key's current grading instructions, shown in the "Instructions for the AI" box and sent (as edited) with the key. */
   instructions?: string;
+  /** No "Instructions for the AI" box (a project's instructions have their own card); the stored ones are kept. */
+  hideInstructions?: boolean;
   /** A "read the stored file again" button next to the upload button, which sends the box's instructions too. */
   retry?: { assignmentId: string; label: string; confirmText?: string };
 }
@@ -74,7 +76,7 @@ export function KeyUpload(props: KeyUploadProps) {
         }
         body.append("file", prepared, prepared.name);
       }
-      body.append("instructions", instructions);
+      if (!props.hideInstructions) body.append("instructions", instructions);
       const result = await uploadWithProgress(uploadUrl, body, setProgress);
       if (result.status === 202) {
         onUploaded?.();
@@ -90,7 +92,9 @@ export function KeyUpload(props: KeyUploadProps) {
 
   return (
     <div className="flex w-full flex-col gap-3">
-      <KeyInstructionsField id={`${formatsId}-instructions`} value={instructions} onChange={setInstructions} disabled={busy || disabled} />
+      {!props.hideInstructions && (
+        <KeyInstructionsField id={`${formatsId}-instructions`} value={instructions} onChange={setInstructions} disabled={busy || disabled} />
+      )}
       {zoneTitle ? (
         <DropZone
           onFiles={(files) => void upload(files)}
@@ -134,7 +138,7 @@ export function KeyUpload(props: KeyUploadProps) {
               label={props.retry.label}
               confirmText={props.retry.confirmText}
               variant="secondary"
-              instructions={instructions}
+              instructions={props.hideInstructions ? undefined : instructions}
             />
           )}
           </div>

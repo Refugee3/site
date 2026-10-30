@@ -3,13 +3,18 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
 import { DropZone } from "@/components/ui/drop-zone";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_FORMATS } from "@/lib/client/upload-files";
-import type { AssignmentKind } from "@/lib/types";
+import type { AssignmentKind, ProjectMode } from "@/lib/types";
 import { KeyInstructionsField } from "./key-instructions-field";
 import { useLeaveGuard } from "./use-leave-guard";
+
+function kindName(kind: AssignmentKind): string {
+  return kind === "quiz" ? "quiz" : kind === "project" ? "project" : "homework";
+}
 
 /** The created assignment, as POST /api/teacher/assignments answers 201. */
 function parseCreated(json: unknown): { workspaceUrl: string } | null {
@@ -20,6 +25,12 @@ function parseCreated(json: unknown): { workspaceUrl: string } | null {
 const KINDS: Array<{ value: AssignmentKind; label: string }> = [
   { value: "homework", label: "Homework" },
   { value: "quiz", label: "Quiz" },
+  { value: "project", label: "Project" },
+];
+
+const PROJECT_MODES: Array<{ value: ProjectMode; label: string }> = [
+  { value: "points", label: "Score with points" },
+  { value: "feedback", label: "Feedback only (no points)" },
 ];
 
 /**
@@ -30,6 +41,8 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
   const router = useRouter();
   const [kind, setKind] = useState<AssignmentKind>(defaultKind);
   const [instructions, setInstructions] = useState("");
+  const [projectMode, setProjectMode] = useState<ProjectMode>("points");
+  const project = kind === "project";
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opening, startOpening] = useTransition();
@@ -52,6 +65,7 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
       }
     }
     body.append("instructions", instructions);
+    if (project) body.append("projectMode", projectMode);
     const abort = new AbortController();
     controller.current = abort;
     setProgress(0);
@@ -73,7 +87,7 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
   return (
     <section aria-labelledby="new-from-key-heading" className="flex flex-col gap-3 rounded-md border border-line bg-surface p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="new-from-key-heading" className="text-lg font-semibold">Start from an answer key</h2>
+        <h2 id="new-from-key-heading" className="text-lg font-semibold">{project ? "Start a project" : "Start from an answer key"}</h2>
         <fieldset disabled={busy} className="min-w-0">
           <legend className="sr-only">Type</legend>
           <div className="inline-flex rounded-lg border border-line-strong bg-subtle p-0.5">
@@ -100,16 +114,55 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
           </div>
         </fieldset>
       </div>
-      <KeyInstructionsField id="new-from-key-instructions" value={instructions} onChange={setInstructions} disabled={busy} />
+      {project && (
+        <fieldset disabled={busy} className="flex flex-wrap gap-2">
+          <legend className="sr-only">How projects are graded</legend>
+          {PROJECT_MODES.map((option) => (
+            <label
+              key={option.value}
+              className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-line-strong bg-surface px-3 text-sm font-medium has-checked:border-brand-600 has-checked:bg-brand-50 sm:min-h-9"
+            >
+              <input
+                type="radio"
+                name="new-project-mode"
+                value={option.value}
+                checked={projectMode === option.value}
+                onChange={() => setProjectMode(option.value)}
+                className="size-4 accent-brand-600"
+              />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      <KeyInstructionsField
+        id="new-from-key-instructions"
+        value={instructions}
+        onChange={setInstructions}
+        disabled={busy}
+        project={project ? projectMode : undefined}
+      />
       <DropZone
         onFiles={(files) => void start(files)}
         busy={busy}
-        busyLabel={opening ? "Opening your new " + (kind === "quiz" ? "quiz" : "homework") + "…" : `Uploading the key… ${Math.round((progress ?? 0) * 100)}%`}
-        title={`Drop an answer key to start a new ${kind === "quiz" ? "quiz" : "homework"}`}
-        hint={`${UPLOAD_FORMATS}. The AI reads it, asks you anything it needs, and names the ${kind === "quiz" ? "quiz" : "homework"} for you.`}
-        buttonLabel="Choose the answer key"
+        busyLabel={opening ? `Opening your new ${kindName(kind)}…` : `Uploading… ${Math.round((progress ?? 0) * 100)}%`}
+        title={project ? "Drop a rubric (optional)" : `Drop an answer key to start a new ${kindName(kind)}`}
+        hint={project
+          ? `${UPLOAD_FORMATS}. A project needs no answer key: your instructions above are enough.`
+          : `${UPLOAD_FORMATS}. The AI reads it, asks you anything it needs, and names the ${kindName(kind)} for you.`}
+        buttonLabel={project ? "Choose a rubric" : "Choose the answer key"}
         inputId="dashboard-key-drop"
       />
+      {project && (
+        <Button
+          className="self-start"
+          disabled={busy || instructions.trim() === ""}
+          onClick={() => void start([])}
+          title={instructions.trim() === "" ? "Write the instructions first" : undefined}
+        >
+          Create project without a rubric
+        </Button>
+      )}
       <div aria-live="polite" className="empty:hidden">
         {error && <Alert tone="danger">{error}</Alert>}
       </div>

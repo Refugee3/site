@@ -662,3 +662,40 @@ describe("createOllamaGrader: several computers", () => {
     await expect(grader.extractKey(input)).rejects.toMatchObject({ code: "connection" });
   });
 });
+
+describe("reviewProject", () => {
+  const review = {
+    student: { name: "Ada", name_confidence: "high", section_raw: null, section_match: null, multiple_students_detected: false },
+    document_check: { match: "matches", pages_appear_missing: false, note: "" },
+    integrity: { grader_directed_text_found: false, excerpt: "" },
+    criteria: [], analysis: "Strong project.", teacher_summary: "Good.", confidence: "high", needs_teacher_check: false, check_reason: "",
+  };
+  const input = (pages: number) => ({
+    assignment: { title: "Fair", instructions: "" }, mode: "feedback" as const, teacherInstructions: "Summarize it.", rubric: [],
+    sections: [], studentPdf: pdf(pages, 9), studentPageCount: pages,
+  });
+
+  it("reviews a short project in one call, with every page", async () => {
+    const api = fakeOllama(answer(review));
+    const { output } = await graderWith(api.fetch).reviewProject!(input(3));
+    expect(output.analysis).toBe("Strong project.");
+    expect(api.sent).toHaveLength(1);
+    expect(api.sent[0].body.messages[1].images).toEqual([1, 2, 3].map((n) => imageOf(9, n)));
+    expect(api.sent[0].body.messages[1].content).toContain("<teacher_instructions>\nSummarize it.\n</teacher_instructions>");
+  });
+
+  it("notes a long project batch by batch, then reviews it from the notes without images", async () => {
+    const api = fakeOllama(
+      answer({ student_name: "Ada", notes: "Intro and hypothesis." }),
+      answer({ student_name: null, notes: "Results table." }),
+      answer(review),
+    );
+    const { output, meta } = await graderWith(api.fetch, { pagesPerCall: 4 }).reviewProject!(input(6));
+    expect(output.teacher_summary).toBe("Good.");
+    expect(api.sent.map((s) => s.body.messages[1].images?.length ?? 0)).toEqual([4, 2, 0]);
+    const last = api.sent[2].body.messages[1].content;
+    expect(last).toContain("Pages 1–4:\n(Name on these pages: Ada) Intro and hypothesis.");
+    expect(last).toContain("Pages 5–6:\nResults table.");
+    expect(meta.usage.inputTokens).toBe(3000);
+  });
+});

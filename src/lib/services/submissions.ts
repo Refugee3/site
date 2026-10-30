@@ -32,7 +32,8 @@ import {
 } from "@/lib/types";
 
 const MAX_STUDENT_NAME = 120;
-const MAX_OVERALL_FEEDBACK = 2000;
+/** Room for a project's review (homework and quiz feedback is much shorter). */
+const MAX_OVERALL_FEEDBACK = 20_000;
 const MAX_ITEM_NOTE = 1000;
 const REGRADABLE: ReadonlySet<SubmissionStatus> = new Set(["graded", "needs_review", "failed"]);
 const DUPLICATE_MESSAGE = "This exact file was already submitted for this assignment.";
@@ -76,9 +77,11 @@ export async function storeTeacherPaper(
   }
 }
 
-export function assertKeyApproved(a: Pick<Assignment, "id">): void {
+export function assertKeyApproved(a: Pick<Assignment, "id"> & Partial<Pick<Assignment, "kind">>): void {
   if (!loadKeyState(a.id).approved) {
-    throw new AppError("key_not_ready", "Approve the answer key before uploading papers.");
+    throw new AppError("key_not_ready", a.kind === "project"
+      ? "Write the project's grading instructions (or approve its rubric) before uploading projects."
+      : "Approve the answer key before uploading papers.");
   }
 }
 
@@ -356,6 +359,10 @@ export function rescoreAssignment(assignmentId: string): void {
 }
 
 function writeScore(s: Submission, a: Assignment, items: KeyItem[], results: SubmissionItem[]): void {
+  if (a.kind === "project") {
+    updateSubmission(s.id, projectScore(s, a));
+    return;
+  }
   const score = computeScore(items, new Map(results.map((r) => [r.itemId, r])), a, s.totalOverrideCenti);
   updateSubmission(s.id, {
     scoreEarnedCenti: score.earnedCenti,
@@ -363,6 +370,19 @@ function writeScore(s: Submission, a: Assignment, items: KeyItem[], results: Sub
     completionCenti: score.completionCenti,
     accuracyCenti: score.accuracyCenti,
   });
+}
+
+/**
+ * A project paper's score: the review's points (the teacher's total override wins, up to the maximum), or none at all for a
+ * feedback-only project and for a paper not reviewed yet.
+ */
+function projectScore(s: Submission, a: Assignment): Pick<Submission, "scoreEarnedCenti" | "scoreMaxCenti" | "completionCenti" | "accuracyCenti"> {
+  const review = s.projectReview;
+  if (a.projectMode === "feedback" || !review || review.maxCenti === null || review.maxCenti <= 0) {
+    return { scoreEarnedCenti: null, scoreMaxCenti: null, completionCenti: null, accuracyCenti: null };
+  }
+  const earned = s.totalOverrideCenti !== null ? Math.min(Math.max(s.totalOverrideCenti, 0), review.maxCenti) : (review.earnedCenti ?? 0);
+  return { scoreEarnedCenti: earned, scoreMaxCenti: review.maxCenti, completionCenti: null, accuracyCenti: null };
 }
 
 /** Re-resolves the AI-read section of every paper after the teacher changed the section list. */

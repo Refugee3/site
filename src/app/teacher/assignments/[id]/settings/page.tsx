@@ -24,6 +24,7 @@ export default async function SettingsPage(props: PageProps<"/teacher/assignment
     sectionsText: view.sectionsText,
     maxSubmissions: assignment.maxSubmissions,
     writeNotes: assignment.writeNotes,
+    projectMode: assignment.projectMode ?? undefined,
   };
 
   return (

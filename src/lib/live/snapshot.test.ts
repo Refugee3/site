@@ -35,7 +35,7 @@ function question(o: Partial<KeyQuestion> = {}): KeyQuestion {
 function input(o: Partial<AssignmentLiveInput> = {}): AssignmentLiveInput {
   return {
     now: NOW,
-    assignment: { id: "a1", title: "Untitled quiz", kind: "quiz" },
+    assignment: { id: "a1", title: "Untitled quiz", kind: "quiz", projectMode: null },
     key: key(),
     items: [
       makeKeyItem({ id: "i1", label: "1", pointsCenti: 200, answerSource: "key", aiConfidence: "high" }),
@@ -60,7 +60,7 @@ describe("buildAssignmentLiveSnapshot", () => {
   it("summarizes the key and carries the AI's questions", () => {
     const s = buildAssignmentLiveSnapshot(input());
     expect(s.serverNow).toBe(NOW);
-    expect(s.assignment).toEqual({ id: "a1", title: "Untitled quiz", kind: "quiz" });
+    expect(s.assignment).toEqual({ id: "a1", title: "Untitled quiz", kind: "quiz", projectMode: null });
     expect(s.key).toEqual({
       status: "ready", approved: false, updatedAt: NOW - 30_000, itemCount: 3, totalPointsCenti: 450, aiProposedCount: 1, uncertainCount: 2,
       pageCount: 2, filename: "key.pdf", errorMessage: null, aiNotes: "Check item 4.", instructions: "", locked: false, extraction: null,
@@ -158,7 +158,7 @@ describe("assignmentLiveSignature", () => {
     const base = assignmentLiveSignature(buildAssignmentLiveSnapshot(input({ progress })));
     const changes: Array<Partial<AssignmentLiveInput>> = [
       { progress: { ...progress, done: 2, queued: 2 } },
-      { assignment: { id: "a1", title: "Plants", kind: "quiz" } },
+      { assignment: { id: "a1", title: "Plants", kind: "quiz", projectMode: null } },
       { questions: [question({ status: "answered", answer: "A cell" })] },
       { key: key({ updatedAt: NOW }) },
       { approved: true },

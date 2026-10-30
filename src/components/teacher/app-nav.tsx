@@ -4,12 +4,13 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { cx } from "@/components/ui/cx";
 
-type NavKey = "all" | "homework" | "quiz" | "settings";
+type NavKey = "all" | "homework" | "quiz" | "project" | "settings";
 
 const ITEMS: Array<{ key: NavKey; href: string; label: string }> = [
   { key: "all", href: "/teacher", label: "Assignments" },
   { key: "homework", href: "/teacher?type=homework", label: "Homework" },
   { key: "quiz", href: "/teacher?type=quiz", label: "Quizzes" },
+  { key: "project", href: "/teacher?type=project", label: "Projects" },
   { key: "settings", href: "/teacher/settings", label: "Settings" },
 ];
 
@@ -17,6 +18,7 @@ function activeKey(pathname: string, type: string | null): NavKey {
   if (pathname.startsWith("/teacher/settings")) return "settings";
   if (pathname === "/teacher" && type === "homework") return "homework";
   if (pathname === "/teacher" && type === "quiz") return "quiz";
+  if (pathname === "/teacher" && type === "project") return "project";
   return "all";
 }
 

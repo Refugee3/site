@@ -1,4 +1,4 @@
-import type { AnswerType, AssignmentKind, Attempt, Correctness, ItemOutcome, ItemReviewReason, SubmissionStatus } from "@/lib/types";
+import type { AnswerType, AssignmentKind, ProjectMode, Attempt, Correctness, ItemOutcome, ItemReviewReason, SubmissionStatus } from "@/lib/types";
 
 const NONE = "—";
 
@@ -35,16 +35,20 @@ export function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** "Homework" / "Quiz": the assignment's badge and form label. */
-export const KIND_LABEL: Record<AssignmentKind, string> = { homework: "Homework", quiz: "Quiz" };
+/** "Homework" / "Quiz" / "Project": the assignment's badge and form label. */
+export const KIND_LABEL: Record<AssignmentKind, string> = { homework: "Homework", quiz: "Quiz", project: "Project" };
 
-/** The lowercase noun for wording that follows the kind: "homework" (never plural) or "quiz"/"quizzes". */
+/** How a project is graded, as its badge and header say it. */
+export const PROJECT_MODE_LABEL: Record<ProjectMode, string> = { points: "Score with points", feedback: "Feedback only (no points)" };
+
+/** The lowercase noun for wording that follows the kind: "homework" (never plural), "quiz"/"quizzes" or "project"/"projects". */
 export function kindNoun(kind: AssignmentKind, plural = false): string {
   if (kind === "homework") return "homework";
+  if (kind === "project") return plural ? "projects" : "project";
   return plural ? "quizzes" : "quiz";
 }
 
-/** The upload buttons: "Upload homework" / "Upload quizzes". */
+/** The upload buttons: "Upload homework" / "Upload quizzes" / "Upload projects". */
 export function uploadLabel(kind: AssignmentKind): string {
   return `Upload ${kindNoun(kind, true)}`;
 }

@@ -20,6 +20,8 @@ export interface BulkActionsProps {
   /** Papers whose circled answers weren't read from the blank worksheet's latest saved answer spots. */
   spotsStaleCount: number;
   failedCount: number;
+  /** A project: no per-question stats to download, and stale means reviewed with earlier instructions. */
+  project?: boolean;
   hasPapers: boolean;
 }
 
@@ -27,12 +29,15 @@ export interface BulkActionsProps {
  * Whole-assignment actions above the board: regrade stale papers, those graded before the blank worksheet's answer spots
  * were saved or before the latest corrections, retry failed ones, export grades.
  */
-export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, spotsStaleCount, failedCount, hasPapers }: BulkActionsProps) {
+export function BulkActions(props: BulkActionsProps) {
+  const { assignmentId, staleCount, guidanceStaleCount, spotsStaleCount, failedCount, hasPapers, project = false } = props;
   const runner = useActionRunner();
   const [message, setMessage] = useState<string | null>(null);
 
   function regradeStale() {
-    const question = `Regrade ${plural(staleCount, "paper")} graded with an earlier version of the answer key? Your overrides and edits are kept.`;
+    const question = project
+      ? `Review ${plural(staleCount, "project")} again with your new instructions? Your edits to the reviews are kept.`
+      : `Regrade ${plural(staleCount, "paper")} graded with an earlier version of the answer key? Your overrides and edits are kept.`;
     if (!window.confirm(question)) return;
     setMessage(null);
     runner.run(
@@ -58,7 +63,7 @@ export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, spot
             size="sm"
             disabled={runner.pending}
             onClick={regradeStale}
-            title="These papers were graded before you changed the answer key."
+            title={project ? "These projects were reviewed before you changed how to grade them." : "These papers were graded before you changed the answer key."}
           >
             Regrade stale ({staleCount})
           </Button>
@@ -73,7 +78,7 @@ export function BulkActions({ assignmentId, staleCount, guidanceStaleCount, spot
             Download grades (CSV)
           </LinkButton>
         )}
-        {hasPapers && (
+        {hasPapers && !project && (
           <LinkButton href={`/api/teacher/assignments/${assignmentId}/export/questions`} variant="secondary" size="sm" download>
             Download question stats (CSV)
           </LinkButton>

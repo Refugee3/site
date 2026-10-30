@@ -10,19 +10,20 @@ import { plural } from "@/components/teacher/text";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/link-button";
 import { requireTeacher } from "@/lib/auth/dal";
+import { kindNoun } from "@/lib/format";
 import { getDashboardView, getQuizMatchAlerts, getStrugglingQuestions } from "@/lib/services/views";
 import type { AssignmentKind } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Assignments" };
 
-const HEADINGS: Record<"all" | AssignmentKind, string> = { all: "Assignments", homework: "Homework", quiz: "Quizzes" };
+const HEADINGS: Record<"all" | AssignmentKind, string> = { all: "Assignments", homework: "Homework", quiz: "Quizzes", project: "Projects" };
 
 export default async function TeacherDashboardPage(props: PageProps<"/teacher">) {
   await connection();
   const teacher = await requireTeacher();
   const view = getDashboardView(teacher);
   const { type, struggling } = await props.searchParams;
-  const kind: AssignmentKind | null = type === "homework" || type === "quiz" ? type : null;
+  const kind: AssignmentKind | null = type === "homework" || type === "quiz" || type === "project" ? type : null;
   const typeQuery = kind ? `type=${kind}` : "";
   const shown = kind ? view.assignments.filter((a) => a.kind === kind) : view.assignments;
   // Polls for every assignment, shown or not, so switching filters never shows a stale table.
@@ -38,14 +39,15 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
         <div className="flex flex-col gap-1">
           <h1 className="text-3xl font-semibold">{HEADINGS[kind ?? "all"]}</h1>
           <p className="text-sm text-muted">
-            {plural(shown.length, kind === "quiz" ? "quiz" : kind === "homework" ? "homework" : "assignment", kind === "quiz" ? "quizzes" : kind === "homework" ? "homework" : "assignments")}
+            {plural(shown.length, kind ? kindNoun(kind) : "assignment", kind ? kindNoun(kind, true) : "assignments")}
             {" · "}
             {plural(graded, "paper")} graded
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <LinkButton href="/teacher/assignments/new?kind=project" variant={kind === "project" ? "primary" : "secondary"}>New project</LinkButton>
           <LinkButton href="/teacher/assignments/new?kind=quiz" variant={kind === "quiz" ? "primary" : "secondary"}>New quiz</LinkButton>
-          <LinkButton href="/teacher/assignments/new" variant={kind === "quiz" ? "secondary" : "primary"}>New homework</LinkButton>
+          <LinkButton href="/teacher/assignments/new" variant={kind === "quiz" || kind === "project" ? "secondary" : "primary"}>New homework</LinkButton>
         </div>
       </div>
 
@@ -79,10 +81,10 @@ export default async function TeacherDashboardPage(props: PageProps<"/teacher">)
         />
       ) : shown.length === 0 ? (
         <EmptyState
-          title={kind === "quiz" ? "No quizzes yet" : "No homework yet"}
+          title={kind === "quiz" ? "No quizzes yet" : kind === "project" ? "No projects yet" : "No homework yet"}
           action={
-            <LinkButton href={kind === "quiz" ? "/teacher/assignments/new?kind=quiz" : "/teacher/assignments/new"}>
-              {kind === "quiz" ? "Create a quiz" : "Create homework"}
+            <LinkButton href={kind && kind !== "homework" ? `/teacher/assignments/new?kind=${kind}` : "/teacher/assignments/new"}>
+              {kind === "quiz" ? "Create a quiz" : kind === "project" ? "Create a project" : "Create homework"}
             </LinkButton>
           }
         />

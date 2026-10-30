@@ -1,4 +1,4 @@
-import type { AssignmentHeader } from "@/lib/types";
+import type { AssignmentHeader, AssignmentKind } from "@/lib/types";
 import { plural } from "./text";
 
 export type StepState = "done" | "current" | "todo";
@@ -17,7 +17,10 @@ export interface AssignmentStep {
  * once its job is (an approved key; at least one paper; every paper graded and checked); the first step not done is
  * the current one, and the ones after it wait.
  */
-export function assignmentSteps(h: Pick<AssignmentHeader, "keyStatus" | "keyApproved" | "counts" | "scans">, assignmentId: string): AssignmentStep[] {
+export function assignmentSteps(
+  h: Pick<AssignmentHeader, "keyStatus" | "keyApproved" | "counts" | "scans">, assignmentId: string, kind: AssignmentKind = "homework",
+): AssignmentStep[] {
+  const project = kind === "project";
   const base = `/teacher/assignments/${assignmentId}`;
   const { counts, scans } = h;
   const inProgress = counts.queued + counts.grading;
@@ -28,7 +31,10 @@ export function assignmentSteps(h: Pick<AssignmentHeader, "keyStatus" | "keyAppr
   const reviewDone = uploadDone && inProgress === 0 && counts.needs_review === 0 && counts.failed === 0 && scansWaiting === 0;
 
   const steps: Array<Omit<AssignmentStep, "state"> & { done: boolean }> = [
-    { number: 1, title: "Add the answer key", status: keyStatusText(h), href: `${base}/key`, done: keyDone },
+    {
+      number: 1, title: project ? "Say how to grade it" : "Add the answer key", status: project ? projectStatusText(h) : keyStatusText(h),
+      href: `${base}/key`, done: keyDone,
+    },
     {
       number: 2,
       title: "Upload students' work",
@@ -40,6 +46,14 @@ export function assignmentSteps(h: Pick<AssignmentHeader, "keyStatus" | "keyAppr
   ];
   const current = steps.findIndex((step) => !step.done);
   return steps.map(({ done, ...step }, i) => ({ ...step, state: done ? "done" : i === current ? "current" : "todo" }));
+}
+
+function projectStatusText(h: Pick<AssignmentHeader, "keyStatus" | "keyApproved">): string {
+  if (h.keyApproved) return "Ready";
+  if (h.keyStatus === "processing") return "Reading your rubric…";
+  if (h.keyStatus === "ready") return "Check and approve the rubric";
+  if (h.keyStatus === "failed") return "The rubric couldn't be read";
+  return "Write the instructions";
 }
 
 function keyStatusText(h: Pick<AssignmentHeader, "keyStatus" | "keyApproved">): string {

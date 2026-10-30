@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { cx } from "@/components/ui/cx";
 import { LinkButton } from "@/components/ui/link-button";
 import { Spinner } from "@/components/ui/spinner";
+import { ProjectInstructionsCard } from "@/components/teacher/project-instructions";
 import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { now } from "@/lib/clock";
 import { isKeyApproved } from "@/lib/grading/key";
@@ -35,21 +36,35 @@ export default async function AnswerKeyPage(props: PageProps<"/teacher/assignmen
   const { key, items } = view;
   const buildManually = (await props.searchParams).manual === "1";
 
-  if (key.status === "processing") return <Processing view={view} />;
+  const project = assignment.kind === "project";
+  const instructionsCard = project && (
+    <ProjectInstructionsCard
+      assignmentId={assignment.id}
+      mode={assignment.projectMode ?? "points"}
+      instructions={key.teacherNotes}
+      hasRubric={items.length > 0}
+      reviewedCount={view.gradedCount}
+    />
+  );
+
+  if (key.status === "processing") return <Processing view={view} project={project} top={instructionsCard} />;
 
   const showEditor = key.status === "ready" || items.length > 0 || buildManually;
   const uploadUrl = `/api/teacher/assignments/${assignment.id}/key`;
 
   return (
     <div className="flex flex-col gap-6">
-      {key.status === "empty" && !buildManually && <AddKey uploadUrl={uploadUrl} />}
+      {instructionsCard}
+      {key.status === "empty" && !buildManually && (project ? <AddRubric uploadUrl={uploadUrl} /> : <AddKey uploadUrl={uploadUrl} />)}
       {key.status === "failed" && <Failed assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} buildManually={buildManually} />}
 
       {showEditor && (
         <>
           {key.status === "ready" && !isKeyApproved(key, items.length) && (
-            <Alert tone="warning" title="Check the key, then save to approve it">
-              Papers are graded only against an approved key. Amber items are ones the AI was unsure about.
+            <Alert tone="warning" title={project ? "Check the rubric, then save to approve it" : "Check the key, then save to approve it"}>
+              {project
+                ? "Projects are scored against the rubric once you approve it. Amber items are ones the AI was unsure about."
+                : "Papers are graded only against an approved key. Amber items are ones the AI was unsure about."}
             </Alert>
           )}
           {key.aiNotes && (
@@ -58,40 +73,45 @@ export default async function AnswerKeyPage(props: PageProps<"/teacher/assignmen
             </Alert>
           )}
           <EditorWithPdf assignment={assignment} view={view} />
-          {key.status === "ready" && (
+          {key.status === "ready" && !project && (
             <BlankWorksheetCard
               assignmentId={assignment.id}
               view={getWorksheetView(assignment)}
               regradeCount={spotsStaleIds(assignment).length}
             />
           )}
-          {key.status === "ready" && key.sourcePdfPath && <ReplaceKey assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} />}
+          {key.status === "ready" && key.sourcePdfPath && (
+            <ReplaceKey assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} project={project} />
+          )}
         </>
       )}
     </div>
   );
 }
 
-function Processing({ view }: { view: KeyEditorView }) {
+function Processing({ view, project, top }: { view: KeyEditorView; project: boolean; top: React.ReactNode }) {
+  const what = project ? "rubric" : "answer key";
   return (
     <div className="flex flex-col gap-6">
+      {top}
       <Card>
         <div className="flex items-start gap-3">
           <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             {view.extraction ? (
               <EstimatedProgress
-                label="Reading the answer key…"
-                barLabel="Reading the answer key"
+                label={`Reading the ${what}…`}
+                barLabel={`Reading the ${what}`}
                 startedAt={view.extraction.extractionStartedAt}
                 typicalMs={view.extraction.typicalExtractionMs}
                 serverNow={now()}
               />
             ) : (
-              <p className="font-semibold">Reading the answer key…</p>
+              <p className="font-semibold">Reading the {what}…</p>
             )}
             <p className="text-muted">
-              The AI is listing every question with its answer for you to check. This page updates by itself.
+              The AI is listing every {project ? "rubric item with its points" : "question with its answer"} for you to check. This
+              page updates by itself.
             </p>
           </div>
         </div>
@@ -99,6 +119,23 @@ function Processing({ view }: { view: KeyEditorView }) {
       {view.keyPdfUrl && <PdfFrame src={view.keyPdfUrl} title="Answer key PDF" />}
       <AutoRefresh intervalMs={PROCESSING_POLL_MS} />
     </div>
+  );
+}
+
+function AddRubric({ uploadUrl }: { uploadUrl: string }) {
+  return (
+    <Card title="Rubric (optional)">
+      <div className="flex flex-col gap-4">
+        <p className="text-muted">
+          A project needs no answer key: the instructions above are enough. If you have a rubric or a key, upload it and the AI
+          scores each of its items, with the points you approve.
+        </p>
+        <KeyUpload uploadUrl={uploadUrl} disabled={false} zoneTitle="Drop a rubric here" hideInstructions />
+        <LinkButton href="?manual=1" variant="secondary" className="self-start">
+          Type a rubric in yourself
+        </LinkButton>
+      </div>
+    </Card>
   );
 }
 
@@ -176,9 +213,10 @@ function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: Key
   );
 }
 
-function ReplaceKey({ assignmentId, view, uploadUrl }: { assignmentId: string; view: KeyEditorView; uploadUrl: string }) {
+function ReplaceKey(p: { assignmentId: string; view: KeyEditorView; uploadUrl: string; project: boolean }) {
+  const { assignmentId, view, uploadUrl, project } = p;
   return (
-    <Card title="Replace the key PDF">
+    <Card title={project ? "Replace the rubric" : "Replace the key PDF"}>
       <div className="flex flex-col gap-4">
         {view.locked ? (
           <p className="text-sm text-muted">{LOCKED_NOTE}</p>
@@ -195,6 +233,7 @@ function ReplaceKey({ assignmentId, view, uploadUrl }: { assignmentId: string; v
           variant="secondary"
           confirmText={REPLACE_CONFIRM}
           instructions={view.key.teacherNotes}
+          hideInstructions={project}
           retry={view.locked ? undefined : {
             assignmentId,
             label: "Read this PDF again",

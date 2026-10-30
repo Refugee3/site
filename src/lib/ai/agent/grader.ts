@@ -33,6 +33,8 @@ export interface AgentGraderDeps extends ProvisionDeps {
    */
   transcribe?: Grader["transcribeCrops"];
   propose?: Grader["proposeSpots"];
+  /** A project paper: the direct engine's Messages API call (the agent's sessions read papers item by item). */
+  reviewProject?: Grader["reviewProject"];
   /** Called once, after the first task that succeeds (confirms a saved key, like confirmKeyOnSuccess). */
   onFirstSuccess?: () => void;
   /**
@@ -172,6 +174,7 @@ export function createAgentGrader(d: AgentGraderDeps): Grader {
     },
     ...(d.transcribe ? { transcribeCrops: d.transcribe } : {}),
     ...(d.propose ? { proposeSpots: d.propose } : {}),
+    ...(d.reviewProject ? { reviewProject: d.reviewProject } : {}),
   };
   return grader;
 }

@@ -13,9 +13,11 @@ import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
 import { getAiModel } from "@/lib/db/repos/settings";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
 import { isAppError } from "@/lib/errors";
-import { isKeyApproved, keyFingerprint, normalizeExtractedKey } from "@/lib/grading/key";
+import { isReadyToGrade, keyFingerprint, normalizeExtractedKey } from "@/lib/grading/key";
 import { isPlaceholderTitle, normalizeExtractedQuestions, normalizeSuggestedTitle } from "@/lib/grading/key-questions";
 import { buildRefusedResult, reconcileGrading } from "@/lib/grading/reconcile";
+import { statusFromFlags } from "@/lib/flags";
+import { normalizeProjectReview } from "@/lib/ai/project";
 import {
   keyPageCountHint, normalizeScanReadings, proposeLayout, SCAN_CHUNK_MAX_BYTES, SCAN_CHUNK_MAX_PAGES,
 } from "@/lib/grading/split";
@@ -85,7 +87,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
     guidance: loadGuidance(assignment, items), engine: grader.engine, spots: spotsForGrading(assignment.id, items),
   };
 
-  if (!isKeyApproved(key, ctx.items.length)) {
+  if (!isReadyToGrade(assignment.kind, key, ctx.items.length)) {
     // Claiming only picks approved keys, but the teacher may have changed the key since.
     return scheduleRetry(submission.id, generation, WAITING_FOR_KEY)
       ? { kind: "requeue", runAfter: now() + KEY_WAIT_MS, error: WAITING_FOR_KEY, refundAttempt: true }
@@ -98,6 +100,7 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       ? { kind: "fail", error: "file_missing: student PDF not found" }
       : DONE;
   }
+  if (assignment.kind === "project") return reviewProjectPaper(ctx, grader, studentPdf, submission.pageCount, signal);
   // The paper is read without the answer key (no key PDF either), then marked and judged from that reading (gradeByReading).
   let outcome: GradingOutcome;
   try {
@@ -130,6 +133,76 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
     if (e instanceof AiError) return gradingFailure(ctx, e);
     throw e;
   }
+  return DONE;
+}
+
+/**
+ * A project paper: one AI review of the whole paper from the teacher's instructions and rubric (src/lib/ai/project.ts), saved
+ * with its write-up as the feedback and, with points, its score. Anything the review couldn't do (no points, a rubric item
+ * left out, the AI unsure) flags the paper for the teacher.
+ */
+async function reviewProjectPaper(
+  ctx: GradingContext, grader: Grader, studentPdf: Uint8Array, pageCount: number, signal: AbortSignal,
+): Promise<HandlerResult> {
+  const { assignment, key } = ctx;
+  const mode = assignment.projectMode ?? "points";
+  if (!grader.reviewProject) {
+    return markFailed(ctx.submissionId, ctx.generation, "unsupported", "This grader can't review projects. Choose another engine in Settings → Grader.")
+      ? { kind: "fail", error: "unsupported: no reviewProject" }
+      : DONE;
+  }
+  let result: Awaited<ReturnType<NonNullable<Grader["reviewProject"]>>>;
+  try {
+    result = await grader.reviewProject(
+      {
+        assignment: { title: assignment.title, instructions: assignment.instructions }, mode, teacherInstructions: key.teacherNotes,
+        rubric: ctx.items, sections: ctx.sections, studentPdf, studentPageCount: pageCount, nameHints: rosterNameHints(assignment.id),
+      },
+      { signal, maxTokens: ctx.job.maxTokens ?? getConfig().maxTokens },
+    );
+    recordUsage(assignment.id, result.meta.servedModel, result.meta.usage, result.meta.agent);
+  } catch (e) {
+    const err = classifySdkError(e);
+    if (err.o.billed) recordUsage(assignment.id, err.o.billed.servedModel, err.o.billed.usage, err.o.billed.agent);
+    return gradingFailure(ctx, err);
+  }
+
+  const { output, meta } = result;
+  const review = normalizeProjectReview(output, mode, ctx.items);
+  tx(() => {
+    const latest = getSubmission(ctx.submissionId);
+    if (!latest || latest.gradingGeneration !== ctx.generation) return;
+    const sections = listSections(assignment.id);
+    const asGrading: GradingOutput = {
+      student: output.student, document_check: output.document_check, items: [], integrity: output.integrity, unmatched_work: "",
+      overall_feedback: "", teacher_summary: output.teacher_summary,
+    };
+    const reconciled = reconcileGrading({
+      output: asGrading, refs: [], items: [], sections, pageCount: latest.pageCount, current: latest, fallbackUsed: meta.fallbackUsed,
+      roster: getRoster(assignment.id),
+    });
+    const check = output.needs_teacher_check || output.confidence === "low" || review.problems.length > 0;
+    const flags = check && !reconciled.fields.flags.includes("low_confidence")
+      ? [...reconciled.fields.flags, "low_confidence" as const]
+      : reconciled.fields.flags;
+    const notes = [reconciled.fields.teacherSummary, output.needs_teacher_check ? output.check_reason.trim() : "", ...review.problems]
+      .filter((n) => n !== "").join("\n");
+    const saved = saveGradingResult({
+      submissionId: ctx.submissionId,
+      generation: ctx.generation,
+      keyRevision: key.revision,
+      guidanceFingerprint: ctx.guidance.fingerprint,
+      items: [],
+      fields: {
+        ...reconciled.fields, flags, teacherSummary: notes.slice(0, 4000), overallFeedback: review.analysis,
+        status: check ? "needs_review" : statusFromFlags(flags, null),
+        aiModel: meta.servedModel, usage: meta.usage, aiOutputJson: JSON.stringify(output), aiEngine: ctx.engine,
+        readMs: meta.durationMs, judgeMs: null,
+        projectReview: { mode, criteria: review.criteria, earnedCenti: review.earnedCenti, maxCenti: review.maxCenti },
+      },
+    });
+    if (saved) rescoreSubmission(ctx.submissionId);
+  });
   return DONE;
 }
 

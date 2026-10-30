@@ -13,7 +13,8 @@ import {
 import type { ActionResult, AssignmentFormInput } from "@/lib/types";
 
 const ASSIGNMENT_FIELDS = [
-  "title", "kind", "instructions", "gradingMode", "accuracyWeight", "sectionsText", "maxSubmissions", "writeNotes",
+  "title", "kind", "instructions", "gradingMode", "accuracyWeight", "sectionsText", "maxSubmissions", "writeNotes", "projectMode",
+  "gradingInstructions",
 ] as const satisfies ReadonlyArray<keyof AssignmentFormInput>;
 
 const ConfirmTitleSchema = z.string("Type the assignment's title to confirm.");
@@ -24,10 +25,14 @@ function assignmentForm(fd: FormData): AssignmentFormInput {
 
 export async function createAssignmentAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
   const teacher = await requireTeacher();
-  const result = await attemptWithData(() => createAssignment(teacher.id, assignmentForm(fd)).id);
+  const result = await attemptWithData(() => {
+    const created = createAssignment(teacher.id, assignmentForm(fd));
+    return { id: created.id, project: created.kind === "project" };
+  });
   if (!result.ok) return result;
   refresh();
-  redirect(`/teacher/assignments/${result.data}/key`);
+  // A project needs no key: its workspace (instructions, optional rubric, papers) comes next.
+  redirect(result.data.project ? `/teacher/assignments/${result.data.id}` : `/teacher/assignments/${result.data.id}/key`);
 }
 
 export async function updateAssignmentAction(assignmentId: string, _prev: ActionResult | null, fd: FormData): Promise<ActionResult> {

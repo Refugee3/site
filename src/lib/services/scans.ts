@@ -45,6 +45,8 @@ export function engineName(engine: GradingEngineChoice): string {
  * with the hosted agent (a scan uploaded for one pass is then split first, as with "auto").
  */
 export function onePassAvailable(assignmentId?: string): boolean {
+  // A project is reviewed paper by paper, so its scan is always split first.
+  if (assignmentId !== undefined && getAssignment(assignmentId)?.kind === "project") return false;
   if (getConfig().aiMode === "fake" || getGradingEngine() !== "agent") return true;
   // The hosted agent can't read a scan in one pass, but the fast lane needs no full page: an assignment with saved answer
   // spots is graded from its blank worksheet with any engine.

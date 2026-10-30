@@ -1,7 +1,8 @@
+import { getAssignment } from "@/lib/db/repos/assignments";
 import { getKey, listKeyItems } from "@/lib/db/repos/keys";
 import { listIdsByStatus } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
-import { isKeyApproved } from "@/lib/grading/key";
+import { isReadyToGrade } from "@/lib/grading/key";
 import type { AnswerKey, KeyItem, SubmissionStatus } from "@/lib/types";
 
 // Answer-key facts several services and views need. A leaf of the services import graph (repos and grading only).
@@ -16,10 +17,12 @@ export function requireKey(assignmentId: string): AnswerKey {
   return key;
 }
 
+/** `approved`: papers can be graded (an approved key; for a project, its instructions or an approved rubric). */
 export function loadKeyState(assignmentId: string): { key: AnswerKey; items: KeyItem[]; approved: boolean } {
   const key = requireKey(assignmentId);
   const items = listKeyItems(assignmentId);
-  return { key, items, approved: isKeyApproved(key, items.length) };
+  const kind = getAssignment(assignmentId)?.kind ?? "homework";
+  return { key, items, approved: isReadyToGrade(kind, key, items.length) };
 }
 
 /** True once any paper is being or has been graded: a replacement key PDF (or re-extraction) is then refused. */

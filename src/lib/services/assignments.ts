@@ -4,7 +4,7 @@ import {
   deleteAssignmentRow, getAssignment, insertAssignment, latestSectionsForTeacher, listSections, replaceSections,
   shareCodeExists, updateAssignment as updateAssignmentRow,
 } from "@/lib/db/repos/assignments";
-import { createEmptyKey } from "@/lib/db/repos/keys";
+import { createEmptyKey, getKey, updateKey } from "@/lib/db/repos/keys";
 import { AppError } from "@/lib/errors";
 import { placeholderTitle } from "@/lib/grading/key-questions";
 import { parseSectionsText, sectionsToText, type ParsedSection } from "@/lib/grading/sections";
@@ -13,7 +13,7 @@ import { ingestKeyPdf } from "@/lib/services/keys";
 import { rematchSections, rescoreAssignment } from "@/lib/services/submissions";
 import { removeAssignmentFiles } from "@/lib/storage/files";
 import type { UploadedFile } from "@/lib/storage/pdf";
-import { ASSIGNMENT_KINDS, GRADING_MODES, type Assignment, type AssignmentFormInput, type AssignmentKind, type Section } from "@/lib/types";
+import { ASSIGNMENT_KINDS, GRADING_MODES, PROJECT_MODES, type Assignment, type ProjectMode, type AssignmentFormInput, type AssignmentKind, type Section } from "@/lib/types";
 
 const MAX_SECTIONS = 50;
 const SHARE_CODE_TRIES = 5;
@@ -28,7 +28,9 @@ function readSections(text: string): { sections: ParsedSection[]; errors: string
 /** The create/edit form. FormData numbers arrive as strings, hence the coercion. */
 export const AssignmentFormSchema: z.ZodType<AssignmentFormInput> = z.object({
   title: z.string().trim().min(1, "Give the assignment a title.").max(200, "Use at most 200 characters."),
-  kind: z.enum(ASSIGNMENT_KINDS, "Choose Homework or Quiz.").default("homework"),
+  kind: z.enum(ASSIGNMENT_KINDS, "Choose Homework, Quiz or Project.").default("homework"),
+  projectMode: z.enum(PROJECT_MODES, "Choose points or feedback only.").optional(),
+  gradingInstructions: z.string().trim().max(4000, "Use at most 4000 characters.").optional(),
   instructions: z.string().trim().max(2000, "Use at most 2000 characters.").default(""),
   gradingMode: z.enum(GRADING_MODES).default("completion"),
   accuracyWeight: z.coerce.number().int().min(0).max(100).multipleOf(5, "Use a multiple of 5.").default(50),
@@ -58,6 +60,7 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
       teacherId,
       title: i.title,
       kind: i.kind,
+      projectMode: i.kind === "project" ? (i.projectMode ?? "points") : null,
       instructions: i.instructions,
       writeNotes: i.writeNotes,
       gradingMode: i.gradingMode,
@@ -66,6 +69,8 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
       maxSubmissions: i.maxSubmissions,
     });
     createEmptyKey(assignment.id);
+    // A project is graded from its instructions: they are the key's grading instructions.
+    if (i.kind === "project" && i.gradingInstructions) updateKey(assignment.id, { teacherNotes: i.gradingInstructions });
     replaceSections(assignment.id, sections);
     return assignment;
   });
@@ -102,6 +107,41 @@ export async function createAssignmentFromKey(
   return assignment;
 }
 
+/**
+ * Starts a project from the dashboard: "Untitled project" (the teacher renames it), graded from `instructions` with points or
+ * as feedback only. A rubric or key, when dropped with it, is read like an answer key (the instructions guide the reading);
+ * without one the project is ready for papers as soon as it has instructions.
+ */
+export async function createProject(
+  teacherId: string,
+  i: { files: UploadedFile[]; instructions: string; mode: ProjectMode },
+): Promise<Assignment> {
+  const instructions = i.instructions.trim();
+  if (i.files.length === 0 && instructions === "") {
+    throw new AppError("validation", "Say what the AI should grade or write, or drop a rubric.");
+  }
+  const assignment = createAssignment(teacherId, {
+    title: placeholderTitle("project"),
+    kind: "project",
+    projectMode: i.mode,
+    gradingInstructions: instructions.slice(0, 4000),
+    instructions: "",
+    gradingMode: "completion",
+    accuracyWeight: 50,
+    sectionsText: defaultSectionsText(teacherId),
+    maxSubmissions: 500,
+    writeNotes: false,
+  });
+  if (i.files.length === 0) return assignment;
+  try {
+    await ingestKeyPdf(assignment, i.files, instructions);
+  } catch (e) {
+    await deleteAssignment(assignment);
+    throw e;
+  }
+  return assignment;
+}
+
 export const TitleSchema = z.string("Give the assignment a title.").trim().min(1, "Give the assignment a title.")
   .max(200, "Use at most 200 characters.");
 
@@ -126,6 +166,7 @@ export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignm
     const updated = updateAssignmentRow(a.id, {
       title: i.title,
       kind: i.kind,
+      ...(i.kind === "project" ? { projectMode: i.projectMode ?? before.projectMode ?? "points" } : {}),
       instructions: i.instructions,
       writeNotes: i.writeNotes,
       gradingMode: i.gradingMode,
@@ -136,7 +177,16 @@ export function updateAssignment(a: Assignment, i: AssignmentFormInput): Assignm
       replaceSections(a.id, sections);
       rematchSections(a.id);
     }
-    if (before.gradingMode !== updated.gradingMode || before.accuracyWeight !== updated.accuracyWeight) {
+    // A project switched between points and feedback only: reviewed projects are stale (Regrade stale reviews them again).
+    if (before.kind === "project" && updated.kind === "project" && before.projectMode !== updated.projectMode) {
+      const key = getKey(a.id);
+      if (key) {
+        const approved = key.approvedRevision === key.revision;
+        updateKey(a.id, { revision: key.revision + 1, ...(approved ? { approvedRevision: key.revision + 1 } : {}) });
+      }
+    }
+    if (before.gradingMode !== updated.gradingMode || before.accuracyWeight !== updated.accuracyWeight
+      || before.kind !== updated.kind || before.projectMode !== updated.projectMode) {
       rescoreAssignment(a.id);
     }
     return updated;

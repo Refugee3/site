@@ -231,7 +231,7 @@ describe("migration 4 on a version-3 database", () => {
     // and migration 15's spots revision too (graded without saved answer spots).
     expect(db.prepare("SELECT * FROM submissions").get()).toEqual({
       ...submission, ai_engine: null, grader_engine: null, grading_started_at: null, queued_at: 1, read_ms: null, judge_ms: null,
-      graded_spot_revision: null, fast_lane: 0, roster_name: null,
+      graded_spot_revision: null, fast_lane: 0, roster_name: null, project_review_json: null,
     });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -333,7 +333,7 @@ describe("migration 5 on a version-4 database", () => {
     expect(db.prepare("SELECT * FROM submissions").get())
       .toEqual({
         ...submission, grading_started_at: null, queued_at: 1, grader_engine: submission.ai_engine, read_ms: null, judge_ms: null,
-        graded_spot_revision: null, fast_lane: 0, roster_name: null,
+        graded_spot_revision: null, fast_lane: 0, roster_name: null, project_review_json: null,
       });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check", { simple: true })).toBe("ok");

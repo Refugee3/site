@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { KIND_LABEL } from "@/lib/format";
-import { ASSIGNMENT_KINDS, type ActionResult, type AssignmentFormInput, type GradingMode } from "@/lib/types";
+import { ASSIGNMENT_KINDS, type ActionResult, type AssignmentFormInput, type GradingMode, type ProjectMode } from "@/lib/types";
+import { KEY_INSTRUCTIONS_PLACEHOLDER } from "./key-instructions-field";
 import { useSyncedState } from "./use-synced-state";
 
 export interface AssignmentFormProps {
@@ -40,13 +41,34 @@ const WRITE_NOTES_HINT = "The AI writes a short note on what each student did an
   + "you check a paper. Turning this on makes each paper cost roughly 1.5 times as much, more for assignments with many questions. "
   + "Off, the grades are the same and you can still write your own notes.";
 
+const PROJECT_MODE_OPTIONS: Array<{ value: ProjectMode; label: string; description: string }> = [
+  {
+    value: "points",
+    label: "Score with points",
+    description: "The AI scores each project from your instructions (or the rubric you upload) and explains every score.",
+  },
+  {
+    value: "feedback",
+    label: "Feedback only",
+    description: "No points. The AI writes what you ask for on each project: an analysis, a summary, or feedback for the student.",
+  },
+];
+
+const PROJECT_INSTRUCTIONS_PLACEHOLDER = "e.g. Score out of 50: research 20, analysis 20, presentation 10. Or, for feedback only: "
+  + "Analyze each section and summarize the main strengths and what to improve.";
+
 const SECTIONS_PLACEHOLDER = "Period 1 | P1, 1st\nPeriod 3 | P3, 3rd";
 
 /** The form as typed: the number field stays text so clearing it does not produce NaN. */
-type FormDraft = Omit<AssignmentFormInput, "maxSubmissions"> & { maxSubmissions: string };
+type FormDraft = Omit<AssignmentFormInput, "maxSubmissions" | "projectMode" | "gradingInstructions"> & {
+  maxSubmissions: string; projectMode: ProjectMode; gradingInstructions: string;
+};
 
 function toDraft(input: AssignmentFormInput): FormDraft {
-  return { ...input, maxSubmissions: String(input.maxSubmissions) };
+  return {
+    ...input, maxSubmissions: String(input.maxSubmissions), projectMode: input.projectMode ?? "points",
+    gradingInstructions: input.gradingInstructions ?? "",
+  };
 }
 
 const sameDraft = (a: FormDraft, b: FormDraft) => JSON.stringify(a) === JSON.stringify(b);
@@ -115,6 +137,17 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
         )}
       </fieldset>
 
+      {values.kind === "project" && (
+        <ProjectFields
+          mode={mode}
+          projectMode={values.projectMode}
+          instructions={values.gradingInstructions}
+          errors={[...(errors.projectMode ?? []), ...(errors.gradingInstructions ?? [])]}
+          onModeChange={(projectMode) => update("projectMode", projectMode)}
+          onInstructionsChange={(gradingInstructions) => update("gradingInstructions", gradingInstructions)}
+        />
+      )}
+
       <Field
         label="Instructions the students were given (optional)"
         htmlFor="assignment-instructions"
@@ -131,6 +164,8 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
         />
       </Field>
 
+      {/* Projects are scored by their review; hidden, the choices are kept (and sent) for a change back. */}
+      <div hidden={values.kind === "project"} className="flex flex-col gap-5">
       <GradingModeField
         mode={values.gradingMode}
         weight={values.accuracyWeight}
@@ -153,6 +188,7 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
         <p id="assignment-write-notes-hint" className="text-sm text-muted">
           {WRITE_NOTES_HINT}
         </p>
+      </div>
       </div>
 
       <Field
@@ -214,6 +250,62 @@ export function AssignmentForm({ mode, action, defaults }: AssignmentFormProps) 
         </p>
       </div>
     </form>
+  );
+}
+
+function ProjectFields(props: {
+  mode: "create" | "edit";
+  projectMode: ProjectMode;
+  instructions: string;
+  errors: string[];
+  onModeChange: (mode: ProjectMode) => void;
+  onInstructionsChange: (text: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1.5 text-sm font-medium text-ink">How projects are graded</legend>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {PROJECT_MODE_OPTIONS.map((option) => (
+            <label
+              key={option.value}
+              className="flex cursor-pointer gap-3 rounded-lg border border-line-strong bg-surface p-3 has-checked:border-brand-600 has-checked:bg-brand-50"
+            >
+              <input
+                type="radio"
+                name="projectMode"
+                value={option.value}
+                checked={props.projectMode === option.value}
+                onChange={() => props.onModeChange(option.value)}
+                className="mt-0.5 size-5 shrink-0 accent-brand-600"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="font-medium">{option.label}</span>
+                <span className="text-sm text-muted">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      {props.mode === "create" && (
+        <Field
+          label="What should the AI grade or write?"
+          htmlFor="assignment-grading-instructions"
+          hint="Projects need no answer key: the AI follows these instructions on every project. You can also upload a rubric later."
+        >
+          <Textarea
+            id="assignment-grading-instructions"
+            name="gradingInstructions"
+            rows={4}
+            maxLength={4000}
+            placeholder={props.projectMode === "feedback" ? PROJECT_INSTRUCTIONS_PLACEHOLDER : KEY_INSTRUCTIONS_PLACEHOLDER}
+            value={props.instructions}
+            onChange={(e) => props.onInstructionsChange(e.target.value)}
+          />
+        </Field>
+      )}
+      {props.errors.length > 0 && <p className="text-sm font-medium text-danger-700">{props.errors.join(" ")}</p>}
+    </div>
   );
 }
 

@@ -23,7 +23,7 @@ export const LIMITS = {
 // ---------------------------------------------------------------------------------------------
 // Titles
 
-const PLACEHOLDER_TITLE: Record<AssignmentKind, string> = { homework: "Untitled homework", quiz: "Untitled quiz" };
+const PLACEHOLDER_TITLE: Record<AssignmentKind, string> = { homework: "Untitled homework", quiz: "Untitled quiz", project: "Untitled project" };
 
 /** The title of an assignment started by dropping its key, until the AI suggests one or the teacher renames it. */
 export function placeholderTitle(kind: AssignmentKind): string {

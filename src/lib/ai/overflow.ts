@@ -21,10 +21,10 @@ export interface OverflowPolicy {
 }
 
 type Method = "extractKey" | "readSubmission" | "judgeSubmission" | "gradeSubmission" | "readScanPages" | "readPacketChunk"
-  | "gradePacketChunk" | "transcribeCrops" | "proposeSpots";
+  | "gradePacketChunk" | "transcribeCrops" | "proposeSpots" | "reviewProject";
 
 /** The calls that read a whole paper (counted as papers in the overflow's monthly total). */
-const PAPER_CALLS = new Set<Method>(["readSubmission", "gradeSubmission"]);
+const PAPER_CALLS = new Set<Method>(["readSubmission", "gradeSubmission", "reviewProject"]);
 
 export function createOverflowGrader(o: { local: OllamaGrader; claude: () => Grader | null; policy: OverflowPolicy }): Grader {
   let restingUntil = 0;
@@ -69,5 +69,6 @@ export function createOverflowGrader(o: { local: OllamaGrader; claude: () => Gra
     ...(local.gradePacketChunk ? { gradePacketChunk: (i, c) => call("gradePacketChunk", i, c) } : {}),
     ...(local.transcribeCrops ? { transcribeCrops: (i, c) => call("transcribeCrops", i, c) } : {}),
     ...(local.proposeSpots ? { proposeSpots: (i, c) => call("proposeSpots", i, c) } : {}),
+    ...(local.reviewProject ? { reviewProject: (i, c) => call("reviewProject", i, c) } : {}),
   } satisfies Grader;
 }

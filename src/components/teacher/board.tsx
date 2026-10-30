@@ -184,7 +184,11 @@ function StatusCell({ row }: { row: BoardRow }) {
 }
 
 function ScoreCell({ row }: { row: BoardRow }) {
-  if (row.scoreEarnedCenti === null || row.scoreMaxCenti === null) return <span className="text-muted">—</span>;
+  if (row.scoreEarnedCenti === null || row.scoreMaxCenti === null) {
+    // A reviewed paper without points: a feedback-only project.
+    const reviewed = row.status === "graded" || row.status === "needs_review";
+    return <span className="text-muted">{reviewed ? "Feedback" : "—"}</span>;
+  }
   return (
     <span className="flex flex-col items-end">
       <span className="whitespace-nowrap font-semibold tabular-nums">
