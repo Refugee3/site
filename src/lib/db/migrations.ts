@@ -627,6 +627,15 @@ CREATE TABLE overflow_spend (
 ) STRICT;
 `,
   },
+  {
+    version: 19,
+    name: "graded_items",
+    sql: `
+-- Which questions count: the teacher can leave a question (or a part, "3a") out of the grading. An item with graded = 0 isn't
+-- read, judged or scored, and isn't counted in the question stats; it stays in the key so it can be turned back on.
+ALTER TABLE key_items ADD COLUMN graded INTEGER NOT NULL DEFAULT 1 CHECK (graded IN (0,1));
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

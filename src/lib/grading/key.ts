@@ -6,7 +6,7 @@ import { sha256Hex } from "@/lib/ids";
 import { ANSWER_TYPES, type AnswerKey, type AnswerType, type KeyItem, type NewKeyItem, type SaveKeyInput } from "@/lib/types";
 
 // Limits shared by AI extraction and the teacher's editor; label and points mirror the key_items CHECKs.
-const LIMITS = {
+export const LIMITS = {
   label: 40,
   groupLabel: 40,
   prompt: 1000,
@@ -251,8 +251,12 @@ export function validateSaveKey(
       answerSource: existing && existing.answerSource !== "ai_proposed" ? existing.answerSource : "teacher",
       aiConfidence: existing?.aiConfidence ?? null,
       aiNote: existing?.aiNote ?? "",
+      graded: row.graded ?? existing?.graded ?? true,
     };
   });
+  if (items.every((item) => item.graded === false)) {
+    return { ok: false, error: "Keep at least one question counted in the grade.", fieldErrors: {} };
+  }
 
   if (needsAcknowledgement && !input.acknowledgeAiProposed) {
     addError("acknowledgeAiProposed", "Check the AI-proposed answers, then tick the box to confirm.");

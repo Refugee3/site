@@ -37,7 +37,7 @@ export function loadAssignmentLive(a: Assignment): AssignmentLiveSnapshot {
     counts: countCurrent(board),
     progress: getGradingProgress(a.id),
     worker,
-    highlighted: computeItemStats(items, submissions, sections, listItemsForAssignment(a.id), a).highlighted,
+    highlighted: computeItemStats(items.filter((item) => item.graded), submissions, sections, listItemsForAssignment(a.id), a).highlighted,
     scans: listScans(a.id).map((scan) => ({ scan, progress: getSplitProgress(scan) })),
   });
 }

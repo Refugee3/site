@@ -7,7 +7,7 @@ import { now } from "@/lib/clock";
 import { type AppConfig, getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { getAssignment, listSections, startGradingBatchForOnePass } from "@/lib/db/repos/assignments";
-import { getKey, listKeyItems } from "@/lib/db/repos/keys";
+import { getKey, listGradedKeyItems } from "@/lib/db/repos/keys";
 import { updateSplittingScan } from "@/lib/db/repos/scans";
 import { countSubmissions, findBySha, insertSubmission, saveGradingResult } from "@/lib/db/repos/submissions";
 import { AppError, isAppError } from "@/lib/errors";
@@ -105,7 +105,7 @@ export async function handleOnePassScan(
   const key = getKey(scan.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
   if (scan.splitStartedAt === null && !updateSplittingScan(run.scanId, run.generation, { splitStartedAt: now() })) return DONE;
-  const items = listKeyItems(assignment.id);
+  const items = listGradedKeyItems(assignment.id);
   if (!isKeyApproved(key, items.length)) {
     return noteScan(run, WAITING_FOR_KEY)
       ? { kind: "requeue", runAfter: now() + KEY_WAIT_MS, error: WAITING_FOR_KEY, refundAttempt: true }

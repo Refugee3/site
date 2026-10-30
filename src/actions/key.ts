@@ -6,7 +6,7 @@ import { requireOwnedAssignment } from "@/lib/auth/dal";
 import { attempt, attemptWithData } from "@/lib/http/action-result";
 import { parseInput } from "@/lib/http/validation";
 import { answerKeyQuestions, approveKeyAsIs } from "@/lib/services/key-questions";
-import { retryKeyExtraction, saveKey } from "@/lib/services/keys";
+import { retryKeyExtraction, saveGradingInstructions, saveKey } from "@/lib/services/keys";
 import { ANSWER_TYPES, type ActionResult, type SaveKeyInput } from "@/lib/types";
 
 // Shape only: saveKey (validateSaveKey) owns the content rules and reports them under the same
@@ -26,6 +26,7 @@ const SaveKeyInputSchema: z.ZodType<SaveKeyInput> = z.object({
     pointsCenti: z.number("Enter the points as a number."),
     partialCredit: z.boolean(),
     page: z.number("Enter the page as a number.").nullable(),
+    graded: z.boolean().optional(),
   })),
 });
 
@@ -70,6 +71,22 @@ export async function approveKeyAction(
 ): Promise<ActionResult<{ revision: number; staleCount: number }>> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
   const result = await attemptWithData(() => approveKeyAsIs(assignment, parseInput(ApproveSchema, input)));
+  if (result.ok) refresh();
+  return result;
+}
+
+const InstructionsSchema = z.object({
+  text: z.string("Send the instructions as text."),
+  gradedItemIds: z.array(z.string()).max(1000).optional(),
+});
+
+/** The upload page's "Grading instructions" box: saves just the key's instructions for the AI. */
+export async function saveGradingInstructionsAction(
+  assignmentId: string,
+  input: { text: string; gradedItemIds?: string[] },
+): Promise<ActionResult<{ changed: boolean; staleCount: number }>> {
+  const { assignment } = await requireOwnedAssignment(assignmentId);
+  const result = await attemptWithData(() => saveGradingInstructions(assignment, parseInput(InstructionsSchema, input)));
   if (result.ok) refresh();
   return result;
 }

@@ -19,7 +19,8 @@ import {
   buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
   rowErrors, totalPointsCenti, type DraftRow, type FieldErrors, type RowField,
 } from "./key-rows";
-import { plural } from "./text";
+import { gradedUnder, gradingScopeFromText, type GradingScope } from "./grading-scope";
+import { listText, plural } from "./text";
 import { useActionRunner } from "./use-action-runner";
 import { useLeaveGuard } from "./use-leave-guard";
 
@@ -112,6 +113,14 @@ export function KeyEditor(props: KeyEditorProps) {
     [gradedCount, restructure],
   );
 
+  const labels = rows.map((row) => row.label);
+  const scope = gradingScopeFromText(notes, labels);
+
+  function applyScope(s: GradingScope) {
+    const keep = gradedUnder(s, labels);
+    setRows((current) => current.map((row) => ({ ...row, graded: keep.has(row.label) })));
+  }
+
   function setAllPoints(pointsText: string) {
     setRows((current) => current.map((row) => ({ ...row, pointsText })));
   }
@@ -136,9 +145,9 @@ export function KeyEditor(props: KeyEditorProps) {
       {/* Locked while saving: the saved key replaces every row when it comes back, so later typing would be lost. */}
       <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-4">
         <Field
-          label="Teacher's notes for grading"
+          label="Grading instructions (optional)"
           htmlFor="key-teacher-notes"
-          hint="The AI reads these with every paper, e.g. “Units are required on word problems” or “Accept any reasonable synonym”."
+          hint="The AI follows these on every paper, e.g. “Only grade 2, 4b and 5”, “On 3, grade the work, not just the final answer”, “Units are required”."
           error={fieldErrors.teacherNotes}
         >
           <Textarea
@@ -149,6 +158,7 @@ export function KeyEditor(props: KeyEditorProps) {
             onChange={(e) => setNotes(e.target.value)}
           />
         </Field>
+        <ScopeSuggestion scope={scope} rows={rows} labels={labels} onApply={applyScope} />
 
         {gradedCount > 0 && (
           <Alert tone="info">
@@ -214,6 +224,33 @@ export function KeyEditor(props: KeyEditorProps) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** "Your instructions say to grade only 2, 4b and 5. [Tick just those]" when the boxes don't match yet. */
+function ScopeSuggestion(p: { scope: GradingScope | null; rows: DraftRow[]; labels: string[]; onApply: (s: GradingScope) => void }) {
+  const { scope } = p;
+  if (!scope) return null;
+  const keep = gradedUnder(scope, p.labels);
+  const matches = p.rows.every((row) => row.graded === keep.has(row.label));
+  const names = listText(scope.labels);
+  const unknown = scope.unknown.length > 0 ? ` (${listText(scope.unknown)} ${scope.unknown.length === 1 ? "isn't" : "aren't"} in the key)` : "";
+  if (keep.size === 0) {
+    return <Alert tone="warning">Your instructions would leave no question graded{unknown}. Keep at least one counted.</Alert>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-subtle px-3 py-2 text-sm">
+      <p className="text-ink">
+        Your instructions say to {scope.mode === "only" ? "grade only" : "skip"} <span className="font-semibold">{names}</span>
+        {unknown}.{" "}
+        {matches ? <span className="text-muted">The “Grade this” boxes match.</span> : "The “Grade this” boxes below don't match yet."}
+      </p>
+      {!matches && (
+        <Button size="sm" variant="secondary" onClick={() => p.onApply(scope)}>
+          {scope.mode === "only" ? "Grade just those" : "Skip those"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -295,12 +332,17 @@ const KeyRowCard = memo(function KeyRowCard({ row, index, count, errors, onChang
       aria-label={`Item ${name}`}
       className={cx(
         "flex flex-col gap-3 rounded-xl border p-3 shadow-sm sm:p-4",
-        uncertain ? "border-warning-200 bg-warning-50" : "border-line bg-surface",
+        !row.graded ? "border-dashed border-line-strong bg-subtle" : uncertain ? "border-warning-200 bg-warning-50" : "border-line bg-surface",
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold tabular-nums text-muted">{index + 1}.</span>
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 sm:min-h-9">
+            <Input type="checkbox" checked={row.graded} onChange={(e) => set({ graded: e.target.checked })} aria-label={`Grade item ${name}`} />
+            <span className="text-sm font-medium">Grade this</span>
+          </label>
+          {!row.graded && <Badge tone="neutral">Not graded: not read or scored</Badge>}
           {row.answerSource === "ai_proposed" && <Badge tone="warning">AI-proposed — check</Badge>}
           {uncertain && <Badge tone="warning">{row.aiConfidence === "low" ? "Low" : "Medium"} AI confidence</Badge>}
           {row.id === null && <Badge tone="info">New</Badge>}

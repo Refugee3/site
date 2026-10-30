@@ -57,8 +57,11 @@ export interface AnswerKey { assignmentId: string; status: KeyStatus; sourcePdfP
   updatedAt: number }
 export interface KeyItem { id: string; assignmentId: string; position: number; label: string; groupLabel: string; prompt: string;
   answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string; pointsCenti: number;
-  partialCredit: boolean; page: number | null; answerSource: AnswerSource; aiConfidence: Confidence | null; aiNote: string }
-export type NewKeyItem = Omit<KeyItem, "id" | "assignmentId" | "position">;
+  partialCredit: boolean; page: number | null; answerSource: AnswerSource; aiConfidence: Confidence | null; aiNote: string;
+  /** Counted in the grading (the default); false: left out by the teacher (not read, judged, scored or counted in stats). */
+  graded: boolean }
+/** A key item to save; `graded` defaults to true. */
+export type NewKeyItem = Omit<KeyItem, "id" | "assignmentId" | "position" | "graded"> & { graded?: boolean };
 /**
  * A question the AI asked about the key while reading it (key_questions). `itemLabel` names the key item it is about, as the AI
  * printed it; `answer` is the teacher's, once answered.
@@ -119,7 +122,9 @@ export interface AssignmentFormInput { title: string; kind: AssignmentKind; inst
   writeNotes: boolean }
 export interface SaveKeyInput { teacherNotes: string; acknowledgeAiProposed: boolean; items: Array<{ id: string | null; label: string;
   groupLabel: string; prompt: string; answerType: AnswerType; expectedAnswer: string; acceptableAnswers: string[]; gradingCriteria: string;
-  pointsCenti: number; partialCredit: boolean; page: number | null }> }
+  pointsCenti: number; partialCredit: boolean; page: number | null;
+  /** Counted in the grading; absent: true. */
+  graded?: boolean }> }
 
 // ---- view models (produced by src/lib/services/views.ts) ----
 export interface WorkerStatus { state: "running" | "paused" | "stopped"; reason: string | null; aiMode: "claude" | "fake"; queued: number; running: number;
@@ -202,7 +207,9 @@ export interface StrugglingQuestion { assignmentId: string; assignmentTitle: str
   missedTenths: number;
   /** Students (current papers) who didn't get full credit, of `judged`. */
   missedPapers: number; judged: number }
-export interface AssignmentHeader { assignment: Assignment; keyStatus: KeyStatus; keyApproved: boolean; itemCount: number;
+export interface AssignmentHeader { assignment: Assignment; keyStatus: KeyStatus; keyApproved: boolean;
+  /** The questions that count (graded), and those the teacher left out. */
+  itemCount: number; skippedCount?: number;
   totalPointsCenti: number; counts: StatusCounts; scans: PendingScans }
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
 export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
@@ -376,7 +383,9 @@ export interface ScanSummary { id: string; status: ScanStatus; splitMode: ScanSp
 export interface UploadPageView { keyApproved: boolean; keyPageCount: number | null; scans: ScanSummary[]; maxUploadMb: number; maxPages: number;
   maxScanMb: number; maxScanPages: number;
   /** False while the hosted agent grades: a scan uploaded to be graded in one pass is then split first. */
-  onePassAvailable: boolean }
+  onePassAvailable: boolean;
+  /** The key's grading instructions (teacher notes) and which questions count; null until the key exists and is read. */
+  instructions: { text: string; items: Array<{ id: string; label: string; graded: boolean }> } | null }
 /** `scan.autoGraded`: the split looked clean, so grading started automatically ("Split looked clean — grading started automatically."). */
 export interface ScanReviewView { scan: Omit<Scan, "pdfPath" | "contentSha256" | "aiModel" | "usage" | "onePass">;
   /** Grading in one pass: papers graded and pages left out so far (no AI answers). Null for other modes. */

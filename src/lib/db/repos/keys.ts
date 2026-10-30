@@ -43,6 +43,7 @@ interface KeyItemRow {
   answer_source: AnswerSource;
   ai_confidence: Confidence | null;
   ai_note: string;
+  graded: 0 | 1;
 }
 
 function keyFromRow(row: AnswerKeyRow): AnswerKey {
@@ -86,6 +87,7 @@ function keyItemFromRow(row: KeyItemRow): KeyItem {
     answerSource: row.answer_source,
     aiConfidence: row.ai_confidence,
     aiNote: row.ai_note,
+    graded: row.graded === 1,
   };
 }
 
@@ -135,6 +137,11 @@ export function listKeyItems(assignmentId: string): KeyItem[] {
     .map(keyItemFromRow);
 }
 
+/** The items that count in the grading (graded): what papers are read, judged and scored on. */
+export function listGradedKeyItems(assignmentId: string): KeyItem[] {
+  return listKeyItems(assignmentId).filter((item) => item.graded);
+}
+
 function itemValues(item: NewKeyItem, position: number) {
   return {
     position,
@@ -151,15 +158,17 @@ function itemValues(item: NewKeyItem, position: number) {
     answer_source: item.answerSource,
     ai_confidence: item.aiConfidence,
     ai_note: item.aiNote,
+    graded: item.graded === undefined ? null : toBit(item.graded),
   };
 }
 
 function insertKeyItem(assignmentId: string, item: NewKeyItem, position: number): void {
   run(
     `INSERT INTO key_items (id, assignment_id, position, label, group_label, prompt, answer_type, expected_answer,
-       acceptable_answers_json, grading_criteria, points_centi, partial_credit, page, answer_source, ai_confidence, ai_note)
+       acceptable_answers_json, grading_criteria, points_centi, partial_credit, page, answer_source, ai_confidence, ai_note, graded)
      VALUES (@id, @assignment_id, @position, @label, @group_label, @prompt, @answer_type, @expected_answer,
-       @acceptable_answers_json, @grading_criteria, @points_centi, @partial_credit, @page, @answer_source, @ai_confidence, @ai_note)`,
+       @acceptable_answers_json, @grading_criteria, @points_centi, @partial_credit, @page, @answer_source, @ai_confidence, @ai_note,
+       COALESCE(@graded, 1))`,
     { id: newId(), assignment_id: assignmentId, ...itemValues(item, position) },
   );
 }
@@ -169,10 +178,19 @@ function updateKeyItem(id: string, item: NewKeyItem, position: number): void {
     `UPDATE key_items SET position = @position, label = @label, group_label = @group_label, prompt = @prompt,
        answer_type = @answer_type, expected_answer = @expected_answer, acceptable_answers_json = @acceptable_answers_json,
        grading_criteria = @grading_criteria, points_centi = @points_centi, partial_credit = @partial_credit, page = @page,
-       answer_source = @answer_source, ai_confidence = @ai_confidence, ai_note = @ai_note
+       answer_source = @answer_source, ai_confidence = @ai_confidence, ai_note = @ai_note, graded = COALESCE(@graded, graded)
      WHERE id = @id`,
     { id, ...itemValues(item, position) },
   );
+}
+
+/** Sets which of the assignment's items count in the grading: those in `gradedIds`. */
+export function setGradedItems(assignmentId: string, gradedIds: ReadonlySet<string>): void {
+  tx(() => {
+    for (const item of listKeyItems(assignmentId)) {
+      run("UPDATE key_items SET graded = ? WHERE id = ?", toBit(gradedIds.has(item.id)), item.id);
+    }
+  });
 }
 
 /** Deletes every item (and, by cascade, their judgments and overrides) and inserts `items` with new ids. */

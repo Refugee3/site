@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { connection } from "next/server";
+import { GradingInstructions } from "@/components/teacher/grading-instructions";
 import { ScanList } from "@/components/teacher/scan-list";
 import { UploadChooser } from "@/components/teacher/upload-chooser";
 import { Alert } from "@/components/ui/alert";
@@ -30,6 +31,7 @@ export default async function UploadPapersPage(props: PageProps<"/teacher/assign
         </Alert>
       )}
 
+      {view.instructions && <GradingInstructions assignmentId={assignment.id} instructions={view.instructions} />}
       <UploadChooser assignmentId={assignment.id} view={view} />
       <ScanList assignmentId={assignment.id} scans={view.scans} />
     </div>

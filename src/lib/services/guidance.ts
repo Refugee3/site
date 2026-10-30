@@ -1,5 +1,5 @@
 import { guidanceFingerprint, renderGuidance } from "@/lib/ai/prompts";
-import { listKeyItems } from "@/lib/db/repos/keys";
+import { listGradedKeyItems } from "@/lib/db/repos/keys";
 import { listLessons } from "@/lib/db/repos/lessons";
 import { getGradingPreferences } from "@/lib/db/repos/teachers";
 import { selectGuidanceLessons } from "@/lib/grading/lessons";
@@ -21,7 +21,7 @@ export interface AssignmentGuidance {
 /** The guidance a grading of this assignment would be sent now. Pass `items` when they are already loaded. */
 export function loadGuidance(
   a: Pick<Assignment, "id" | "teacherId" | "gradingMode" | "accuracyWeight">,
-  items: KeyItem[] = listKeyItems(a.id),
+  items: KeyItem[] = listGradedKeyItems(a.id),
 ): AssignmentGuidance {
   const { sentIds, lessons, notSent } = selectGuidanceLessons(listLessons(a.id), items, a);
   const guidance: GradingGuidance = { preferences: getGradingPreferences(a.teacherId), lessons };

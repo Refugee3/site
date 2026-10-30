@@ -270,7 +270,7 @@ export function applyKeyAnswers(i: {
     id: item.id, label: item.label, groupLabel: item.groupLabel, prompt: item.prompt, answerType: item.answerType,
     expectedAnswer: item.expectedAnswer, acceptableAnswers: [...item.acceptableAnswers], gradingCriteria: item.gradingCriteria,
     pointsCenti: item.pointsCenti, partialCredit: item.partialCredit, page: item.page, answerSource: item.answerSource,
-    aiConfidence: item.aiConfidence, aiNote: item.aiNote,
+    aiConfidence: item.aiConfidence, aiNote: item.aiNote, graded: item.graded,
   }));
   const changed = new Set<string>();
   const notes: string[] = [];

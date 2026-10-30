@@ -3,7 +3,7 @@ import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { getAssignment, listSections } from "@/lib/db/repos/assignments";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
-import { listKeyItems } from "@/lib/db/repos/keys";
+import { listGradedKeyItems, listKeyItems } from "@/lib/db/repos/keys";
 import {
   countSubmissions, deleteSubmissionRow, findBySha, getSubmission, insertSubmission, listGuidanceStaleIds, listIdsByStatus, listItems,
   listItemsForAssignment, listSpotsStaleIds, listStaleIds, listSubmissions, requeueForRegrade, setItemOverride, updateSubmission,
@@ -339,7 +339,7 @@ export function rescoreSubmission(submissionId: string): void {
     const submission = getSubmission(submissionId);
     const assignment = submission && getAssignment(submission.assignmentId);
     if (!submission || !assignment) return;
-    writeScore(submission, assignment, listKeyItems(assignment.id), listItems(submission.id));
+    writeScore(submission, assignment, listGradedKeyItems(assignment.id), listItems(submission.id));
   });
 }
 
@@ -347,7 +347,7 @@ export function rescoreAssignment(assignmentId: string): void {
   tx(() => {
     const assignment = getAssignment(assignmentId);
     if (!assignment) return;
-    const items = listKeyItems(assignmentId);
+    const items = listGradedKeyItems(assignmentId);
     const results = listItemsForAssignment(assignmentId);
     for (const submission of listSubmissions(assignmentId)) {
       writeScore(submission, assignment, items, results.get(submission.id) ?? []);

@@ -7,7 +7,7 @@ import { tx } from "@/lib/db/connection";
 import { getAssignment, listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { deleteKeyQuestions, replaceKeyQuestions } from "@/lib/db/repos/key-questions";
-import { getKey, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
+import { getKey, listGradedKeyItems, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
 import { getAiModel } from "@/lib/db/repos/settings";
 import { getSubmission, markFailed, saveGradingResult, scheduleRetry, startGrading } from "@/lib/db/repos/submissions";
@@ -77,7 +77,8 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
   const assignment = getAssignment(submission.assignmentId);
   const key = getKey(submission.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
-  const items = listKeyItems(assignment.id);
+  // Only the questions the teacher counts are read, judged and scored.
+  const items = listGradedKeyItems(assignment.id);
   const ctx: GradingContext = {
     job, submissionId: submission.id, generation, assignment, key, items, sections: listSections(assignment.id),
     guidance: loadGuidance(assignment, items), engine: grader.engine, spots: spotsForGrading(assignment.id, items),

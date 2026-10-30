@@ -3,10 +3,11 @@ import { getConfig } from "@/lib/config";
 import { tx } from "@/lib/db/connection";
 import { cancelQueuedJobs } from "@/lib/db/repos/jobs";
 import { deleteKeyQuestions, skipPendingKeyQuestions } from "@/lib/db/repos/key-questions";
-import { listKeyItems, updateKey, upsertKeyItems } from "@/lib/db/repos/keys";
+import { listKeyItems, setGradedItems, updateKey, upsertKeyItems } from "@/lib/db/repos/keys";
 import { listStaleIds } from "@/lib/db/repos/submissions";
 import { AppError } from "@/lib/errors";
-import { keyFingerprint, validateSaveKey } from "@/lib/grading/key";
+import { keyFingerprint, LIMITS as KEY_LIMITS, validateSaveKey } from "@/lib/grading/key";
+import { charLength } from "@/lib/grading/text";
 import { newId } from "@/lib/ids";
 import { enqueueExtractKey } from "@/lib/jobs/queue";
 import { isKeyLocked, requireKey } from "@/lib/services/key-state";
@@ -95,12 +96,16 @@ export function saveKey(a: Assignment, input: SaveKeyInput): { revision: number;
     if (key.status === "processing") {
       throw new AppError("invalid_state", "The answer key is still being read. Wait for it to finish before editing.");
     }
-    const validated = validateSaveKey(input, listKeyItems(a.id), { maxItems: maxKeyItems });
+    const current = listKeyItems(a.id);
+    const validated = validateSaveKey(input, current, { maxItems: maxKeyItems });
     if (!validated.ok) throw new AppError("validation", validated.error, { fieldErrors: validated.fieldErrors });
 
     const saved = upsertKeyItems(a.id, validated.items);
     const fingerprint = keyFingerprint(saved, validated.teacherNotes);
-    const revision = fingerprint === key.fingerprint ? key.revision : key.revision + 1;
+    // Leaving a question out just rescores; counting one again needs a regrade: papers graded without it have no answer for it.
+    const wasSkipped = new Set(current.filter((item) => !item.graded).map((item) => item.id));
+    const counted = saved.some((item) => item.graded && wasSkipped.has(item.id));
+    const revision = fingerprint === key.fingerprint && !counted ? key.revision : key.revision + 1;
     updateKey(a.id, {
       teacherNotes: validated.teacherNotes,
       fingerprint,
@@ -114,5 +119,43 @@ export function saveKey(a: Assignment, input: SaveKeyInput): { revision: number;
     rescoreAssignment(a.id);
     const staleCount = listStaleIds(a.id, revision).length;
     return { revision, staleCount };
+  });
+}
+
+/**
+ * Saves the upload page's grading instructions (the key's teacher notes) and, when given, which questions count
+ * (`gradedItemIds`). Like a key save, a changed instruction or a question counted again makes papers graded before stale, and
+ * leaving a question out just rescores. An approved key stays approved (the teacher made the change); an unapproved one doesn't
+ * become approved.
+ */
+export function saveGradingInstructions(
+  a: Assignment,
+  input: { text: string; gradedItemIds?: string[] },
+): { changed: boolean; staleCount: number } {
+  const teacherNotes = input.text.trim();
+  if (charLength(teacherNotes) > KEY_LIMITS.teacherNotes) {
+    throw new AppError("validation", `Use at most ${KEY_LIMITS.teacherNotes} characters.`);
+  }
+  return tx(() => {
+    const key = requireKey(a.id);
+    if (key.status === "processing") {
+      throw new AppError("invalid_state", "The answer key is still being read. Wait for it to finish.");
+    }
+    const current = listKeyItems(a.id);
+    const wanted = input.gradedItemIds ? new Set(input.gradedItemIds) : null;
+    if (wanted && !current.some((item) => wanted.has(item.id))) {
+      throw new AppError("validation", "Keep at least one question counted in the grade.");
+    }
+    const flagsChange = wanted !== null && current.some((item) => item.graded !== wanted.has(item.id));
+    if (teacherNotes === key.teacherNotes && !flagsChange) return { changed: false, staleCount: 0 };
+
+    if (flagsChange) setGradedItems(a.id, wanted);
+    const counted = wanted !== null && current.some((item) => !item.graded && wanted.has(item.id));
+    const fingerprint = keyFingerprint(current, teacherNotes);
+    const revision = fingerprint === key.fingerprint && !counted ? key.revision : key.revision + 1;
+    const approved = key.approvedRevision === key.revision;
+    updateKey(a.id, { teacherNotes, fingerprint, revision, ...(approved ? { approvedRevision: revision } : {}) });
+    if (flagsChange) rescoreAssignment(a.id);
+    return { changed: true, staleCount: approved ? listStaleIds(a.id, revision).length : 0 };
   });
 }

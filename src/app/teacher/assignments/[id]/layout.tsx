@@ -47,7 +47,10 @@ export default async function AssignmentLayout({ params, children }: Props) {
           {header.itemCount > 0 && (
             <>
               <span aria-hidden="true">·</span>
-              <span>{plural(header.itemCount, "question")}, {formatPoints(header.totalPointsCenti)} points</span>
+              <span>
+                {plural(header.itemCount, "question")}, {formatPoints(header.totalPointsCenti)} points
+                {(header.skippedCount ?? 0) > 0 && <> ({header.skippedCount} more not graded)</>}
+              </span>
             </>
           )}
           <span aria-hidden="true">·</span>

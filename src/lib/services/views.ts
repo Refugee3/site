@@ -4,7 +4,7 @@ import {
   getAssignmentUsage, listAssignmentsForTeacher, listSections, type ModelUsage,
 } from "@/lib/db/repos/assignments";
 import { queuedJobsAhead } from "@/lib/db/repos/jobs";
-import { listKeyItems } from "@/lib/db/repos/keys";
+import { listGradedKeyItems, listKeyItems } from "@/lib/db/repos/keys";
 import { listLessons, listLessonsForSubmission } from "@/lib/db/repos/lessons";
 import { countPendingScans, listScans } from "@/lib/db/repos/scans";
 import { getAppSettings, getGradingEngine, getOllamaSpeedSettings } from "@/lib/db/repos/settings";
@@ -87,7 +87,7 @@ export function getStrugglingQuestions(t: Teacher): StrugglingQuestion[] {
   for (const a of listAssignmentsForTeacher(t.id)) {
     const submissions = listSubmissions(a.id);
     if (submissions.filter((s) => isCountedStatus(s.status)).length < MISS_HIGHLIGHT_MIN_PAPERS) continue;
-    const stats = computeItemStats(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
+    const stats = computeItemStats(listGradedKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
     for (const s of stats.highlighted) {
       found.push({
         question: {
@@ -115,7 +115,7 @@ export function getStrugglingQuestions(t: Teacher): StrugglingQuestion[] {
 /** A quiz's matching answers (pairs of students with the same rare wrong answers); null for homework, which isn't checked. */
 export function getAnswerMatches(a: Assignment): AnswerMatchSummary | null {
   if (a.kind !== "quiz") return null;
-  return findAnswerMatches(listKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
+  return findAnswerMatches(listGradedKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
 }
 
 /** For the dashboard: each quiz with matching answers, newest quiz first. */
@@ -125,7 +125,7 @@ export function getQuizMatchAlerts(t: Teacher): Array<{ assignmentId: string; ti
     if (a.kind !== "quiz") continue;
     const submissions = listSubmissions(a.id);
     if (submissions.filter((s) => isCountedStatus(s.status)).length < MATCH_MIN_PAPERS) continue;
-    const { matches } = findAnswerMatches(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
+    const { matches } = findAnswerMatches(listGradedKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a);
     if (matches.length === 0) continue;
     alerts.push({
       assignmentId: a.id, title: a.title, pairs: matches.length, strong: matches.filter((m) => m.strength === "strong").length,
@@ -136,12 +136,14 @@ export function getQuizMatchAlerts(t: Teacher): Array<{ assignmentId: string; ti
 }
 
 export function getAssignmentHeader(a: Assignment): AssignmentHeader {
-  const { key, items, approved } = loadKeyState(a.id);
+  const { key, items: allItems, approved } = loadKeyState(a.id);
+  const items = allItems.filter((item) => item.graded);
   return {
     assignment: a,
     keyStatus: key.status,
     keyApproved: approved,
     itemCount: items.length,
+    skippedCount: allItems.length - items.length,
     totalPointsCenti: items.reduce((sum, item) => sum + item.pointsCenti, 0),
     counts: currentCounts(a.id),
     scans: countPendingScans(a.id),
@@ -202,7 +204,7 @@ export function getBoardView(a: Assignment, filter: BoardFilter, missedItemId: s
  * review) and missed it (judged, short of full accuracy credit).
  */
 function missedLookup(a: Assignment, itemId: string) {
-  const items = listKeyItems(a.id);
+  const items = listGradedKeyItems(a.id);
   const index = items.findIndex((item) => item.id === itemId);
   if (index < 0) return null;
   const resultsBySubmission = listItemsForAssignment(a.id);
@@ -219,14 +221,14 @@ function missedLookup(a: Assignment, itemId: string) {
 
 /** How the class did on each key item: current papers that are graded or need review (see item-stats.ts). */
 export function getItemStats(a: Assignment): ItemStatsSummary {
-  return computeItemStats(listKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
+  return computeItemStats(listGradedKeyItems(a.id), listSubmissions(a.id), listSections(a.id), listItemsForAssignment(a.id), a);
 }
 
 /** The Questions tab: the stats, and whether papers are still being graded (the page refreshes while they are). */
 export function getQuestionsView(a: Assignment): { stats: ItemStatsSummary; active: boolean } {
   const submissions = listSubmissions(a.id);
   return {
-    stats: computeItemStats(listKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a),
+    stats: computeItemStats(listGradedKeyItems(a.id), submissions, listSections(a.id), listItemsForAssignment(a.id), a),
     active: submissions.some((s) => s.status === "queued" || s.status === "grading"),
   };
 }
@@ -270,7 +272,9 @@ export function getKeyEditorView(a: Assignment): KeyEditorView {
 
 export function getReviewView(s: Submission, a: Assignment): ReviewView {
   const sections = listSections(a.id);
-  const { key, items } = loadKeyState(a.id);
+  const { key } = loadKeyState(a.id);
+  // The review shows the questions that count; one the teacher left out isn't read or scored.
+  const items = listGradedKeyItems(a.id);
   const results = listItems(s.id);
   const score = scoreOf(s, a, items, results);
   const resultByItem = new Map(results.map((result) => [result.itemId, result]));
@@ -364,6 +368,9 @@ export function getUploadPageView(a: Assignment): UploadPageView {
     maxScanMb: cfg.maxScanBytes / MIB,
     maxScanPages: cfg.maxScanPages,
     onePassAvailable: onePassAvailable(a.id),
+    instructions: key && key.status !== "processing" && items.length > 0
+      ? { text: key.teacherNotes, items: items.map((item) => ({ id: item.id, label: item.label, graded: item.graded })) }
+      : null,
   };
 }
 
@@ -539,7 +546,7 @@ const CSV_COLUMNS = [
  * page). "Earlier attempts" counts the papers folded under each row, so a merge is visible in the export.
  */
 export function buildGradesCsv(a: Assignment): { filename: string; csv: string } {
-  const items = listKeyItems(a.id);
+  const items = listGradedKeyItems(a.id);
   const resultsBySubmission = listItemsForAssignment(a.id);
   const header = [...CSV_COLUMNS, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
   const rows = organizeBoard(listSubmissions(a.id), listSections(a.id)).flatMap((group) =>

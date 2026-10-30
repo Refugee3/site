@@ -9,7 +9,7 @@ function keyItem(o: Partial<KeyItem> = {}): KeyItem {
   return {
     id: "item-1", assignmentId: "a1", position: 0, label: "1", groupLabel: "", prompt: "Solve 3/x = 9/12.",
     answerType: "numeric", expectedAnswer: "x = 4", acceptableAnswers: ["4", "x=4.0"], gradingCriteria: "Show work.",
-    pointsCenti: 150, partialCredit: true, page: 2, answerSource: "key", aiConfidence: "high", aiNote: "", ...o,
+    pointsCenti: 150, partialCredit: true, page: 2, answerSource: "key", aiConfidence: "high", aiNote: "", graded: true, ...o,
   };
 }
 
@@ -91,7 +91,7 @@ describe("buildSaveKeyInput", () => {
         acknowledgeAiProposed: false,
         items: [{
           id: "item-1", label: "1", groupLabel: "", prompt: "Solve 3/x = 9/12.", answerType: "numeric", expectedAnswer: "x = 4",
-          acceptableAnswers: ["4", "x = 4.0"], gradingCriteria: "Show work.", pointsCenti: 150, partialCredit: true, page: null,
+          acceptableAnswers: ["4", "x = 4.0"], gradingCriteria: "Show work.", pointsCenti: 150, partialCredit: true, page: null, graded: true,
         }],
       },
     });

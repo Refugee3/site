@@ -9,7 +9,7 @@ import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getSubmission, updateSubmission } from "@/lib/db/repos/submissions";
 import { makeGradingOutput } from "@/lib/grading/test-utils";
 import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
-import { ingestKeyPdf, retryKeyExtraction, saveKey } from "@/lib/services/keys";
+import { ingestKeyPdf, retryKeyExtraction, saveGradingInstructions, saveKey } from "@/lib/services/keys";
 import { ingestTeacherUpload } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
 import type { Assignment, KeyItem, SaveKeyInput } from "@/lib/types";
@@ -185,6 +185,89 @@ describe("saveKey", () => {
     updateKey(assignment.id, { status: "processing" });
     expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row()] }))
       .toThrow(expect.objectContaining({ code: "invalid_state" }));
+  });
+});
+
+describe("questions left out of the grade", () => {
+  async function gradedPaper(): Promise<{ id: string; labelsSent: string[] }> {
+    const labelsSent: string[] = [];
+    const { submissionId } = await ingestTeacherUpload(assignment, [{ filename: "p.pdf", bytes: await makePdf(1) }]);
+    await drainQueue(answeringGrader((refs, input) => {
+      labelsSent.push(...input.items.map((item) => item.label));
+      return makeGradingOutput(refs);
+    }));
+    return { id: submissionId, labelsSent };
+  }
+
+  it("aren't sent to the AI or scored", async () => {
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2", graded: false }), row({ label: "3" })] });
+    const paper = await gradedPaper();
+
+    expect(paper.labelsSent).toEqual(["1", "3"]);
+    expect(getSubmission(paper.id)).toMatchObject({ scoreEarnedCenti: 200, scoreMaxCenti: 200 });
+  });
+
+  it("just rescore when left out; counting one again makes graded papers stale", async () => {
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" })] });
+    const paper = await gradedPaper();
+    const items = listKeyItems(assignment.id);
+
+    expect(saveKey(assignment, {
+      teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf(items, (item) => ({ graded: item.label !== "2" })),
+    })).toEqual({ revision: 1, staleCount: 0 });
+    expect(getSubmission(paper.id)).toMatchObject({ scoreEarnedCenti: 100, scoreMaxCenti: 100 });
+
+    // A save that doesn't say (an older form, the Workspace's "Approve key") keeps the question left out.
+    expect(saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf(items) })).toEqual({ revision: 1, staleCount: 0 });
+    expect(listKeyItems(assignment.id).map((item) => item.graded)).toEqual([true, false]);
+
+    expect(saveKey(assignment, {
+      teacherNotes: "", acknowledgeAiProposed: false, items: rowsOf(items, () => ({ graded: true })),
+    })).toEqual({ revision: 2, staleCount: 1 });
+  });
+
+  it("can't be every question", () => {
+    expect(() => saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row({ graded: false })] }))
+      .toThrow(expect.objectContaining({ code: "validation", message: "Keep at least one question counted in the grade." }));
+  });
+});
+
+describe("saveGradingInstructions", () => {
+  function approvedKey(): KeyItem[] {
+    saveKey(assignment, { teacherNotes: "", acknowledgeAiProposed: false, items: [row(), row({ label: "2" }), row({ label: "3" })] });
+    return listKeyItems(assignment.id);
+  }
+
+  it("saves the instructions, keeps the key approved and makes graded papers stale", () => {
+    approvedKey();
+    const graded = seedSubmission(assignment.id, { status: "graded" });
+    db.prepare("UPDATE submissions SET graded_key_revision = 1 WHERE id = ?").run(graded.id);
+
+    expect(saveGradingInstructions(assignment, { text: "  Grade the work on 3, not just the answer. " })).toEqual({ changed: true, staleCount: 1 });
+    expect(getKey(assignment.id)).toMatchObject({ teacherNotes: "Grade the work on 3, not just the answer.", revision: 2, approvedRevision: 2 });
+
+    expect(saveGradingInstructions(assignment, { text: "Grade the work on 3, not just the answer." })).toEqual({ changed: false, staleCount: 0 });
+    expect(getKey(assignment.id)!.revision).toBe(2);
+  });
+
+  it("sets which questions count", () => {
+    const items = approvedKey();
+    const only = items.filter((item) => item.label !== "2").map((item) => item.id);
+
+    expect(saveGradingInstructions(assignment, { text: "Skip 2.", gradedItemIds: only })).toEqual({ changed: true, staleCount: 0 });
+    expect(listKeyItems(assignment.id).map((item) => item.graded)).toEqual([true, false, true]);
+    expect(() => saveGradingInstructions(assignment, { text: "Skip 2.", gradedItemIds: [] }))
+      .toThrow(expect.objectContaining({ code: "validation" }));
+  });
+
+  it("doesn't approve an unapproved key, and waits for a key being read", () => {
+    approvedKey();
+    updateKey(assignment.id, { approvedRevision: null });
+    saveGradingInstructions(assignment, { text: "Units required." });
+    expect(getKey(assignment.id)).toMatchObject({ revision: 2, approvedRevision: null });
+
+    updateKey(assignment.id, { status: "processing" });
+    expect(() => saveGradingInstructions(assignment, { text: "Other." })).toThrow(expect.objectContaining({ code: "invalid_state" }));
   });
 });
 

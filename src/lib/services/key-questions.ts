@@ -73,7 +73,7 @@ export function approveKeyAsIs(a: Assignment, o: { acknowledgeAiProposed: boolea
       items: listKeyItems(a.id).map((i) => ({
         id: i.id, label: i.label, groupLabel: i.groupLabel, prompt: i.prompt, answerType: i.answerType, expectedAnswer: i.expectedAnswer,
         acceptableAnswers: i.acceptableAnswers, gradingCriteria: i.gradingCriteria, pointsCenti: i.pointsCenti, partialCredit: i.partialCredit,
-        page: i.page,
+        page: i.page, graded: i.graded,
       })),
     });
   });

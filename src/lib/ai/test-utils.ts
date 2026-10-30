@@ -25,7 +25,7 @@ export function makeKeyItem(overrides: Partial<KeyItem> = {}): KeyItem {
   return {
     id: "00000000-0000-4000-8000-000000000001", assignmentId: "00000000-0000-4000-8000-0000000000aa", position: 0,
     label: "1", groupLabel: "", prompt: "", answerType: "short_answer", expectedAnswer: "", acceptableAnswers: [],
-    gradingCriteria: "", pointsCenti: 100, partialCredit: true, page: null, answerSource: "teacher", aiConfidence: null, aiNote: "",
+    gradingCriteria: "", pointsCenti: 100, partialCredit: true, page: null, answerSource: "teacher", aiConfidence: null, aiNote: "", graded: true,
     ...overrides,
   };
 }

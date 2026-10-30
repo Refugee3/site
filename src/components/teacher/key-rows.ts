@@ -22,10 +22,12 @@ export interface DraftRow {
   answerSource: AnswerSource;
   aiConfidence: Confidence | null;
   aiNote: string;
+  /** Counted in the grade ("Grade this question"). */
+  graded: boolean;
 }
 
 type SaveKeyRow = SaveKeyInput["items"][number];
-export type RowField = Exclude<keyof SaveKeyRow, "id" | "partialCredit">;
+export type RowField = Exclude<keyof SaveKeyRow, "id" | "partialCredit" | "graded">;
 export type FieldErrors = Record<string, string[]>;
 
 export function draftFromItem(item: KeyItem): DraftRow {
@@ -45,6 +47,7 @@ export function draftFromItem(item: KeyItem): DraftRow {
     answerSource: item.answerSource,
     aiConfidence: item.aiConfidence,
     aiNote: item.aiNote,
+    graded: item.graded,
   };
 }
 
@@ -71,6 +74,7 @@ export function newDraftRow(key: string, previous?: DraftRow): DraftRow {
     answerSource: "teacher",
     aiConfidence: null,
     aiNote: "",
+    graded: true,
   };
 }
 
@@ -153,6 +157,7 @@ export function buildSaveKeyInput(
       pointsCenti: points.ok ? points.centi : 0,
       partialCredit: row.partialCredit,
       page: page.ok ? page.page : null,
+      graded: row.graded,
     };
   });
 

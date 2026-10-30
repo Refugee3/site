@@ -21,6 +21,7 @@ export function makeKeyItem(o: Partial<KeyItem> = {}): KeyItem {
     answerSource: "teacher",
     aiConfidence: null,
     aiNote: "",
+    graded: true,
     ...o,
   };
 }

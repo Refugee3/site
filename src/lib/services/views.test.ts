@@ -167,7 +167,7 @@ describe("teacher views", () => {
     await gradedPaper("Maria Lopez");
     const header = getAssignmentHeader(assignment);
     expect(header).toEqual({
-      assignment, keyStatus: "ready", keyApproved: true, itemCount: 3, totalPointsCenti: 400,
+      assignment, keyStatus: "ready", keyApproved: true, itemCount: 3, skippedCount: 0, totalPointsCenti: 400,
       counts: { queued: 0, grading: 0, graded: 1, needs_review: 0, failed: 0, total: 1 },
       scans: { splitting: 0, onePass: 0, review: 0, failed: 0, firstReviewId: null },
     });
@@ -433,6 +433,7 @@ describe("upload and scan views", () => {
     expect(view).toEqual({
       keyApproved: true, keyPageCount: null, scans: [], maxUploadMb: 20, maxPages: 40, maxScanMb: 100, maxScanPages: 200,
       onePassAvailable: true,
+      instructions: { text: "", items: [expect.objectContaining({ label: "1", graded: true }), expect.objectContaining({ label: "2a" }), expect.objectContaining({ label: "2b" })] },
     });
 
     const older = await seedScan(assignment.id, { pages: 4 });
