@@ -1,0 +1,246 @@
+import { connection } from "next/server";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { PdfFrame } from "@/components/pdf-frame";
+import { CollapsedOnPhones } from "@/components/teacher/collapsed-on-phones";
+import { KeyEditor } from "@/components/teacher/key-editor";
+import { KeyUpload } from "@/components/teacher/key-upload";
+import { EstimatedProgress } from "@/components/teacher/progress-widgets";
+import { BlankWorksheetCard } from "@/components/teacher/worksheet/blank-worksheet-card";
+import { plural } from "@/components/teacher/text";
+import { Alert } from "@/components/ui/alert";
+import { Card } from "@/components/ui/card";
+import { cx } from "@/components/ui/cx";
+import { LinkButton } from "@/components/ui/link-button";
+import { Spinner } from "@/components/ui/spinner";
+import { ProjectInstructionsCard } from "@/components/teacher/project-instructions";
+import { requireOwnedAssignment } from "@/lib/auth/dal";
+import { now } from "@/lib/clock";
+import { isKeyApproved } from "@/lib/grading/key";
+import { spotsStaleIds } from "@/lib/services/submissions";
+import { getKeyEditorView } from "@/lib/services/views";
+import { getWorksheetView } from "@/lib/services/worksheets";
+import type { Assignment, KeyEditorView } from "@/lib/types";
+
+const PROCESSING_POLL_MS = 3000;
+
+const REPLACE_CONFIRM = "Upload this as the new key? The AI reads it and every current item is replaced.";
+
+const LOCKED_NOTE =
+  "Papers have already been graded with this key, so its PDF can't be replaced or read again (that would replace every item). Edit the items instead.";
+
+export default async function AnswerKeyPage(props: PageProps<"/teacher/assignments/[id]/key">) {
+  await connection();
+  const { id } = await props.params;
+  const { assignment } = await requireOwnedAssignment(id);
+  const view = getKeyEditorView(assignment);
+  const { key, items } = view;
+  const buildManually = (await props.searchParams).manual === "1";
+
+  const project = assignment.kind === "project";
+  const instructionsCard = project && (
+    <ProjectInstructionsCard
+      assignmentId={assignment.id}
+      mode={assignment.projectMode ?? "points"}
+      instructions={key.teacherNotes}
+      hasRubric={items.length > 0}
+      reviewedCount={view.gradedCount}
+    />
+  );
+
+  if (key.status === "processing") return <Processing view={view} project={project} top={instructionsCard} />;
+
+  const showEditor = key.status === "ready" || items.length > 0 || buildManually;
+  const uploadUrl = `/api/teacher/assignments/${assignment.id}/key`;
+
+  return (
+    <div className="flex flex-col gap-6">
+      {instructionsCard}
+      {key.status === "empty" && !buildManually && (project ? <AddRubric uploadUrl={uploadUrl} /> : <AddKey uploadUrl={uploadUrl} />)}
+      {key.status === "failed" && <Failed assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} buildManually={buildManually} />}
+
+      {showEditor && (
+        <>
+          {key.status === "ready" && !isKeyApproved(key, items.length) && (
+            <Alert tone="warning" title={project ? "Check the rubric, then save to approve it" : "Check the key, then save to approve it"}>
+              {project
+                ? "Projects are scored against the rubric once you approve it. Amber items are ones the AI was unsure about."
+                : "Papers are graded only against an approved key. Amber items are ones the AI was unsure about."}
+            </Alert>
+          )}
+          {key.aiNotes && (
+            <Alert tone="info" title="Notes from the AI">
+              <p className="whitespace-pre-wrap">{key.aiNotes}</p>
+            </Alert>
+          )}
+          <EditorWithPdf assignment={assignment} view={view} />
+          {key.status === "ready" && !project && (
+            <BlankWorksheetCard
+              assignmentId={assignment.id}
+              view={getWorksheetView(assignment)}
+              regradeCount={spotsStaleIds(assignment).length}
+            />
+          )}
+          {key.status === "ready" && key.sourcePdfPath && (
+            <ReplaceKey assignmentId={assignment.id} view={view} uploadUrl={uploadUrl} project={project} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Processing({ view, project, top }: { view: KeyEditorView; project: boolean; top: React.ReactNode }) {
+  const what = project ? "rubric" : "answer key";
+  return (
+    <div className="flex flex-col gap-6">
+      {top}
+      <Card>
+        <div className="flex items-start gap-3">
+          <Spinner className="mt-0.5 size-6 shrink-0 text-brand-600" />
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {view.extraction ? (
+              <EstimatedProgress
+                label={`Reading the ${what}…`}
+                barLabel={`Reading the ${what}`}
+                startedAt={view.extraction.extractionStartedAt}
+                typicalMs={view.extraction.typicalExtractionMs}
+                serverNow={now()}
+              />
+            ) : (
+              <p className="font-semibold">Reading the {what}…</p>
+            )}
+            <p className="text-muted">
+              The AI is listing every {project ? "rubric item with its points" : "question with its answer"} for you to check. This
+              page updates by itself.
+            </p>
+          </div>
+        </div>
+      </Card>
+      {view.keyPdfUrl && <PdfFrame src={view.keyPdfUrl} title="Answer key PDF" />}
+      <AutoRefresh intervalMs={PROCESSING_POLL_MS} />
+    </div>
+  );
+}
+
+function AddRubric({ uploadUrl }: { uploadUrl: string }) {
+  return (
+    <Card title="Rubric (optional)">
+      <div className="flex flex-col gap-4">
+        <p className="text-muted">
+          A project needs no answer key: the instructions above are enough. If you have a rubric or a key, upload it and the AI
+          scores each of its items, with the points you approve.
+        </p>
+        <KeyUpload uploadUrl={uploadUrl} disabled={false} zoneTitle="Drop a rubric here" hideInstructions />
+        <LinkButton href="?manual=1" variant="secondary" className="self-start">
+          Type a rubric in yourself
+        </LinkButton>
+      </div>
+    </Card>
+  );
+}
+
+function AddKey({ uploadUrl }: { uploadUrl: string }) {
+  return (
+    <Card title="Add the answer key">
+      <div className="flex flex-col gap-4">
+        <p className="text-muted">
+          Upload the key as a PDF, photos, or a Word or text file: typed or handwritten, a filled-in worksheet, a list of
+          answers or a rubric. The AI lists every question with its answer, and you check the list before any paper is graded.
+        </p>
+        <KeyUpload uploadUrl={uploadUrl} disabled={false} zoneTitle="Drop the answer key here" />
+        <p className="text-sm text-muted">No file? You can type the key in yourself instead.</p>
+        <LinkButton href="?manual=1" variant="secondary" className="self-start">
+          Build the key manually
+        </LinkButton>
+      </div>
+    </Card>
+  );
+}
+
+function Failed(props: { assignmentId: string; view: KeyEditorView; uploadUrl: string; buildManually: boolean }) {
+  const { assignmentId, view, uploadUrl, buildManually } = props;
+  const canRetry = view.key.sourcePdfPath !== null && !view.locked;
+  return (
+    <Card title="The answer key couldn't be read">
+      <div className="flex flex-col gap-4">
+        <Alert tone="danger">
+          <p className="whitespace-pre-wrap">{view.key.errorMessage ?? "The AI could not turn this PDF into a list of items."}</p>
+        </Alert>
+        {view.locked && <p className="text-sm text-muted">{LOCKED_NOTE}</p>}
+        <KeyUpload
+          uploadUrl={uploadUrl}
+          disabled={view.locked}
+          label="Upload a different file"
+          variant="secondary"
+          confirmText={view.items.length > 0 ? REPLACE_CONFIRM : undefined}
+          instructions={view.key.teacherNotes}
+          retry={canRetry ? { assignmentId, label: "Try again" } : undefined}
+        />
+        {view.items.length === 0 && !buildManually && (
+          <LinkButton href="?manual=1" variant="secondary" className="self-start">
+            Build the key manually
+          </LinkButton>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function EditorWithPdf({ assignment, view }: { assignment: Assignment; view: KeyEditorView }) {
+  const { key, items, keyPdfUrl } = view;
+  const pdfLabel = `${key.sourceFilename ?? "Answer key"}${key.sourcePageCount !== null ? ` · ${plural(key.sourcePageCount, "page")}` : ""}`;
+  return (
+    <div className={cx("grid gap-6", keyPdfUrl && "xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
+      {keyPdfUrl && (
+        <div className="flex flex-col gap-2 xl:sticky xl:top-4 xl:self-start">
+          {/* On phones the 70vh frame would push every item a screen down; it opens on request. */}
+          <CollapsedOnPhones summary={`Key PDF: ${pdfLabel}`}>
+            <p className="mb-2 text-sm text-muted max-md:hidden">{pdfLabel}</p>
+            <PdfFrame src={keyPdfUrl} title="Answer key PDF" />
+          </CollapsedOnPhones>
+        </div>
+      )}
+      <KeyEditor
+        assignmentId={assignment.id}
+        items={items}
+        teacherNotes={key.teacherNotes}
+        version={key.updatedAt}
+        approved={isKeyApproved(key, items.length)}
+        gradedCount={view.gradedCount}
+        kind={assignment.kind}
+      />
+    </div>
+  );
+}
+
+function ReplaceKey(p: { assignmentId: string; view: KeyEditorView; uploadUrl: string; project: boolean }) {
+  const { assignmentId, view, uploadUrl, project } = p;
+  return (
+    <Card title={project ? "Replace the rubric" : "Replace the key PDF"}>
+      <div className="flex flex-col gap-4">
+        {view.locked ? (
+          <p className="text-sm text-muted">{LOCKED_NOTE}</p>
+        ) : (
+          <p className="text-sm text-muted">
+            Uploading a new key, or reading this one again, replaces every item above, including your edits. Change the
+            instructions first to have the AI split questions or give points differently.
+          </p>
+        )}
+        <KeyUpload
+          uploadUrl={uploadUrl}
+          disabled={view.locked}
+          label="Upload a new key"
+          variant="secondary"
+          confirmText={REPLACE_CONFIRM}
+          instructions={view.key.teacherNotes}
+          hideInstructions={project}
+          retry={view.locked ? undefined : {
+            assignmentId,
+            label: "Read this PDF again",
+            confirmText: "Read the key PDF again? This replaces every item, including your edits.",
+          }}
+        />
+      </div>
+    </Card>
+  );
+}
