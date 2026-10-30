@@ -77,7 +77,12 @@ export function createAssignment(teacherId: string, i: AssignmentFormInput): Ass
  * assignment; then the key is stored and queued for reading. A key that can't be stored (not a readable file, too many pages)
  * takes the new assignment with it, so a failed drop leaves nothing behind.
  */
-export async function createAssignmentFromKey(teacherId: string, kind: AssignmentKind, files: UploadedFile[]): Promise<Assignment> {
+export async function createAssignmentFromKey(
+  teacherId: string,
+  kind: AssignmentKind,
+  files: UploadedFile[],
+  instructions?: string,
+): Promise<Assignment> {
   const assignment = createAssignment(teacherId, {
     title: placeholderTitle(kind),
     kind,
@@ -89,7 +94,7 @@ export async function createAssignmentFromKey(teacherId: string, kind: Assignmen
     writeNotes: false,
   });
   try {
-    await ingestKeyPdf(assignment, files);
+    await ingestKeyPdf(assignment, files, instructions);
   } catch (e) {
     await deleteAssignment(assignment);
     throw e;

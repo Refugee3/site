@@ -41,9 +41,11 @@ export async function saveKeyAction(
   return result;
 }
 
-export async function retryKeyExtractionAction(assignmentId: string): Promise<ActionResult> {
+/** Reads the key PDF again; `instructions` (the "Instructions for the AI" box) replace the key's instructions first. */
+export async function retryKeyExtractionAction(assignmentId: string, instructions?: string): Promise<ActionResult> {
   const { assignment } = await requireOwnedAssignment(assignmentId);
-  const result = await attempt(() => retryKeyExtraction(assignment));
+  const text = instructions === undefined ? undefined : parseInput(z.string("Send the instructions as text."), instructions);
+  const result = await attempt(() => retryKeyExtraction(assignment, text));
   if (result.ok) refresh();
   return result;
 }

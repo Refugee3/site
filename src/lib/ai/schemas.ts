@@ -23,7 +23,7 @@ export const KeyExtractionSchema = z.object({
   items: z.array(z.object({
     label: z.string(), group_label: z.string(), prompt: z.string(), answer_type: z.enum(ANSWER_TYPES),
     expected_answer: z.string(), acceptable_answers: z.array(z.string()), grading_criteria: z.string(),
-    points: z.number().nullable(), group_points: z.number().nullable(), page: z.number().nullable(),
+    points: z.number().nullable(), group_points: z.number().nullable(), graded: z.boolean(), page: z.number().nullable(),
     answer_source: z.enum(["key", "ai_proposed"]), confidence: conf, note: z.string(),
   })),
   stated_total_points: z.number().nullable(),

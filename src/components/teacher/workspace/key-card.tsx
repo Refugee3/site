@@ -15,7 +15,6 @@ import type { LiveKey, LiveKeyQuestion } from "@/lib/live/snapshot";
 import type { KeyQuestionKind } from "@/lib/types";
 import { KeyUpload } from "../key-upload";
 import { EstimatedProgress } from "../progress-widgets";
-import { RetryExtractionButton } from "../retry-extraction-button";
 import { plural } from "../text";
 import { useActionRunner } from "../use-action-runner";
 
@@ -44,7 +43,7 @@ export function KeyCardBody({ assignmentId, keyState: key, questions, serverNow 
     case "empty":
       return (
         <>
-          <KeyUpload uploadUrl={uploadUrl} disabled={false} zoneTitle="Drop the answer key here" />
+          <KeyUpload uploadUrl={uploadUrl} disabled={false} instructions={key.instructions} zoneTitle="Drop the answer key here" />
           <p className="text-sm text-muted">
             The AI lists every question with its answer and asks you about anything unclear. No file?{" "}
             <Link href={`${keyHref}?manual=1`}>Type the key in yourself</Link>.
@@ -80,10 +79,14 @@ export function KeyCardBody({ assignmentId, keyState: key, questions, serverNow 
           <Alert tone="danger" title="The answer key couldn't be read">
             <p className="whitespace-pre-wrap">{key.errorMessage ?? "The AI could not turn this file into a list of questions."}</p>
           </Alert>
-          <div className="flex flex-wrap items-start gap-3">
-            {key.filename !== null && !key.locked && <RetryExtractionButton assignmentId={assignmentId} label="Try again" />}
-            <KeyUpload uploadUrl={uploadUrl} disabled={key.locked} label="Upload a different file" variant="secondary" />
-          </div>
+          <KeyUpload
+            uploadUrl={uploadUrl}
+            disabled={key.locked}
+            label="Upload a different file"
+            variant="secondary"
+            instructions={key.instructions}
+            retry={key.filename !== null && !key.locked ? { assignmentId, label: "Try again" } : undefined}
+          />
           <p className="text-sm text-muted">
             Or <Link href={`${keyHref}?manual=1`}>type the key in yourself</Link>.
           </p>

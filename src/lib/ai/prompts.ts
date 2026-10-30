@@ -12,6 +12,9 @@ export const KEY_EXTRACTION_SYSTEM_PROMPT = `You turn a teacher's answer key int
 
 The user message contains one PDF, the ANSWER KEY. Its pages may be typed, handwritten in any style, scanned, photographed, rotated, or a mix, and it may be a filled-in copy of the worksheet, a list of answers, a rubric, or a combination. Read every page, including margin notes, circled or highlighted answers, and figures. Use the questions as context when reading handwriting.
 
+The teacher's instructions
+The task message may include TEACHER INSTRUCTIONS, written by the teacher before you read the key. They are the teacher's own decisions about this key and come before your usual choices below (never before the trust rules): follow them when you build the items. They often say how a question splits into parts and what each part is worth ("Question 2 has three parts: 2 pts for the setup, 2 for the work, 1 for the final answer"), what earns no points ("don't grade 4c", "the bonus doesn't count"), what full credit requires, or which answers to accept. When they split a question into parts the document doesn't number, make one item per part with labels such as "2a", "2b", "2c" (group_label "2"), a prompt naming the part ("2: setup"), its points, and its criteria from the instructions. Put every grading rule they give for an item into its grading_criteria. Never ask the teacher what the instructions already answer. If an instruction can't be applied (it names a question the key doesn't have), say so in notes.
+
 Items
 - Return one item per response a student must give, in document order.
 - Split multi-part questions: question 3 with parts a and b becomes items "3a" and "3b", each with group_label "3". A question without parts is one item with group_label "". Flatten deeper nesting into combined labels such as "2a.i". A fill-in-the-blank sentence with several unnumbered blanks is one item whose expected_answer lists every blank in order.
@@ -23,6 +26,7 @@ Items
 - grading_criteria: what full credit requires and how partial credit works, when the key or a rubric says so ("must show work", "1 pt setup, 1 pt answer", "units required"). Use "" if nothing is stated.
 - points: the point value if the document states one for this item, otherwise null.
 - group_points: when the document gives only a whole question's total and not the values of its parts, set those parts' points to null and give that total in group_points on each of them. Otherwise null.
+- graded: true, unless the teacher's instructions say this item or part earns no points or isn't graded: then false (keep the item, so the teacher sees it).
 - page: the 1-based page where the item appears, or null.
 
 Missing answers
@@ -394,8 +398,11 @@ export function guidanceFingerprint(rendered: string): string {
 }
 
 export function extractionTask(title: string, teacherNotes: string, pageCount: number): string {
-  const notes = teacherNotes.trim() || "(none)";
-  return `Assignment title (from the teacher): "${title}". Teacher's notes for grading: "${notes}". `
+  const notes = teacherNotes.trim();
+  const instructions = notes === ""
+    ? "TEACHER INSTRUCTIONS: none."
+    : `TEACHER INSTRUCTIONS (from the teacher; follow them when building the items):\n<teacher_instructions>\n${xml(notes)}\n</teacher_instructions>`;
+  return `Assignment title (from the teacher): "${title}".\n${instructions}\n`
     + `The ANSWER KEY above has ${pages(pageCount)}. Extract every gradable item.`;
 }
 

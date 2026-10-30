@@ -63,6 +63,8 @@ function extractionFatal(x: KeyExtraction, maxItems: number): string | null {
 
 function normalizeItems(x: KeyExtraction, pageCount: number): NewKeyItem[] {
   const points = itemPoints(x);
+  // Left out per the teacher's instructions; never every item (a key must count something).
+  const anyGraded = x.items.some((item) => item.graded !== false);
   return x.items.map((item, index): NewKeyItem => {
     const notes = [truncateChars(item.note.trim(), LIMITS.aiNote), points[index].note];
     if (points[index].clampedFrom !== null) {
@@ -82,6 +84,7 @@ function normalizeItems(x: KeyExtraction, pageCount: number): NewKeyItem[] {
       answerSource: item.answer_source,
       aiConfidence: item.confidence,
       aiNote: notes.filter((note) => note !== "").join(" "),
+      graded: !anyGraded || item.graded !== false,
     };
   });
 }

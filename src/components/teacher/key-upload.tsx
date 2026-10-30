@@ -11,6 +11,8 @@ import { useFileDrop } from "@/components/ui/use-file-drop";
 import { useHydrated } from "@/components/ui/use-hydrated";
 import { readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_ACCEPT, UPLOAD_FORMATS } from "@/lib/client/upload-files";
+import { KeyInstructionsField } from "./key-instructions-field";
+import { RetryExtractionButton } from "./retry-extraction-button";
 
 export interface KeyUploadProps {
   /** `/api/teacher/assignments/<id>/key` */
@@ -24,14 +26,19 @@ export interface KeyUploadProps {
   zoneTitle?: ReactNode;
   /** After a 202, besides refreshing the page (e.g. the workspace, which also follows the key live). */
   onUploaded?: () => void;
+  /** The key's current grading instructions, shown in the "Instructions for the AI" box and sent (as edited) with the key. */
+  instructions?: string;
+  /** A "read the stored file again" button next to the upload button, which sends the box's instructions too. */
+  retry?: { assignmentId: string; label: string; confirmText?: string };
 }
 
 /**
  * Uploads the answer key as soon as it is chosen (several files are merged in order; images are converted to
- * JPEG first); on 202 the page refreshes into its "processing" state.
+ * JPEG first), with the teacher's instructions for reading it; on 202 the page refreshes into its "processing" state.
  */
 export function KeyUpload(props: KeyUploadProps) {
   const { uploadUrl, disabled, label = "Upload answer key", variant = "primary", confirmText, zoneTitle, onUploaded } = props;
+  const [instructions, setInstructions] = useState(props.instructions ?? "");
   const router = useRouter();
   const hydrated = useHydrated();
   const formatsId = useId();
@@ -67,6 +74,7 @@ export function KeyUpload(props: KeyUploadProps) {
         }
         body.append("file", prepared, prepared.name);
       }
+      body.append("instructions", instructions);
       const result = await uploadWithProgress(uploadUrl, body, setProgress);
       if (result.status === 202) {
         onUploaded?.();
@@ -81,7 +89,8 @@ export function KeyUpload(props: KeyUploadProps) {
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex w-full flex-col gap-3">
+      <KeyInstructionsField id={`${formatsId}-instructions`} value={instructions} onChange={setInstructions} disabled={busy || disabled} />
       {zoneTitle ? (
         <DropZone
           onFiles={(files) => void upload(files)}
@@ -95,6 +104,7 @@ export function KeyUpload(props: KeyUploadProps) {
         />
       ) : (
         <>
+          <div className="flex flex-wrap items-start gap-3">
           <label
             {...drop.handlers}
             aria-disabled={pickerDisabled || undefined}
@@ -118,6 +128,16 @@ export function KeyUpload(props: KeyUploadProps) {
             {busy && <Spinner className="size-4" />}
             {drop.dragging ? "Drop to upload" : label}
           </label>
+          {props.retry && (
+            <RetryExtractionButton
+              assignmentId={props.retry.assignmentId}
+              label={props.retry.label}
+              confirmText={props.retry.confirmText}
+              variant="secondary"
+              instructions={instructions}
+            />
+          )}
+          </div>
           <p id={formatsId} className="text-sm text-muted">
             {UPLOAD_FORMATS}; several files are joined in the order you pick them (or drop them on the button).
           </p>

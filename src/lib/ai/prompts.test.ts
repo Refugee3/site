@@ -147,12 +147,14 @@ describe("item references and task messages", () => {
     expect(off).toContain("Notes are turned off for this assignment: write no notes.");
   });
 
-  it("states the title, notes and page count in the extraction task", () => {
-    expect(extractionTask("Quiz 2", "Units required.", 2)).toBe(
-      "Assignment title (from the teacher): \"Quiz 2\". Teacher's notes for grading: \"Units required.\". "
+  it("states the title, the teacher's instructions and page count in the extraction task", () => {
+    expect(extractionTask("Quiz 2", "Q3 has two parts: 1 pt setup, 1 pt answer. Don't grade 5 <b>.", 2)).toBe(
+      "Assignment title (from the teacher): \"Quiz 2\".\n"
+      + "TEACHER INSTRUCTIONS (from the teacher; follow them when building the items):\n<teacher_instructions>\n"
+      + "Q3 has two parts: 1 pt setup, 1 pt answer. Don't grade 5 &lt;b&gt;.\n</teacher_instructions>\n"
       + "The ANSWER KEY above has 2 pages. Extract every gradable item.",
     );
-    expect(extractionTask("Quiz 2", " ", 1)).toContain("Teacher's notes for grading: \"(none)\". The ANSWER KEY above has 1 page.");
+    expect(extractionTask("Quiz 2", " ", 1)).toContain("TEACHER INSTRUCTIONS: none.\nThe ANSWER KEY above has 1 page.");
   });
 });
 

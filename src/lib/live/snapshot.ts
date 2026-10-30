@@ -40,6 +40,8 @@ export interface LiveKey {
   filename: string | null;
   errorMessage: string | null;
   aiNotes: string;
+  /** The teacher's grading instructions (shown in the "Instructions for the AI" box when uploading the key again). */
+  instructions: string;
   /** Papers were graded with this key, so it can't be replaced or read again. */
   locked: boolean;
   /** While the AI reads the key: since when, and how long a reading usually takes. */
@@ -138,6 +140,7 @@ export function buildAssignmentLiveSnapshot(i: AssignmentLiveInput): AssignmentL
       filename: key.sourceFilename,
       errorMessage: key.status === "failed" ? key.errorMessage : null,
       aiNotes: key.aiNotes,
+      instructions: key.teacherNotes,
       locked: i.locked,
       extraction: key.status === "processing"
         ? { startedAt: key.processingStartedAt ?? key.updatedAt, typicalMs: i.typicalExtractionMs }

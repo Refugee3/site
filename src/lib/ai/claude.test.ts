@@ -108,7 +108,7 @@ const keyExtraction: KeyExtraction = {
   document_kind: "answer_key",
   items: [{
     label: "1", group_label: "", prompt: "Solve.", answer_type: "numeric", expected_answer: "4", acceptable_answers: [],
-    grading_criteria: "", points: null, group_points: null, page: 1, answer_source: "key", confidence: "high", note: "",
+    grading_criteria: "", points: null, group_points: null, graded: true, page: 1, answer_source: "key", confidence: "high", note: "",
   }],
   stated_total_points: null,
   notes: "",

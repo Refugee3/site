@@ -9,7 +9,7 @@ type ExtractedItem = KeyExtraction["items"][number];
 function extractedItem(o: Partial<ExtractedItem> = {}): ExtractedItem {
   return {
     label: "1", group_label: "", prompt: "Solve 3/x = 9/12.", answer_type: "numeric", expected_answer: "x = 4",
-    acceptable_answers: ["4"], grading_criteria: "", points: null, group_points: null, page: 1, answer_source: "key", confidence: "high",
+    acceptable_answers: ["4"], grading_criteria: "", points: null, group_points: null, graded: true, page: 1, answer_source: "key", confidence: "high",
     note: "", ...o,
   };
 }
@@ -31,9 +31,16 @@ describe("normalizeExtractedKey", () => {
     expect(items[0]).toEqual({
       label: "1", groupLabel: "", prompt: "Solve 3/x = 9/12.", answerType: "multiple_choice", expectedAnswer: "x = 4",
       acceptableAnswers: ["4"], gradingCriteria: "", pointsCenti: 100, partialCredit: false, page: 1, answerSource: "key",
-      aiConfidence: "medium", aiNote: "Faint scan.",
+      aiConfidence: "medium", aiNote: "Faint scan.", graded: true,
     });
     expect(items[1]).toMatchObject({ label: "2", groupLabel: "3", partialCredit: true, page: 2, answerSource: "ai_proposed" });
+  });
+
+  it("leaves out what the teacher's instructions say not to grade, but never every item", () => {
+    const some = normalizeExtractedKey(extraction([extractedItem(), extractedItem({ label: "2", graded: false })]), OPTIONS);
+    expect(some.items.map((item) => item.graded)).toEqual([true, false]);
+    const all = normalizeExtractedKey(extraction([extractedItem({ graded: false }), extractedItem({ label: "2", graded: false })]), OPTIONS);
+    expect(all.items.map((item) => item.graded)).toEqual([true, true]);
   });
 
   it("converts points to centipoints and clamps them to the allowed range with a note", () => {

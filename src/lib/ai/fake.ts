@@ -249,7 +249,7 @@ function fakePacketReading(seed: Seed, input: PacketReadInput, transcribe: FakeG
 function fakeKey(pageCount: number): KeyExtraction {
   const page = (n: number) => Math.min(n, Math.max(pageCount, 1));
   const item = (fields: Partial<KeyExtraction["items"][number]> & Pick<KeyExtraction["items"][number], "label" | "answer_type">) => ({
-    group_label: "", prompt: "", expected_answer: "", acceptable_answers: [], grading_criteria: "", points: 1, group_points: null,
+    group_label: "", prompt: "", expected_answer: "", acceptable_answers: [], grading_criteria: "", points: 1, group_points: null, graded: true,
     page: page(1), answer_source: "key" as const, confidence: "high" as const, note: "", ...fields,
   });
   return {

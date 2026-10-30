@@ -81,6 +81,16 @@ export async function readUploadedFiles(
   maxFiles: number,
   o: { maxBytes?: number } = {},
 ): Promise<UploadedFile[]> {
+  return (await readUploadForm(req, field, maxFiles, o)).files;
+}
+
+/** Like readUploadedFiles, plus the form's text fields (`text(name)`: the field's value, or undefined when it wasn't sent). */
+export async function readUploadForm(
+  req: Request,
+  field: string,
+  maxFiles: number,
+  o: { maxBytes?: number } = {},
+): Promise<{ files: UploadedFile[]; text: (name: string) => string | undefined }> {
   const maxBytes = o.maxBytes ?? getConfig().maxUploadBytes;
   const fd = await readLimitedFormData(req, maxBytes + MULTIPART_OVERHEAD_BYTES);
   const files = await formFiles(fd, field, maxFiles);
@@ -88,7 +98,13 @@ export async function readUploadedFiles(
   if (totalBytes > maxBytes) {
     throw new AppError("too_large", `Uploads can be at most ${maxBytes / 1_048_576} MB in total.`);
   }
-  return files;
+  return {
+    files,
+    text: (name) => {
+      const value = fd.get(name);
+      return typeof value === "string" ? value : undefined;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

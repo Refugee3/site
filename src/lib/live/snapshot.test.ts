@@ -63,7 +63,7 @@ describe("buildAssignmentLiveSnapshot", () => {
     expect(s.assignment).toEqual({ id: "a1", title: "Untitled quiz", kind: "quiz" });
     expect(s.key).toEqual({
       status: "ready", approved: false, updatedAt: NOW - 30_000, itemCount: 3, totalPointsCenti: 450, aiProposedCount: 1, uncertainCount: 2,
-      pageCount: 2, filename: "key.pdf", errorMessage: null, aiNotes: "Check item 4.", locked: false, extraction: null,
+      pageCount: 2, filename: "key.pdf", errorMessage: null, aiNotes: "Check item 4.", instructions: "", locked: false, extraction: null,
     });
     expect(s.questions).toEqual([{
       id: "q1", kind: "missing_answer", itemLabel: "4", question: "What should 4 show?", suggestedAnswer: "A cell", choices: [], status: "pending",

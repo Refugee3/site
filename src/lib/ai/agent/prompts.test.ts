@@ -51,14 +51,14 @@ describe("sliceBetween", () => {
 });
 
 describe("agent system prompts", () => {
-  it("leave the key and scan prompts byte-identical to dffa80c (the key prompt: as extended with the questions for the teacher)", () => {
-    expect(sha256Hex(KEY_EXTRACTION_SYSTEM_PROMPT)).toBe("6bbc034bb5f2aec889e410e99396fc3061f53db124f2e0d7d32f5d7c88577a6a");
+  it("leave the key and scan prompts byte-identical to dffa80c (the key prompt: as extended with the questions for the teacher and the teacher's instructions)", () => {
+    expect(sha256Hex(KEY_EXTRACTION_SYSTEM_PROMPT)).toBe("7dcfe17f27c498118aedb32edfe460cdf773ece2f6a4519a10983fb6cf8d52c8");
     expect(sha256Hex(SCAN_SPLIT_SYSTEM_PROMPT)).toBe("b6c98fb1dab983c06104371719361686ccb9992c299616ccc754edb337e06746");
   });
 
   it("are exactly the composed prompts of the spec's Appendix A (the key and scan agents)", () => {
-    expect([AGENT_KEY_SYSTEM_PROMPT.length, AGENT_SCAN_SYSTEM_PROMPT.length]).toEqual([7985, 4996]);
-    expect(sha256Hex(AGENT_KEY_SYSTEM_PROMPT)).toBe("ac6ca2c5d924fd4ece2cdc030b9b454e16d97b990dbb08cee4a42a8a151eeb5e");
+    expect([AGENT_KEY_SYSTEM_PROMPT.length, AGENT_SCAN_SYSTEM_PROMPT.length]).toEqual([9189, 4996]);
+    expect(sha256Hex(AGENT_KEY_SYSTEM_PROMPT)).toBe("cf945e6c97c91bfb773eeb72f6f1a63261bbae67b6651ee6ddca4df89ed137fd");
     expect(sha256Hex(AGENT_SCAN_SYSTEM_PROMPT)).toBe("e670e036c13dea3cb25bf1959447731a44fe539d23c63a6ba6cf2abf3f6fd4ab");
   });
 

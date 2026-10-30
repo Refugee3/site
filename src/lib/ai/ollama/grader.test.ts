@@ -83,7 +83,7 @@ const keyExtraction: KeyExtraction = {
   document_kind: "answer_key",
   items: [{
     label: "1", group_label: "", prompt: "Solve 3/x = 9/12.", answer_type: "numeric", expected_answer: "x = 4", acceptable_answers: ["4"],
-    grading_criteria: "", points: 2, group_points: null, page: 1, answer_source: "key", confidence: "high", note: "",
+    grading_criteria: "", points: 2, group_points: null, graded: true, page: 1, answer_source: "key", confidence: "high", note: "",
   }],
   stated_total_points: 2,
   notes: "",

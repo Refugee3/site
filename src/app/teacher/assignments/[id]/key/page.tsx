@@ -5,7 +5,6 @@ import { CollapsedOnPhones } from "@/components/teacher/collapsed-on-phones";
 import { KeyEditor } from "@/components/teacher/key-editor";
 import { KeyUpload } from "@/components/teacher/key-upload";
 import { EstimatedProgress } from "@/components/teacher/progress-widgets";
-import { RetryExtractionButton } from "@/components/teacher/retry-extraction-button";
 import { BlankWorksheetCard } from "@/components/teacher/worksheet/blank-worksheet-card";
 import { plural } from "@/components/teacher/text";
 import { Alert } from "@/components/ui/alert";
@@ -131,21 +130,20 @@ function Failed(props: { assignmentId: string; view: KeyEditorView; uploadUrl: s
           <p className="whitespace-pre-wrap">{view.key.errorMessage ?? "The AI could not turn this PDF into a list of items."}</p>
         </Alert>
         {view.locked && <p className="text-sm text-muted">{LOCKED_NOTE}</p>}
-        <div className="flex flex-wrap items-start gap-3">
-          {canRetry && <RetryExtractionButton assignmentId={assignmentId} label="Try again" />}
-          <KeyUpload
-            uploadUrl={uploadUrl}
-            disabled={view.locked}
-            label="Upload a different file"
-            variant="secondary"
-            confirmText={view.items.length > 0 ? REPLACE_CONFIRM : undefined}
-          />
-          {view.items.length === 0 && !buildManually && (
-            <LinkButton href="?manual=1" variant="secondary">
-              Build the key manually
-            </LinkButton>
-          )}
-        </div>
+        <KeyUpload
+          uploadUrl={uploadUrl}
+          disabled={view.locked}
+          label="Upload a different file"
+          variant="secondary"
+          confirmText={view.items.length > 0 ? REPLACE_CONFIRM : undefined}
+          instructions={view.key.teacherNotes}
+          retry={canRetry ? { assignmentId, label: "Try again" } : undefined}
+        />
+        {view.items.length === 0 && !buildManually && (
+          <LinkButton href="?manual=1" variant="secondary" className="self-start">
+            Build the key manually
+          </LinkButton>
+        )}
       </div>
     </Card>
   );
@@ -186,27 +184,23 @@ function ReplaceKey({ assignmentId, view, uploadUrl }: { assignmentId: string; v
           <p className="text-sm text-muted">{LOCKED_NOTE}</p>
         ) : (
           <p className="text-sm text-muted">
-            Uploading a new key, or reading this one again, replaces every item above, including your edits. Your notes
-            for grading are kept.
+            Uploading a new key, or reading this one again, replaces every item above, including your edits. Change the
+            instructions first to have the AI split questions or give points differently.
           </p>
         )}
-        <div className="flex flex-wrap items-start gap-3">
-          <KeyUpload
-            uploadUrl={uploadUrl}
-            disabled={view.locked}
-            label="Upload a new key"
-            variant="secondary"
-            confirmText={REPLACE_CONFIRM}
-          />
-          {!view.locked && (
-            <RetryExtractionButton
-              assignmentId={assignmentId}
-              label="Read this PDF again"
-              variant="secondary"
-              confirmText="Read the key PDF again? This replaces every item, including your edits."
-            />
-          )}
-        </div>
+        <KeyUpload
+          uploadUrl={uploadUrl}
+          disabled={view.locked}
+          label="Upload a new key"
+          variant="secondary"
+          confirmText={REPLACE_CONFIRM}
+          instructions={view.key.teacherNotes}
+          retry={view.locked ? undefined : {
+            assignmentId,
+            label: "Read this PDF again",
+            confirmText: "Read the key PDF again? This replaces every item, including your edits.",
+          }}
+        />
       </div>
     </Card>
   );

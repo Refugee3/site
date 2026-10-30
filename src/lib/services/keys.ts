@@ -19,9 +19,12 @@ import type { AnswerKey, Assignment, SaveKeyInput } from "@/lib/types";
 
 /**
  * Stores a (replacement) key and queues its extraction. The uploaded files (any accepted format) are merged
- * into one PDF. The teacher's notes are kept; the old PDF is removed once the new one is committed.
+ * into one PDF. `instructions`, when given, become the key's grading instructions (teacher notes) before the AI reads it, so
+ * the reading follows them (how questions split into parts, their points, what isn't graded); without them the teacher's
+ * notes are kept. The old PDF is removed once the new one is committed.
  */
-export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | UploadedFile[]): Promise<AnswerKey> {
+export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | UploadedFile[], instructions?: string): Promise<AnswerKey> {
+  const teacherNotes = instructions === undefined ? undefined : checkedInstructions(instructions);
   const files = [upload].flat();
   const { bytes, pageCount, contentSha256 } = await buildSubmissionPdf(files, { maxPages: getConfig().maxPages });
   assertExtractable(a.id); // fail before writing the file; re-checked in the transaction
@@ -42,6 +45,7 @@ export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | Uploade
         errorMessage: null,
         processingStartedAt: now(),
         processingFinishedAt: null,
+        ...(teacherNotes === undefined ? {} : { teacherNotes }),
       });
       deleteKeyQuestions(a.id); // the previous key's; this one's come with its reading
       queueExtraction(a.id);
@@ -55,14 +59,18 @@ export async function ingestKeyPdf(a: Assignment, upload: UploadedFile | Uploade
   return stored.key;
 }
 
-/** Reads the stored key PDF again (after a failure, or to start over from the PDF). */
-export function retryKeyExtraction(a: Assignment): void {
+/** Reads the stored key PDF again (after a failure, or to start over from the PDF), with new `instructions` when given. */
+export function retryKeyExtraction(a: Assignment, instructions?: string): void {
+  const teacherNotes = instructions === undefined ? undefined : checkedInstructions(instructions);
   tx(() => {
     const key = assertExtractable(a.id);
     if (!key.sourcePdfPath) {
       throw new AppError("invalid_state", "There is no uploaded key PDF to read again. Upload one or build the key manually.");
     }
-    updateKey(a.id, { status: "processing", errorMessage: null, processingStartedAt: now(), processingFinishedAt: null });
+    updateKey(a.id, {
+      status: "processing", errorMessage: null, processingStartedAt: now(), processingFinishedAt: null,
+      ...(teacherNotes === undefined ? {} : { teacherNotes }),
+    });
     deleteKeyQuestions(a.id);
     queueExtraction(a.id);
   });
@@ -132,10 +140,7 @@ export function saveGradingInstructions(
   a: Assignment,
   input: { text: string; gradedItemIds?: string[] },
 ): { changed: boolean; staleCount: number } {
-  const teacherNotes = input.text.trim();
-  if (charLength(teacherNotes) > KEY_LIMITS.teacherNotes) {
-    throw new AppError("validation", `Use at most ${KEY_LIMITS.teacherNotes} characters.`);
-  }
+  const teacherNotes = checkedInstructions(input.text);
   return tx(() => {
     const key = requireKey(a.id);
     if (key.status === "processing") {
@@ -158,4 +163,12 @@ export function saveGradingInstructions(
     if (flagsChange) rescoreAssignment(a.id);
     return { changed: true, staleCount: approved ? listStaleIds(a.id, revision).length : 0 };
   });
+}
+
+function checkedInstructions(text: string): string {
+  const trimmed = text.trim();
+  if (charLength(trimmed) > KEY_LIMITS.teacherNotes) {
+    throw new AppError("validation", `Keep the instructions to ${KEY_LIMITS.teacherNotes} characters or fewer.`);
+  }
+  return trimmed;
 }

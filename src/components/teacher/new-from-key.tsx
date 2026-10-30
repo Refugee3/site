@@ -8,6 +8,7 @@ import { DropZone } from "@/components/ui/drop-zone";
 import { isAbortError, readUploadError, uploadWithProgress } from "@/lib/client/upload";
 import { prepareUploadFile, UNSUPPORTED_IMAGE, UPLOAD_FORMATS } from "@/lib/client/upload-files";
 import type { AssignmentKind } from "@/lib/types";
+import { KeyInstructionsField } from "./key-instructions-field";
 import { useLeaveGuard } from "./use-leave-guard";
 
 /** The created assignment, as POST /api/teacher/assignments answers 201. */
@@ -28,6 +29,7 @@ const KINDS: Array<{ value: AssignmentKind; label: string }> = [
 export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: AssignmentKind }) {
   const router = useRouter();
   const [kind, setKind] = useState<AssignmentKind>(defaultKind);
+  const [instructions, setInstructions] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opening, startOpening] = useTransition();
@@ -49,6 +51,7 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
         return;
       }
     }
+    body.append("instructions", instructions);
     const abort = new AbortController();
     controller.current = abort;
     setProgress(0);
@@ -97,6 +100,7 @@ export function NewFromKey({ defaultKind = "homework" }: { defaultKind?: Assignm
           </div>
         </fieldset>
       </div>
+      <KeyInstructionsField id="new-from-key-instructions" value={instructions} onChange={setInstructions} disabled={busy} />
       <DropZone
         onFiles={(files) => void start(files)}
         busy={busy}

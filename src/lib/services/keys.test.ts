@@ -8,7 +8,8 @@ import { getAssignment } from "@/lib/db/repos/assignments";
 import { getKey, listKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getSubmission, updateSubmission } from "@/lib/db/repos/submissions";
 import { makeGradingOutput } from "@/lib/grading/test-utils";
-import { answeringGrader, drainQueue, jobRows } from "@/lib/jobs/test-utils";
+import { answeringGrader, drainQueue, FAKE_META, jobRows, scriptedGrader } from "@/lib/jobs/test-utils";
+import type { KeyExtraction } from "@/lib/ai/schemas";
 import { ingestKeyPdf, retryKeyExtraction, saveGradingInstructions, saveKey } from "@/lib/services/keys";
 import { ingestTeacherUpload } from "@/lib/services/submissions";
 import type { UploadedFile } from "@/lib/storage/pdf";
@@ -72,6 +73,37 @@ describe("ingestKeyPdf", () => {
     expect(keyFiles()).toEqual([path.basename(key.sourcePdfPath!)]);
   });
 
+  it("reads the key with the teacher's instructions, which then count when grading", async () => {
+    const instructions = "Question 1 has two parts: 1 point for the setup, 1 for the answer. Don't grade question 2.";
+    const key = await ingestKeyPdf(assignment, await keyFile(), `  ${instructions}  `);
+    expect(key.teacherNotes).toBe(instructions);
+
+    const seen: string[] = [];
+    const item = (o: Partial<KeyExtraction["items"][number]>): KeyExtraction["items"][number] => ({
+      label: "1a", group_label: "1", prompt: "", answer_type: "numeric", expected_answer: "4", acceptable_answers: [], grading_criteria: "",
+      points: 1, group_points: null, graded: true, page: 1, answer_source: "key", confidence: "high", note: "", ...o,
+    });
+    await drainQueue(scriptedGrader({
+      async extractKey(input) {
+        seen.push(input.teacherNotes);
+        return {
+          output: {
+            document_kind: "answer_key", stated_total_points: null, notes: "", questions_for_teacher: [], suggested_title: null,
+            items: [item({ prompt: "1: setup" }), item({ label: "1b", prompt: "1: answer" }), item({ label: "2", group_label: "", graded: false })],
+          },
+          meta: FAKE_META,
+        };
+      },
+    }));
+
+    expect(seen).toEqual([instructions]);
+    expect(listKeyItems(assignment.id).map((i) => [i.label, i.graded])).toEqual([["1a", true], ["1b", true], ["2", false]]);
+  });
+
+  it("refuses instructions that are too long", async () => {
+    await expect(ingestKeyPdf(assignment, await keyFile(), "x".repeat(4001))).rejects.toMatchObject({ code: "validation" });
+  });
+
   it("refuses while the key is still being read", async () => {
     await ingestKeyPdf(assignment, await keyFile("first"));
     await expect(ingestKeyPdf(assignment, await keyFile("second"))).rejects.toMatchObject({ code: "invalid_state" });
@@ -111,6 +143,15 @@ describe("retryKeyExtraction", () => {
       status: "processing", errorMessage: null, processingStartedAt: 1_700_000_005_000, processingFinishedAt: null,
     });
     expect(jobRows(assignment.id).at(-1)).toMatchObject({ status: "queued" });
+  });
+
+  it("can read it again with new instructions", async () => {
+    await ingestKeyPdf(assignment, await keyFile(), "Old.");
+    updateKey(assignment.id, { status: "failed" });
+    await drainQueue();
+
+    retryKeyExtraction(assignment, " Split 3 into setup and answer. ");
+    expect(getKey(assignment.id)).toMatchObject({ status: "processing", teacherNotes: "Split 3 into setup and answer." });
   });
 
   it("needs an uploaded PDF and an unlocked key", async () => {
