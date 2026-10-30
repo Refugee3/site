@@ -1,3 +1,4 @@
+import { notesMayChangeVerdict } from "@/lib/grading/notes-scope";
 import type { AnswerType, Attempt, Confidence, Correctness, ItemReviewReason, KeyItem, Legibility } from "@/lib/types";
 
 // Marking in code: after a paper has been read WITHOUT the answer key, each transcription is compared with the key here
@@ -16,7 +17,8 @@ export interface AutoMark {
 }
 
 /** The parts of the key item the marker uses. */
-export type MarkableItem = Pick<KeyItem, "answerType" | "expectedAnswer" | "acceptableAnswers" | "gradingCriteria" | "prompt">;
+export type MarkableItem = Pick<KeyItem, "answerType" | "expectedAnswer" | "acceptableAnswers" | "gradingCriteria" | "prompt">
+  & Partial<Pick<KeyItem, "label" | "groupLabel">>;
 
 /** The parts of the blind reading the marker uses. */
 export interface MarkableReading {
@@ -30,8 +32,9 @@ export interface AutoMarkContext {
   /** The teacher has ruled on this item before (a lesson): the judge applies rulings, so the program never marks it. */
   hasRuling: boolean;
   /**
-   * The assignment's grading notes. When there are any, they might change what counts as right for an item (for example
-   * "Q3: accept B or C"), so the program then only gives "correct" for an exact match and leaves every wrong answer to the judge.
+   * The assignment's grading instructions. When they might change what counts as right for the item ("Q3: accept B or C",
+   * "ignore spelling"; see notesMayChangeVerdict), the program only gives "correct" for an exact match and leaves a wrong
+   * answer to the judge.
    */
   teacherNotes: string;
 }
@@ -61,7 +64,7 @@ export function autoMark(item: MarkableItem, read: MarkableReading, ctx: AutoMar
 
   const verdict = compare(item, answer);
   if (verdict === null) return null;
-  if (verdict.correct === false && ctx.teacherNotes.trim() !== "") return null;
+  if (verdict.correct === false && notesMayChangeVerdict(ctx.teacherNotes, item)) return null;
   const review: ItemReviewReason = verdict.multiple ? "multiple_answers" : conf === "low" ? "ambiguous_reading" : "none";
   return { correctness: verdict.correct ? "correct" : "incorrect", confidence: conf, review_reason: review, basis: "compared" };
 }

@@ -205,8 +205,8 @@ describe("gradePacketByReading", () => {
     for (const secret of ["EXPECTED-SENTINEL", "Chlorophyll", "TEACHER-NOTES-SENTINEL", "\"C\"", "expectedAnswer"]) expect(json).not.toContain(secret);
     expect(refs).toEqual(["Q1", "Q2"]);
     expect(output.papers.map((p) => [p.first_page, p.items.map((i) => [i.correctness, i.judged_by, i.pages])])).toEqual([
-      // The assignment has grading notes, so the program leaves the wrong B to the judge (the notes might accept it).
-      [1, [["incorrect", "ai", [1]], ["incorrect", "ai", [2]]]],
+      // The assignment's instructions can't make the B right (they don't widen what is accepted), so the program marks it.
+      [1, [["incorrect", "program", [1]], ["incorrect", "ai", [2]]]],
       [3, [["correct", "program", [3]], ["incorrect", "ai", [4]]]],
     ]);
     expect(judged).toHaveLength(2);

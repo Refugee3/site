@@ -172,6 +172,10 @@ describe("what the program leaves to the judge", () => {
   it("with grading notes, still marks exact matches but leaves wrong answers to the judge", () => {
     expect(mark({}, "C", {}, { teacherNotes: "Q3: accept B or C." })).toMatchObject({ correctness: "correct" });
     expect(mark({}, "B", {}, { teacherNotes: "Q3: accept B or C." })).toBeNull();
+    // Instructions that can't make this item's wrong answer right leave the marking to the program (no judge call).
+    expect(mark({ label: "5" }, "B", {}, { teacherNotes: "Q3: accept B or C. Question 4 is worth 10 points, split into 2 parts." }))
+      .toMatchObject({ correctness: "incorrect", basis: "compared" });
+    expect(mark({ label: "3" }, "B", {}, { teacherNotes: "Q3: accept B or C." })).toBeNull();
     // A blank is still blank.
     expect(mark({}, "", { attempt: "none" }, { teacherNotes: "x" })).toMatchObject({ correctness: "no_answer" });
   });

@@ -1,3 +1,4 @@
+import { notesMayChangeVerdict } from "@/lib/grading/notes-scope";
 import { type AutoMark, normalizeAnswerText, parseChoiceLetters, parseTrueFalse } from "@/lib/grading/auto-mark";
 import type { AnswerType, KeyItem } from "@/lib/types";
 import type { ChoiceReading } from "./decide";
@@ -102,7 +103,7 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 export interface ChoiceMarkContext {
   /** The teacher ruled on this item before: the judge applies rulings, so a wrong-looking answer goes to it. */
   hasRuling: boolean;
-  /** The assignment's grading notes ("Q3: accept B or C") may change what is right: only an exact match is marked here. */
+  /** The assignment's grading instructions: when they may change what is right for the item, only an exact match is marked. */
   teacherNotes: string;
 }
 
@@ -112,7 +113,8 @@ export interface ChoiceMarkContext {
  * should check keeps that review reason.
  */
 export function markChoice(
-  item: Pick<KeyItem, "expectedAnswer" | "acceptableAnswers">, values: string[], reading: ChoiceReading, multi: boolean,
+  item: Pick<KeyItem, "expectedAnswer" | "acceptableAnswers"> & Partial<Pick<KeyItem, "label" | "groupLabel">>, values: string[],
+  reading: ChoiceReading, multi: boolean,
   ctx: ChoiceMarkContext,
 ): AutoMark | null {
   if (reading.marked.length === 0) {
@@ -122,7 +124,7 @@ export function markChoice(
   if (accepted.length === 0) return null;
   const marked = new Set(reading.marked);
   const right = accepted.some((set) => sameSet(set, marked));
-  if (!right && (ctx.hasRuling || ctx.teacherNotes.trim() !== "")) return null;
+  if (!right && (ctx.hasRuling || notesMayChangeVerdict(ctx.teacherNotes, item))) return null;
   // Several marks where the key wants one: wrong, and the teacher checks (a crossed-out choice, or a change of mind).
   const several = marked.size > 1 && !multi && accepted.every((set) => set.size === 1);
   const review = several ? "multiple_answers" : reading.review === "multiple_answers" && right ? "none" : reading.review;
