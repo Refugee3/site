@@ -213,3 +213,79 @@ export function describeErrors(fieldErrors: FieldErrors, rows: DraftRow[]): stri
 export function draftsSnapshot(rows: DraftRow[], teacherNotes: string): string {
   return JSON.stringify([teacherNotes, rows.map((row) => ({ ...row, key: undefined }))]);
 }
+
+export interface SplitRequest {
+  /** How many parts ("" when the names or the per-part points say). */
+  partsText: string;
+  /** "5" (shared equally), "2, 2, 1" (one per part), or "" (the item's current points, shared). */
+  pointsText: string;
+  /** Optional part names: "setup, work, answer". */
+  namesText: string;
+}
+
+const PART_LETTERS = "abcdefghijklmnopqrstuvwxyz";
+const MAX_PARTS = 26;
+
+function listOf(text: string): string[] {
+  return text.split(/[,;\n]/).map((part) => part.trim()).filter((part) => part !== "");
+}
+
+/** `totalCenti` in `n` shares that add up exactly (the odd centipoints go to the first parts). */
+function equalShares(totalCenti: number, n: number): number[] {
+  const base = Math.floor(totalCenti / n);
+  return Array.from({ length: n }, (_, i) => base + (i < totalCenti - base * n ? 1 : 0));
+}
+
+/**
+ * The key editor's "Split into parts": one row as several ("3" → "3a", "3b", "3c", grouped under "3"), each with its share of
+ * the points and a criterion naming its part, so the AI grades each part on its own. The first part keeps the row's id (and
+ * React key); `newKey(i)` names the others.
+ */
+export function splitDraftRow(
+  row: DraftRow,
+  request: SplitRequest,
+  newKey: (i: number) => string,
+): { ok: true; rows: DraftRow[] } | { ok: false; error: string } {
+  const names = listOf(request.namesText);
+  const pointList = listOf(request.pointsText);
+  const partsTyped = request.partsText.trim();
+  const n = partsTyped !== "" ? Number(partsTyped) : names.length > 1 ? names.length : pointList.length > 1 ? pointList.length : NaN;
+  if (!Number.isInteger(n) || n < 2 || n > MAX_PARTS) return { ok: false, error: `Enter how many parts, from 2 to ${MAX_PARTS}.` };
+  if (names.length > 0 && names.length !== n) return { ok: false, error: `Give ${n} part names, or none.` };
+
+  let centi: number[];
+  if (pointList.length > 1) {
+    if (pointList.length !== n) return { ok: false, error: `Give ${n} point values (one per part), or one total.` };
+    const parsed = pointList.map(parseItemPoints);
+    const bad = parsed.find((p) => !p.ok);
+    if (bad && !bad.ok) return { ok: false, error: bad.error };
+    centi = parsed.map((p) => (p.ok ? p.centi : 0));
+  } else {
+    const total = parseItemPoints(pointList[0] ?? row.pointsText);
+    if (!total.ok) return { ok: false, error: pointList.length === 0 ? "Enter the question's total points." : total.error };
+    if (total.centi < n) return { ok: false, error: "That's too few points to share between the parts." };
+    centi = equalShares(total.centi, n);
+  }
+
+  const label = row.label.trim();
+  const group = label || row.groupLabel.trim();
+  const partLabel = (i: number) => (/\d$/.test(label) ? `${label}${PART_LETTERS[i]}` : `${label || "part"}.${i + 1}`);
+  return {
+    ok: true,
+    rows: Array.from({ length: n }, (_, i): DraftRow => {
+      const what = names.length === n ? `part ${PART_LETTERS[i]}: ${names[i]}` : `part ${PART_LETTERS[i]} of ${n}`;
+      return {
+        ...row,
+        key: i === 0 ? row.key : newKey(i),
+        id: i === 0 ? row.id : null,
+        label: partLabel(i).slice(0, 40),
+        groupLabel: group.slice(0, 40),
+        prompt: (row.prompt.trim() ? `${row.prompt.trim()} (${what})` : `Question ${group}, ${what}`).slice(0, 1000),
+        gradingCriteria: [`Grade only this part of question ${group} (${what}).`, row.gradingCriteria.trim()].filter((c) => c !== "").join(" ").slice(0, 1000),
+        pointsText: formatPoints(centi[i]),
+        partialCredit: true,
+        aiNote: "",
+      };
+    }),
+  };
+}

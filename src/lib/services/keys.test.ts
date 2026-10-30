@@ -100,6 +100,28 @@ describe("ingestKeyPdf", () => {
     expect(listKeyItems(assignment.id).map((i) => [i.label, i.graded])).toEqual([["1a", true], ["1b", true], ["2", false]]);
   });
 
+  it("splits and points the key as the instructions say, even when the AI didn't", async () => {
+    await ingestKeyPdf(assignment, await keyFile(), "Question 3 is worth 10 points, split into 2 parts: setup and answer.");
+    await drainQueue(scriptedGrader({
+      async extractKey() {
+        const base = {
+          group_label: "", prompt: "", answer_type: "numeric" as const, expected_answer: "4", acceptable_answers: [], grading_criteria: "",
+          points: 1, group_points: null, graded: true, page: 1, answer_source: "key" as const, confidence: "high" as const, note: "",
+        };
+        return {
+          output: {
+            document_kind: "answer_key", stated_total_points: null, notes: "", questions_for_teacher: [], suggested_title: null,
+            items: [{ ...base, label: "1" }, { ...base, label: "3", prompt: "Solve for x." }],
+          },
+          meta: FAKE_META,
+        };
+      },
+    }));
+
+    expect(listKeyItems(assignment.id).map((i) => [i.label, i.groupLabel, i.pointsCenti])).toEqual([["1", "", 100], ["3a", "3", 500], ["3b", "3", 500]]);
+    expect(getKey(assignment.id)!.aiNotes).toContain("Split question 3 into 2 parts with your points");
+  });
+
   it("refuses instructions that are too long", async () => {
     await expect(ingestKeyPdf(assignment, await keyFile(), "x".repeat(4001))).rejects.toMatchObject({ code: "validation" });
   });

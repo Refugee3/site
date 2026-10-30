@@ -7,6 +7,7 @@ import { tx } from "@/lib/db/connection";
 import { getAssignment, listSections, updateAssignment as updateAssignmentRow } from "@/lib/db/repos/assignments";
 import { hasActiveJob } from "@/lib/db/repos/jobs";
 import { deleteKeyQuestions, replaceKeyQuestions } from "@/lib/db/repos/key-questions";
+import { applyPointsRules } from "@/lib/grading/instruction-points";
 import { getKey, listGradedKeyItems, listKeyItems, replaceKeyItems, updateKey } from "@/lib/db/repos/keys";
 import { getScan, updateSplittingScan } from "@/lib/db/repos/scans";
 import { getAiModel } from "@/lib/db/repos/settings";
@@ -234,7 +235,10 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
       deleteKeyQuestions(job.targetId);
       return detach;
     }
-    const items = replaceKeyItems(job.targetId, normalized.items);
+    // The points and parts the teacher's instructions give win over the AI's reading (split and re-pointed by code).
+    const ruled = applyPointsRules(normalized.items, current.teacherNotes);
+    const fits = ruled.items.length <= cfg.maxKeyItems;
+    const items = replaceKeyItems(job.targetId, fits ? ruled.items : normalized.items);
     // The AI's questions for the teacher come with this reading of the key; earlier readings' questions go.
     replaceKeyQuestions(job.targetId, normalizeExtractedQuestions(output));
     // An assignment started by dropping its key is named after it, unless the teacher has named it since.
@@ -243,6 +247,7 @@ export async function handleExtractKey(job: Job, grader: Grader, signal: AbortSi
     if (title !== null && named && isPlaceholderTitle(named.title)) updateAssignmentRow(job.targetId, { title });
     updateKey(job.targetId, {
       ...aiFields,
+      ...(fits && ruled.notes.length > 0 ? { aiNotes: [normalized.aiNotes, ...ruled.notes].filter((n) => n !== "").join("\n") } : {}),
       status: "ready",
       revision: current.revision + 1,
       approvedRevision: null, // the teacher must review AI-extracted items before anything is graded

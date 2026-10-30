@@ -17,7 +17,7 @@ import { ANSWER_TYPE_LABEL, formatPoints, uploadLabel } from "@/lib/format";
 import { ANSWER_TYPES, type AnswerType, type AssignmentKind, type KeyItem } from "@/lib/types";
 import {
   buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
-  rowErrors, totalPointsCenti, type DraftRow, type FieldErrors, type RowField,
+  rowErrors, splitDraftRow, totalPointsCenti, type DraftRow, type FieldErrors, type RowField, type SplitRequest,
 } from "./key-rows";
 import { gradedUnder, gradingScopeFromText, type GradingScope } from "./grading-scope";
 import { listText, plural } from "./text";
@@ -102,6 +102,17 @@ export function KeyEditor(props: KeyEditorProps) {
     [restructure],
   );
 
+  /** "Split into parts": the row becomes its parts; returns what's wrong with the request, or null. */
+  const splitRow = useCallback(
+    (row: DraftRow, request: SplitRequest): string | null => {
+      const split = splitDraftRow(row, request, () => `new-${nextKey.current++}`);
+      if (!split.ok) return split.error;
+      restructure((current) => current.flatMap((r) => (r.key === row.key ? split.rows : [r])));
+      return null;
+    },
+    [restructure],
+  );
+
   const removeRow = useCallback(
     (row: DraftRow) => {
       const loses = row.id !== null && gradedCount > 0;
@@ -181,6 +192,7 @@ export function KeyEditor(props: KeyEditorProps) {
               onChange={updateRow}
               onMove={moveRow}
               onInsertAfter={insertAfter}
+              onSplit={splitRow}
               onRemove={removeRow}
             />
           ))}
@@ -223,6 +235,41 @@ export function KeyEditor(props: KeyEditorProps) {
             </LinkButton>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** The "Split into parts" form under a row's header: how many parts, the points (a total or one per part), optional names. */
+function SplitPanel(p: {
+  name: string; idPrefix: string; pointsText: string; onCancel: () => void; onSplit: (request: SplitRequest) => string | null;
+}) {
+  const [request, setRequest] = useState<SplitRequest>({ partsText: "", pointsText: p.pointsText, namesText: "" });
+  const [error, setError] = useState<string | null>(null);
+  const set = (patch: Partial<SplitRequest>) => {
+    setRequest((current) => ({ ...current, ...patch }));
+    setError(null);
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-line bg-subtle p-3">
+      <p className="text-sm text-ink">
+        Split item <span className="font-semibold">{p.name}</span> into parts that are graded and scored on their own.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-[6rem_15rem_minmax(0,1fr)]">
+        <Field label="Parts" htmlFor={`${p.idPrefix}-parts`}>
+          <Input id={`${p.idPrefix}-parts`} inputMode="numeric" placeholder="e.g. 3" className={DENSE} value={request.partsText} onChange={(e) => set({ partsText: e.target.value })} />
+        </Field>
+        <Field label="Points" htmlFor={`${p.idPrefix}-points`} hint="A total, or one per part: 2, 2, 1">
+          <Input id={`${p.idPrefix}-points`} className={DENSE} value={request.pointsText} onChange={(e) => set({ pointsText: e.target.value })} />
+        </Field>
+        <Field label="Part names (optional)" htmlFor={`${p.idPrefix}-names`} hint="e.g. setup, work, final answer">
+          <Input id={`${p.idPrefix}-names`} className={DENSE} value={request.namesText} onChange={(e) => set({ namesText: e.target.value })} />
+        </Field>
+      </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => setError(p.onSplit(request))}>Split</Button>
+        <Button size="sm" variant="ghost" onClick={p.onCancel}>Cancel</Button>
       </div>
     </div>
   );
@@ -317,11 +364,14 @@ interface KeyRowCardProps {
   onChange: (key: string, patch: Partial<DraftRow>) => void;
   onMove: (key: string, offset: -1 | 1) => void;
   onInsertAfter: (key: string) => void;
+  onSplit: (row: DraftRow, request: SplitRequest) => string | null;
   onRemove: (row: DraftRow) => void;
 }
 
 // Memoized with stable callbacks so typing in one card re-renders that card only, even with 50 items.
-const KeyRowCard = memo(function KeyRowCard({ row, index, count, errors, onChange, onMove, onInsertAfter, onRemove }: KeyRowCardProps) {
+const KeyRowCard = memo(function KeyRowCard(props: KeyRowCardProps) {
+  const { row, index, count, errors, onChange, onMove, onInsertAfter, onSplit, onRemove } = props;
+  const [splitting, setSplitting] = useState(false);
   const id = (field: string) => `key-${row.key}-${field}`;
   const set = (patch: Partial<DraftRow>) => onChange(row.key, patch);
   const name = row.label.trim() || `#${index + 1}`;
@@ -357,11 +407,34 @@ const KeyRowCard = memo(function KeyRowCard({ row, index, count, errors, onChang
           <Button variant="ghost" size="sm" onClick={() => onInsertAfter(row.key)} aria-label={`Insert an item after ${name}`}>
             + Below
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={splitting}
+            onClick={() => setSplitting((open) => !open)}
+            aria-label={`Split item ${name} into parts`}
+          >
+            Split into parts
+          </Button>
           <Button variant="ghost" size="sm" disabled={count === 1} onClick={() => onRemove(row)} aria-label={`Remove item ${name}`}>
             Remove
           </Button>
         </div>
       </div>
+
+      {splitting && (
+        <SplitPanel
+          name={name}
+          idPrefix={id("split")}
+          pointsText={row.pointsText}
+          onCancel={() => setSplitting(false)}
+          onSplit={(request) => {
+            const error = onSplit(row, request);
+            if (error === null) setSplitting(false);
+            return error;
+          }}
+        />
+      )}
 
       {row.aiNote && <p className="whitespace-pre-wrap text-sm text-warning-800">AI note: {row.aiNote}</p>}
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { KeyItem } from "@/lib/types";
 import {
   buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
-  nextLabel, parseItemPoints, rowErrors, totalPointsCenti, type DraftRow,
+  nextLabel, parseItemPoints, rowErrors, splitDraftRow, totalPointsCenti, type DraftRow,
 } from "./key-rows";
 
 function keyItem(o: Partial<KeyItem> = {}): KeyItem {
@@ -146,5 +146,37 @@ describe("draftsSnapshot", () => {
     expect(draftsSnapshot([b, a], "")).not.toBe(base);
     expect(draftsSnapshot([a, { ...b, pointsText: "3" }], "")).not.toBe(base);
     expect(draftsSnapshot([a, b], "Note")).not.toBe(base);
+  });
+});
+
+describe("splitDraftRow", () => {
+  const base = { ...newDraftRow("k1"), id: "item-3", label: "3", prompt: "Solve for x.", pointsText: "5", gradingCriteria: "Show work." };
+  let n = 0;
+  const key = () => `new-${n++}`;
+
+  it("splits a question into named parts with their own points", () => {
+    const result = splitDraftRow(base, { partsText: "", pointsText: "2, 2, 1", namesText: "setup, work, final answer" }, key);
+    expect(result.ok && result.rows.map((r) => [r.key, r.id, r.label, r.groupLabel, r.pointsText])).toEqual([
+      ["k1", "item-3", "3a", "3", "2"], ["new-0", null, "3b", "3", "2"], ["new-1", null, "3c", "3", "1"],
+    ]);
+    expect(result.ok && result.rows[0]).toMatchObject({
+      prompt: "Solve for x. (part a: setup)",
+      gradingCriteria: "Grade only this part of question 3 (part a: setup). Show work.",
+      partialCredit: true,
+    });
+  });
+
+  it("shares a total evenly", () => {
+    const result = splitDraftRow(base, { partsText: "3", pointsText: "10", namesText: "" }, key);
+    expect(result.ok && result.rows.map((r) => [r.label, r.pointsText, r.prompt])).toEqual([
+      ["3a", "3.34", "Solve for x. (part a of 3)"], ["3b", "3.33", "Solve for x. (part b of 3)"], ["3c", "3.33", "Solve for x. (part c of 3)"],
+    ]);
+  });
+
+  it("explains a request it can't follow", () => {
+    expect(splitDraftRow(base, { partsText: "1", pointsText: "5", namesText: "" }, key)).toEqual({ ok: false, error: "Enter how many parts, from 2 to 26." });
+    expect(splitDraftRow(base, { partsText: "3", pointsText: "2, 2", namesText: "" }, key))
+      .toEqual({ ok: false, error: "Give 3 point values (one per part), or one total." });
+    expect(splitDraftRow(base, { partsText: "2", pointsText: "5", namesText: "a, b, c" }, key)).toEqual({ ok: false, error: "Give 2 part names, or none." });
   });
 });
