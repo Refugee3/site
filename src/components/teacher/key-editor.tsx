@@ -1,0 +1,524 @@
+"use client";
+
+import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { saveKeyAction } from "@/actions/key";
+import { Alert } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cx } from "@/components/ui/cx";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { LinkButton } from "@/components/ui/link-button";
+import { Select } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
+import { moveItem } from "@/lib/client/upload-files";
+import { ANSWER_TYPE_LABEL, formatPoints, uploadLabel } from "@/lib/format";
+import { ANSWER_TYPES, type AnswerType, type AssignmentKind, type KeyItem } from "@/lib/types";
+import {
+  buildSaveKeyInput, describeErrors, draftFromItem, draftsSnapshot, isUncertain, needsAcknowledgement, newDraftRow,
+  rowErrors, splitDraftRow, totalPointsCenti, type DraftRow, type FieldErrors, type RowField, type SplitRequest,
+} from "./key-rows";
+import { gradedUnder, gradingScopeFromText, type GradingScope } from "./grading-scope";
+import { listText, plural } from "./text";
+import { useActionRunner } from "./use-action-runner";
+import { useLeaveGuard } from "./use-leave-guard";
+
+export interface KeyEditorProps {
+  assignmentId: string;
+  items: KeyItem[];
+  teacherNotes: string;
+  /** The stored key's `updatedAt`: when it changes (after a save), the editor reloads from `items`. */
+  version: number;
+  approved: boolean;
+  /** Papers already graded or awaiting review with the current key. */
+  gradedCount: number;
+  kind: AssignmentKind;
+}
+
+// A project's rubric: its instructions have their own card (ProjectInstructionsCard), so the editor doesn't show them.
+
+// Dense controls from the sm breakpoint up; phones keep 44 px targets and 16 px text (no zoom on focus).
+const DENSE = "sm:min-h-9 sm:py-1.5 sm:text-sm";
+
+function initialRows(items: KeyItem[]): DraftRow[] {
+  return items.length > 0 ? items.map(draftFromItem) : [newDraftRow("new-0")];
+}
+
+/** The answer-key table: one card per gradable item, with the save bar pinned to the bottom of the screen. */
+export function KeyEditor(props: KeyEditorProps) {
+  const { assignmentId, items, teacherNotes, version, approved, gradedCount, kind } = props;
+  const runner = useActionRunner();
+  const [rows, setRows] = useState(() => initialRows(items));
+  const [notes, setNotes] = useState(teacherNotes);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [loadedVersion, setLoadedVersion] = useState(version);
+  const nextKey = useRef(1);
+
+  // A save stored a new version of the key: reload it, so new rows get their ids and AI-proposed rows their new source.
+  if (version !== loadedVersion) {
+    setLoadedVersion(version);
+    setRows(initialRows(items));
+    setNotes(teacherNotes);
+    setAcknowledged(false);
+    setFieldErrors({});
+  }
+
+  const baseline = useMemo(() => draftsSnapshot(initialRows(items), teacherNotes), [items, teacherNotes]);
+  const dirty = draftsSnapshot(rows, notes) !== baseline;
+  const needsAck = needsAcknowledgement(rows);
+  const errorsByRow = useMemo(
+    () => Array.from({ length: rows.length }, (_, index) => rowErrors(fieldErrors, index)),
+    [fieldErrors, rows.length],
+  );
+  const errorLines = describeErrors(fieldErrors, rows);
+
+  useLeaveGuard(dirty, "Your answer-key edits are not saved. Leave and lose them?");
+
+  const updateRow = useCallback((key: string, patch: Partial<DraftRow>) => {
+    setRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }, []);
+
+  // Errors are keyed by row index, so they are dropped whenever rows are added, removed or reordered.
+  const restructure = useCallback((change: (current: DraftRow[]) => DraftRow[]) => {
+    setRows(change);
+    setFieldErrors({});
+  }, []);
+
+  const moveRow = useCallback(
+    (key: string, offset: -1 | 1) =>
+      restructure((current) => moveItem(current, current.findIndex((row) => row.key === key), offset)),
+    [restructure],
+  );
+
+  const insertAfter = useCallback(
+    (key: string | null) => {
+      const newKey = `new-${nextKey.current++}`;
+      restructure((current) => {
+        const index = key === null ? current.length - 1 : current.findIndex((row) => row.key === key);
+        return [...current.slice(0, index + 1), newDraftRow(newKey, current[index]), ...current.slice(index + 1)];
+      });
+    },
+    [restructure],
+  );
+
+  /** "Split into parts": the row becomes its parts; returns what's wrong with the request, or null. */
+  const splitRow = useCallback(
+    (row: DraftRow, request: SplitRequest): string | null => {
+      const split = splitDraftRow(row, request, () => `new-${nextKey.current++}`);
+      if (!split.ok) return split.error;
+      restructure((current) => current.flatMap((r) => (r.key === row.key ? split.rows : [r])));
+      return null;
+    },
+    [restructure],
+  );
+
+  const removeRow = useCallback(
+    (row: DraftRow) => {
+      const loses = row.id !== null && gradedCount > 0;
+      if (loses && !window.confirm(`Remove item ${row.label || "without a label"}? Points you entered for it on graded papers are deleted when you save.`)) {
+        return;
+      }
+      restructure((current) => current.filter((r) => r.key !== row.key));
+    },
+    [gradedCount, restructure],
+  );
+
+  const labels = rows.map((row) => row.label);
+  const scope = gradingScopeFromText(notes, labels);
+
+  function applyScope(s: GradingScope) {
+    const keep = gradedUnder(s, labels);
+    setRows((current) => current.map((row) => ({ ...row, graded: keep.has(row.label) })));
+  }
+
+  function setAllPoints(pointsText: string) {
+    setRows((current) => current.map((row) => ({ ...row, pointsText })));
+  }
+
+  function save() {
+    setSavedMessage(null);
+    const built = buildSaveKeyInput(rows, notes, acknowledged);
+    if (!built.ok) {
+      setFieldErrors(built.fieldErrors);
+      return;
+    }
+    setFieldErrors({});
+    runner.run(
+      () => saveKeyAction(assignmentId, built.input),
+      (result) => setSavedMessage(savedText(result.data?.staleCount ?? 0)),
+      (failure) => setFieldErrors(failure.fieldErrors ?? {}),
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Locked while saving: the saved key replaces every row when it comes back, so later typing would be lost. */}
+      <fieldset disabled={runner.pending} className="flex min-w-0 flex-col gap-4">
+        {kind !== "project" && (<>
+        <Field
+          label="Grading instructions (optional)"
+          htmlFor="key-teacher-notes"
+          hint="The AI follows these on every paper, e.g. “Only grade 2, 4b and 5”, “On 3, grade the work, not just the final answer”, “Units are required”."
+          error={fieldErrors.teacherNotes}
+        >
+          <Textarea
+            id="key-teacher-notes"
+            rows={3}
+            maxLength={4000}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </Field>
+        <ScopeSuggestion scope={scope} rows={rows} labels={labels} onApply={applyScope} />
+        </>)}
+
+        {gradedCount > 0 && (
+          <Alert tone="info">
+            {plural(gradedCount, "paper")} {gradedCount === 1 ? "is" : "are"} already graded. Points and partial-credit
+            changes rescore them at once; changes to questions, answers, criteria or notes mark them stale so you can
+            regrade them.
+          </Alert>
+        )}
+
+        <Toolbar rows={rows} onSetAllPoints={setAllPoints} onAdd={() => insertAfter(null)} />
+
+        <ol className="flex flex-col gap-3">
+          {rows.map((row, index) => (
+            <KeyRowCard
+              key={row.key}
+              row={row}
+              index={index}
+              count={rows.length}
+              errors={errorsByRow[index]}
+              onChange={updateRow}
+              onMove={moveRow}
+              onInsertAfter={insertAfter}
+              onSplit={splitRow}
+              onRemove={removeRow}
+            />
+          ))}
+        </ol>
+
+        <Button variant="secondary" className="self-start" onClick={() => insertAfter(null)}>
+          + Add item
+        </Button>
+      </fieldset>
+
+      <div className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-3 border-t border-line bg-surface/95 px-4 py-3 shadow-[0_-4px_12px_rgb(0_0_0/0.06)] backdrop-blur sm:mx-0 sm:rounded-xl sm:border">
+        {(errorLines.length > 0 || runner.error) && (
+          <Alert tone="danger" title={errorLines.length > 0 ? "Fix these before saving" : runner.error}>
+            {errorLines.length > 0 && <ErrorList lines={errorLines} />}
+          </Alert>
+        )}
+        {needsAck && (
+          <label className="flex min-h-11 cursor-pointer items-center gap-3">
+            <Input
+              type="checkbox"
+              disabled={runner.pending}
+              checked={acknowledged}
+              onChange={(e) => setAcknowledged(e.target.checked)}
+              aria-invalid={fieldErrors.acknowledgeAiProposed ? true : undefined}
+            />
+            <span className="font-medium">I checked the AI-proposed answers</span>
+          </label>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button disabled={runner.pending} onClick={save}>
+            {runner.pending && <Spinner className="size-4" />}
+            {kind === "project" ? "Save and approve the rubric" : "Save and approve the key"}
+          </Button>
+          <p role="status" className="text-sm text-muted">
+            {saveStatus({ pending: runner.pending, dirty, approved, savedMessage })}
+          </p>
+          {approved && !dirty && !runner.pending && (
+            <LinkButton href={`/teacher/assignments/${assignmentId}/upload`} variant="secondary" size="sm">
+              Next: {uploadLabel(kind).toLowerCase()} →
+            </LinkButton>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The "Split into parts" form under a row's header: how many parts, the points (a total or one per part), optional names. */
+function SplitPanel(p: {
+  name: string; idPrefix: string; pointsText: string; onCancel: () => void; onSplit: (request: SplitRequest) => string | null;
+}) {
+  const [request, setRequest] = useState<SplitRequest>({ partsText: "", pointsText: p.pointsText, namesText: "" });
+  const [error, setError] = useState<string | null>(null);
+  const set = (patch: Partial<SplitRequest>) => {
+    setRequest((current) => ({ ...current, ...patch }));
+    setError(null);
+  };
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-line bg-subtle p-3">
+      <p className="text-sm text-ink">
+        Split item <span className="font-semibold">{p.name}</span> into parts that are graded and scored on their own.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-[6rem_15rem_minmax(0,1fr)]">
+        <Field label="Parts" htmlFor={`${p.idPrefix}-parts`}>
+          <Input id={`${p.idPrefix}-parts`} inputMode="numeric" placeholder="e.g. 3" className={DENSE} value={request.partsText} onChange={(e) => set({ partsText: e.target.value })} />
+        </Field>
+        <Field label="Points" htmlFor={`${p.idPrefix}-points`} hint="A total, or one per part: 2, 2, 1">
+          <Input id={`${p.idPrefix}-points`} className={DENSE} value={request.pointsText} onChange={(e) => set({ pointsText: e.target.value })} />
+        </Field>
+        <Field label="Part names (optional)" htmlFor={`${p.idPrefix}-names`} hint="e.g. setup, work, final answer">
+          <Input id={`${p.idPrefix}-names`} className={DENSE} value={request.namesText} onChange={(e) => set({ namesText: e.target.value })} />
+        </Field>
+      </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => setError(p.onSplit(request))}>Split</Button>
+        <Button size="sm" variant="ghost" onClick={p.onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+/** "Your instructions say to grade only 2, 4b and 5. [Tick just those]" when the boxes don't match yet. */
+function ScopeSuggestion(p: { scope: GradingScope | null; rows: DraftRow[]; labels: string[]; onApply: (s: GradingScope) => void }) {
+  const { scope } = p;
+  if (!scope) return null;
+  const keep = gradedUnder(scope, p.labels);
+  const matches = p.rows.every((row) => row.graded === keep.has(row.label));
+  const names = listText(scope.labels);
+  const unknown = scope.unknown.length > 0 ? ` (${listText(scope.unknown)} ${scope.unknown.length === 1 ? "isn't" : "aren't"} in the key)` : "";
+  if (keep.size === 0) {
+    return <Alert tone="warning">Your instructions would leave no question graded{unknown}. Keep at least one counted.</Alert>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-line bg-subtle px-3 py-2 text-sm">
+      <p className="text-ink">
+        Your instructions say to {scope.mode === "only" ? "grade only" : "skip"} <span className="font-semibold">{names}</span>
+        {unknown}.{" "}
+        {matches ? <span className="text-muted">The “Grade this” boxes match.</span> : "The “Grade this” boxes below don't match yet."}
+      </p>
+      {!matches && (
+        <Button size="sm" variant="secondary" onClick={() => p.onApply(scope)}>
+          {scope.mode === "only" ? "Grade just those" : "Skip those"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function savedText(staleCount: number): string {
+  if (staleCount === 0) return "Saved. The key is approved.";
+  const papers = plural(staleCount, "paper");
+  return `Saved. ${papers} ${staleCount === 1 ? "was" : "were"} graded with an earlier version of the key — regrade them from the Workspace tab.`;
+}
+
+function saveStatus(s: { pending: boolean; dirty: boolean; approved: boolean; savedMessage: string | null }): string {
+  if (s.pending) return "Saving…";
+  if (s.dirty) return "Unsaved changes.";
+  if (s.savedMessage) return s.savedMessage;
+  return s.approved ? "Saved and approved." : "Not approved yet: saving approves the key for grading.";
+}
+
+const MAX_ERROR_LINES = 8;
+
+function ErrorList({ lines }: { lines: string[] }) {
+  const hidden = lines.length - MAX_ERROR_LINES;
+  return (
+    <ul className="list-disc pl-5">
+      {lines.slice(0, MAX_ERROR_LINES).map((line) => (
+        <li key={line}>{line}</li>
+      ))}
+      {hidden > 0 && <li>…and {hidden} more, marked below.</li>}
+    </ul>
+  );
+}
+
+function Toolbar({ rows, onSetAllPoints, onAdd }: { rows: DraftRow[]; onSetAllPoints: (text: string) => void; onAdd: () => void }) {
+  const [points, setPoints] = useState("");
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <p className="text-sm font-medium">
+        {plural(rows.length, "item")} · {formatPoints(totalPointsCenti(rows))} points in total
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="key-all-points" className="text-xs font-medium text-muted">
+            Points for every item
+          </label>
+          <div className="w-24">
+            <Input id="key-all-points" inputMode="decimal" className={DENSE} value={points} onChange={(e) => setPoints(e.target.value)} />
+          </div>
+        </div>
+        <Button variant="secondary" size="sm" disabled={points.trim() === ""} onClick={() => onSetAllPoints(points.trim())}>
+          Apply to all
+        </Button>
+        <Button variant="secondary" size="sm" onClick={onAdd}>
+          + Add item
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+interface KeyRowCardProps {
+  row: DraftRow;
+  index: number;
+  count: number;
+  errors: Partial<Record<RowField, string[]>>;
+  onChange: (key: string, patch: Partial<DraftRow>) => void;
+  onMove: (key: string, offset: -1 | 1) => void;
+  onInsertAfter: (key: string) => void;
+  onSplit: (row: DraftRow, request: SplitRequest) => string | null;
+  onRemove: (row: DraftRow) => void;
+}
+
+// Memoized with stable callbacks so typing in one card re-renders that card only, even with 50 items.
+const KeyRowCard = memo(function KeyRowCard(props: KeyRowCardProps) {
+  const { row, index, count, errors, onChange, onMove, onInsertAfter, onSplit, onRemove } = props;
+  const [splitting, setSplitting] = useState(false);
+  const id = (field: string) => `key-${row.key}-${field}`;
+  const set = (patch: Partial<DraftRow>) => onChange(row.key, patch);
+  const name = row.label.trim() || `#${index + 1}`;
+  const uncertain = isUncertain(row);
+
+  return (
+    <li
+      aria-label={`Item ${name}`}
+      className={cx(
+        "flex flex-col gap-3 rounded-xl border p-3 shadow-sm sm:p-4",
+        !row.graded ? "border-dashed border-line-strong bg-subtle" : uncertain ? "border-warning-200 bg-warning-50" : "border-line bg-surface",
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold tabular-nums text-muted">{index + 1}.</span>
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 sm:min-h-9">
+            <Input type="checkbox" checked={row.graded} onChange={(e) => set({ graded: e.target.checked })} aria-label={`Grade item ${name}`} />
+            <span className="text-sm font-medium">Grade this</span>
+          </label>
+          {!row.graded && <Badge tone="neutral">Not graded: not read or scored</Badge>}
+          {row.answerSource === "ai_proposed" && <Badge tone="warning">AI-proposed — check</Badge>}
+          {uncertain && <Badge tone="warning">{row.aiConfidence === "low" ? "Low" : "Medium"} AI confidence</Badge>}
+          {row.id === null && <Badge tone="info">New</Badge>}
+        </div>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="sm" disabled={index === 0} onClick={() => onMove(row.key, -1)} aria-label={`Move item ${name} up`}>
+            ↑
+          </Button>
+          <Button variant="ghost" size="sm" disabled={index === count - 1} onClick={() => onMove(row.key, 1)} aria-label={`Move item ${name} down`}>
+            ↓
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => onInsertAfter(row.key)} aria-label={`Insert an item after ${name}`}>
+            + Below
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={splitting}
+            onClick={() => setSplitting((open) => !open)}
+            aria-label={`Split item ${name} into parts`}
+          >
+            Split into parts
+          </Button>
+          <Button variant="ghost" size="sm" disabled={count === 1} onClick={() => onRemove(row)} aria-label={`Remove item ${name}`}>
+            Remove
+          </Button>
+        </div>
+      </div>
+
+      {splitting && (
+        <SplitPanel
+          name={name}
+          idPrefix={id("split")}
+          pointsText={row.pointsText}
+          onCancel={() => setSplitting(false)}
+          onSplit={(request) => {
+            const error = onSplit(row, request);
+            if (error === null) setSplitting(false);
+            return error;
+          }}
+        />
+      )}
+
+      {row.aiNote && <p className="whitespace-pre-wrap text-sm text-warning-800">AI note: {row.aiNote}</p>}
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-[6rem_6rem_minmax(0,1fr)_6rem_5rem]">
+        <Field label="Label" htmlFor={id("label")} error={errors.label}>
+          <Input id={id("label")} maxLength={40} className={DENSE} value={row.label} onChange={(e) => set({ label: e.target.value })} />
+        </Field>
+        <Field label="Group" htmlFor={id("group")} error={errors.groupLabel}>
+          <Input
+            id={id("group")}
+            maxLength={40}
+            placeholder="e.g. 3"
+            className={DENSE}
+            value={row.groupLabel}
+            onChange={(e) => set({ groupLabel: e.target.value })}
+          />
+        </Field>
+        <div className="col-span-2 sm:col-span-1">
+          <Field label="Type" htmlFor={id("type")} error={errors.answerType}>
+            <Select id={id("type")} className={DENSE} value={row.answerType} onChange={(e) => set({ answerType: e.target.value as AnswerType })}>
+              {ANSWER_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {ANSWER_TYPE_LABEL[type]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <Field label="Points" htmlFor={id("points")} error={errors.pointsCenti}>
+          <Input id={id("points")} inputMode="decimal" className={DENSE} value={row.pointsText} onChange={(e) => set({ pointsText: e.target.value })} />
+        </Field>
+        <Field label="Page" htmlFor={id("page")} error={errors.page}>
+          <Input id={id("page")} inputMode="numeric" className={DENSE} value={row.pageText} onChange={(e) => set({ pageText: e.target.value })} />
+        </Field>
+      </div>
+
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 self-start sm:min-h-9">
+        <Input type="checkbox" checked={row.partialCredit} onChange={(e) => set({ partialCredit: e.target.checked })} />
+        <span className="text-sm">
+          Partial credit <span className="text-muted">(minor slips and partly right answers earn some accuracy credit)</span>
+        </span>
+      </label>
+
+      <Field label="Question" htmlFor={id("prompt")} error={errors.prompt}>
+        <Textarea id={id("prompt")} rows={2} maxLength={1000} className={DENSE} value={row.prompt} onChange={(e) => set({ prompt: e.target.value })} />
+      </Field>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Expected answer" htmlFor={id("expected")} error={errors.expectedAnswer}>
+          <Textarea
+            id={id("expected")}
+            rows={2}
+            maxLength={2000}
+            className={DENSE}
+            value={row.expectedAnswer}
+            onChange={(e) => set({ expectedAnswer: e.target.value })}
+          />
+        </Field>
+        <Field label="Also accept (one per line)" htmlFor={id("accept")} error={errors.acceptableAnswers}>
+          <Textarea
+            id={id("accept")}
+            rows={2}
+            className={DENSE}
+            value={row.acceptableText}
+            onChange={(e) => set({ acceptableText: e.target.value })}
+          />
+        </Field>
+      </div>
+
+      <Field label="Grading criteria" htmlFor={id("criteria")} error={errors.gradingCriteria}>
+        <Textarea
+          id={id("criteria")}
+          rows={2}
+          maxLength={1000}
+          placeholder="e.g. Must show work; units required"
+          className={DENSE}
+          value={row.gradingCriteria}
+          onChange={(e) => set({ gradingCriteria: e.target.value })}
+        />
+      </Field>
+    </li>
+  );
+});
