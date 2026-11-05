@@ -14,6 +14,7 @@ import { enqueueSplitScan } from "@/lib/jobs/queue";
 import { describePapers, everyNLayout, formatPageRanges, papersFromLayout } from "@/lib/scan-layout";
 import { loadKeyState, requireKey } from "@/lib/services/key-state";
 import { assertKeyApproved, storeTeacherPaper } from "@/lib/services/submissions";
+import { namesHiddenRequired } from "@/lib/services/names";
 import { activeSpotRevision } from "@/lib/services/worksheets";
 import { readDataFile, removeDataFile, writeFileAtomic } from "@/lib/storage/files";
 import { scanPdfRel } from "@/lib/storage/paths";
@@ -47,6 +48,8 @@ export function engineName(engine: GradingEngineChoice): string {
 export function onePassAvailable(assignmentId?: string): boolean {
   // A project is reviewed paper by paper, so its scan is always split first.
   if (assignmentId !== undefined && getAssignment(assignmentId)?.kind === "project") return false;
+  // With names hidden, whole pages (names included) may go only to ChatGPT, which splits the scan; papers are graded one by one.
+  if (namesHiddenRequired()) return false;
   if (getConfig().aiMode === "fake" || getGradingEngine() !== "agent") return true;
   // The hosted agent can't read a scan in one pass, but the fast lane needs no full page: an assignment with saved answer
   // spots is graded from its blank worksheet with any engine.
@@ -151,7 +154,8 @@ function assertNotPartlyGraded(scan: Scan): void {
 export function retryScanWithAi(scan: Scan, o: { mode?: "auto" | "one_pass" } = {}): Scan {
   return tx(() => {
     const current = requireScan(scan.id, ["review", "failed"]);
-    const mode = o.mode ?? (current.splitMode === "one_pass" ? "one_pass" : "auto");
+    const asked = o.mode ?? (current.splitMode === "one_pass" ? "one_pass" : "auto");
+    const mode = asked === "one_pass" && namesHiddenRequired() ? "auto" : asked;
     if (mode === "one_pass") return resumeOnePass(current);
     assertNotPartlyGraded(current);
     const updated = updateScan(current.id, {

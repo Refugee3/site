@@ -325,6 +325,7 @@ export async function deleteSubmission(s: Submission): Promise<void> {
     deleteSubmissionRow(s.id);
   });
   await removeDataFile(s.pdfPath);
+  if (s.namesHiddenPdfPath) await removeDataFile(s.namesHiddenPdfPath);
 }
 
 function requireSubmission(id: string): Submission {

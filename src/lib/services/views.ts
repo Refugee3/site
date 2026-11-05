@@ -237,6 +237,7 @@ function boardRow({ current: s, earlier }: BoardGroup["rows"][number], keyRevisi
   return {
     submissionId: s.id,
     displayName: s.studentName ?? UNNAMED,
+    anonId: s.anonId,
     status: s.status,
     statusNote: s.statusNote,
     ...cachedScore(s),
@@ -550,10 +551,16 @@ export function buildGradesCsv(a: Assignment): { filename: string; csv: string }
   // A project's rubric is scored inside its review (see the review page), so it has no per-question columns.
   const items = a.kind === "project" ? [] : listGradedKeyItems(a.id);
   const resultsBySubmission = listItemsForAssignment(a.id);
-  const header = [...CSV_COLUMNS, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
-  const rows = organizeBoard(listSubmissions(a.id), listSections(a.id)).flatMap((group) =>
-    group.rows.map(({ current, earlier }) =>
-      csvRow(group.label, current, earlier.length, a, items, resultsBySubmission.get(current.id) ?? [])));
+  const submissions = listSubmissions(a.id);
+  // The anonymous IDs (names hidden by ChatGPT) get a column after the name, only when some paper has one.
+  const withIds = submissions.some((s) => s.anonId !== null);
+  const columns = withIds ? [...CSV_COLUMNS.slice(0, 2), "Anonymous ID", ...CSV_COLUMNS.slice(2)] : CSV_COLUMNS;
+  const header = [...columns, ...items.map((item) => `${item.label} (${formatPoints(item.pointsCenti)} pt)`)];
+  const rows = organizeBoard(submissions, listSections(a.id)).flatMap((group) =>
+    group.rows.map(({ current, earlier }) => {
+      const row = csvRow(group.label, current, earlier.length, a, items, resultsBySubmission.get(current.id) ?? []);
+      return withIds ? [...row.slice(0, 2), current.anonId ?? "", ...row.slice(2)] : row;
+    }));
   return { filename: `${slugify(a.title)}-grades.csv`, csv: toCsv([header, ...rows]) };
 }
 

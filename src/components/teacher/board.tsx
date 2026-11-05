@@ -127,6 +127,7 @@ function StudentCell({ assignmentId, row, stretched = false }: { assignmentId: s
       >
         {row.displayName}
       </Link>
+      {row.anonId && <span className="font-mono text-xs text-muted">ID {row.anonId}</span>}
       {row.missed && <MissedAnswer missed={row.missed} />}
       {row.earlier.length > 0 && (
         <details className="relative z-10 text-xs text-muted">

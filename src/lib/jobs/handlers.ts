@@ -17,6 +17,7 @@ import { isReadyToGrade, keyFingerprint, normalizeExtractedKey } from "@/lib/gra
 import { isPlaceholderTitle, normalizeExtractedQuestions, normalizeSuggestedTitle } from "@/lib/grading/key-questions";
 import { buildRefusedResult, reconcileGrading } from "@/lib/grading/reconcile";
 import { statusFromFlags } from "@/lib/flags";
+import { chatGptScanReader, hidePaperNames, namesHiddenRequired } from "@/lib/services/names";
 import { normalizeProjectReview } from "@/lib/ai/project";
 import {
   keyPageCountHint, normalizeScanReadings, proposeLayout, SCAN_CHUNK_MAX_BYTES, SCAN_CHUNK_MAX_PAGES,
@@ -34,7 +35,7 @@ import { rescoreSubmission } from "@/lib/services/submissions";
 import { spotsForGrading } from "@/lib/services/worksheets";
 import { removeDataFile } from "@/lib/storage/files";
 import { extractPageSets } from "@/lib/storage/pdf";
-import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, Scan, ScanPageReading, Section } from "@/lib/types";
+import type { AiUsage, AnswerKey, Assignment, Job, KeyItem, NamesHiddenInfo, Scan, ScanPageReading, Section } from "@/lib/types";
 
 // Handlers own every write to the job's target (submission or key); the worker owns every jobs-table write.
 
@@ -59,6 +60,8 @@ interface GradingContext {
   engine: Grader["engine"];
   /** The blank worksheet's saved answer spots as they were when the job started (null: none); the grading records their revision. */
   spots: ReturnType<typeof spotsForGrading>;
+  /** Set when ChatGPT hid the names: the identity is ChatGPT's reading, never the grading AI's. */
+  namesHidden?: NamesHiddenInfo;
 }
 
 type Billed = NonNullable<AiError["o"]["billed"]>;
@@ -100,20 +103,36 @@ export async function handleGradeSubmission(job: Job, grader: Grader, signal: Ab
       ? { kind: "fail", error: "file_missing: student PDF not found" }
       : DONE;
   }
-  if (assignment.kind === "project") return reviewProjectPaper(ctx, grader, studentPdf, submission.pageCount, signal);
+  // Names hidden: ChatGPT covers them first, and only that copy goes to the grading AI.
+  let gradedPdf = studentPdf;
+  if (namesHiddenRequired()) {
+    try {
+      const hidden = await hidePaperNames(submission, { signal });
+      if (hidden.usage && hidden.model) recordUsage(assignment.id, hidden.model, hidden.usage, null);
+      gradedPdf = hidden.pdf;
+      ctx.namesHidden = hidden.info;
+    } catch (e) {
+      if (isAppError(e) && e.code === "names_visible") {
+        return markFailed(submission.id, generation, "names_visible", e.message) ? { kind: "fail", error: "names_visible" } : DONE;
+      }
+      return gradingFailure(ctx, classifySdkError(e));
+    }
+  }
+
+  if (assignment.kind === "project") return reviewProjectPaper(ctx, grader, gradedPdf, submission.pageCount, signal);
   // The paper is read without the answer key (no key PDF either), then marked and judged from that reading (gradeByReading).
   let outcome: GradingOutcome;
   try {
     const result = await grader.gradeSubmission(
       {
         assignment, teacherNotes: key.teacherNotes, sections: ctx.sections, items: ctx.items,
-        studentPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
+        studentPdf: gradedPdf, studentPageCount: submission.pageCount, guidance: ctx.guidance.guidance,
         // Off, the grader returns every note as "" (the scoring, lessons and views are unaffected).
         writeNotes: assignment.writeNotes,
         // The blank worksheet's answer spots, once the teacher saved them: marks are read there before any AI call.
         answerSpots: ctx.spots?.answerSpots ?? null,
-        // The class list's names, offered to the AI only when it reads a name crop.
-        nameHints: rosterNameHints(assignment.id),
+        // The class list's names, offered to the AI only when it reads a name crop (never when names are hidden).
+        nameHints: ctx.namesHidden ? [] : rosterNameHints(assignment.id),
       },
       { signal, maxTokens: job.maxTokens ?? getConfig().maxTokens },
     );
@@ -156,7 +175,8 @@ async function reviewProjectPaper(
     result = await grader.reviewProject(
       {
         assignment: { title: assignment.title, instructions: assignment.instructions }, mode, teacherInstructions: key.teacherNotes,
-        rubric: ctx.items, sections: ctx.sections, studentPdf, studentPageCount: pageCount, nameHints: rosterNameHints(assignment.id),
+        rubric: ctx.items, sections: ctx.sections, studentPdf, studentPageCount: pageCount,
+        nameHints: ctx.namesHidden ? [] : rosterNameHints(assignment.id),
       },
       { signal, maxTokens: ctx.job.maxTokens ?? getConfig().maxTokens },
     );
@@ -174,7 +194,7 @@ async function reviewProjectPaper(
     if (!latest || latest.gradingGeneration !== ctx.generation) return;
     const sections = listSections(assignment.id);
     const asGrading: GradingOutput = {
-      student: output.student, document_check: output.document_check, items: [], integrity: output.integrity, unmatched_work: "",
+      student: withHiddenIdentity({ student: output.student } as GradingOutput, ctx.namesHidden).student, document_check: output.document_check, items: [], integrity: output.integrity, unmatched_work: "",
       overall_feedback: "", teacher_summary: output.teacher_summary,
     };
     const reconciled = reconcileGrading({
@@ -217,7 +237,7 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
 
   const reconciled = outcome.kind === "graded"
     ? reconcileGrading({
-      output: outcome.output, refs: outcome.refs, items: ctx.items, sections, pageCount: latest.pageCount,
+      output: withHiddenIdentity(outcome.output, ctx.namesHidden), refs: outcome.refs, items: ctx.items, sections, pageCount: latest.pageCount,
       current: latest, fallbackUsed: outcome.meta.fallbackUsed, roster: getRoster(ctx.assignment.id),
     })
     : buildRefusedResult({ items: ctx.items, current: latest, hasSections: sections.length > 0, category: outcome.category });
@@ -239,6 +259,21 @@ function saveOutcome(ctx: GradingContext, outcome: GradingOutcome): void {
   });
   if (saved) rescoreSubmission(ctx.submissionId);
 }
+
+/** The grading output with the identity ChatGPT read in place of the grading AI's (which saw only the anonymous ID). */
+function withHiddenIdentity<T extends Pick<GradingOutput, "student">>(output: T, hidden: NamesHiddenInfo | undefined): T {
+  if (!hidden) return output;
+  return {
+    ...output,
+    student: {
+      name: hidden.name, name_confidence: hidden.nameConfidence, section_raw: hidden.sectionRaw, section_match: null,
+      multiple_students_detected: hidden.multipleStudents,
+    },
+  };
+}
+
+const ONE_PASS_WITH_HIDDEN_NAMES = "Student names are hidden from the grading AI (Settings → Student names), so a scan can't be "
+  + "graded in one pass. Read it again with \"Split first\": ChatGPT finds each paper, then each is graded with its name covered.";
 
 /** Records the failure on the submission; if the generation moved on (regrade or delete), the job is simply done. */
 function gradingFailure(ctx: GradingContext, err: AiError): HandlerResult {
@@ -406,7 +441,14 @@ interface SplitState {
 export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSignal): Promise<HandlerResult> {
   const scan = getScan(job.targetId);
   if (!scan || scan.status !== "splitting") return DONE;
-  if (scan.splitMode === "one_pass") return handleOnePassScan(job, grader, signal, scan, handleSplitScan);
+  const hideNames = namesHiddenRequired();
+  if (scan.splitMode === "one_pass") {
+    // Grading in one pass sends whole pages, names included, to the grading AI.
+    if (hideNames) return failScan({ job, scanId: scan.id, generation: scan.splitGeneration }, ONE_PASS_WITH_HIDDEN_NAMES);
+    return handleOnePassScan(job, grader, signal, scan, handleSplitScan);
+  }
+  // With names hidden, only ChatGPT reads the scan's pages (the split needs the names); the papers are hidden before grading.
+  const readScanPages: Grader["readScanPages"] = hideNames ? chatGptScanReader() : (input, o) => grader.readScanPages(input, o);
   const assignment = getAssignment(scan.assignmentId);
   const key = getKey(scan.assignmentId);
   if (!assignment || !key) return DONE; // deleted since the claim
@@ -439,7 +481,7 @@ export async function handleSplitScan(job: Job, grader: Grader, signal: AbortSig
       if (currentStop(state)) return;
       let read: { meta: AiCallMeta; readings: ScanPageReading[] };
       try {
-        const result = await grader.readScanPages(
+        const result = await readScanPages(
           {
             assignmentTitle: assignment.title, sections, items, keyPageCount,
             chunkPdf: chunk.pdf, firstPage: chunk.pages[0], chunkPageCount: chunk.pages.length, totalPages: scan.pageCount,

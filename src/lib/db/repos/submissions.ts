@@ -10,7 +10,7 @@ import {
   SUBMISSION_STATUSES,
   type AiUsage, type Assignment, type Attempt, type Confidence, type Correctness, type DocumentMatch, type FlagCode, type GraderEngine,
   type ItemJudgment, type ItemReviewReason, type JudgedBy, type Legibility, type StatusCounts, type Submission, type SubmissionItem,
-  type ProjectReview, type SubmissionStatus,
+  type NamesHiddenInfo, type ProjectReview, type SubmissionStatus,
 } from "@/lib/types";
 
 export type NewSubmission = Pick<Submission, "id" | "assignmentId" | "source" | "receiptToken" | "pdfPath" | "originalFilename"
@@ -97,6 +97,9 @@ interface SubmissionRow {
   fast_lane: 0 | 1;
   roster_name: string | null;
   project_review_json: string | null;
+  anon_id: string | null;
+  names_hidden_pdf_path: string | null;
+  names_hidden_json: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -186,6 +189,9 @@ function submissionFromRow(row: SubmissionRow): Submission {
     fastLane: row.fast_lane === 1,
     rosterName: row.roster_name,
     projectReview: row.project_review_json ? (JSON.parse(row.project_review_json) as ProjectReview) : null,
+    anonId: row.anon_id,
+    namesHiddenPdfPath: row.names_hidden_pdf_path,
+    namesHidden: row.names_hidden_json ? (JSON.parse(row.names_hidden_json) as NamesHiddenInfo) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -438,6 +444,21 @@ export function saveGradingResult(w: GradingWrite): boolean {
     }
     return true;
   });
+}
+
+/** Records the copy of the paper with its names covered by ChatGPT, and the paper's anonymous ID. */
+export function saveNamesHidden(id: string, h: { anonId: string; pdfPath: string; info: NamesHiddenInfo }): void {
+  run(
+    "UPDATE submissions SET anon_id = ?, names_hidden_pdf_path = ?, names_hidden_json = ? WHERE id = ?",
+    h.anonId, h.pdfPath, JSON.stringify(h.info), id,
+  );
+}
+
+/** The anonymous IDs already used in the assignment. */
+export function listAnonIds(assignmentId: string): Set<string> {
+  return new Set(
+    all<{ anon_id: string }>("SELECT anon_id FROM submissions WHERE assignment_id = ? AND anon_id IS NOT NULL", assignmentId).map((r) => r.anon_id),
+  );
 }
 
 /** grading → queued with a note for the teacher, only for the current generation. */

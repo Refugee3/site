@@ -115,7 +115,15 @@ export interface Submission { id: string; assignmentId: string; source: "student
   rosterName: string | null;
   /** A project paper's review (criteria and points); null for homework and quizzes, and before it is reviewed. */
   projectReview: ProjectReview | null;
+  /** The paper's anonymous ID ("S-482913") once ChatGPT hid its names; null when names aren't hidden. */
+  anonId: string | null;
+  /** The copy the grading AI reads, with the names covered (data-relative path); null when names aren't hidden. */
+  namesHiddenPdfPath: string | null;
+  /** What ChatGPT read when it hid the names: the student's name and section, and how many places it covered. */
+  namesHidden: NamesHiddenInfo | null;
   createdAt: number; updatedAt: number }
+export interface NamesHiddenInfo { name: string | null; nameConfidence: Confidence; sectionRaw: string | null;
+  multipleStudents: boolean; covered: number; at: number }
 /** The AI's review of one project paper, as stored. The written analysis itself is the submission's overallFeedback. */
 export interface ProjectReview { mode: ProjectMode;
   /** What was scored or commented on: the rubric's items, or the criteria the teacher's instructions name. */
@@ -229,7 +237,9 @@ export interface AssignmentHeader { assignment: Assignment; keyStatus: KeyStatus
   itemCount: number; skippedCount?: number;
   totalPointsCenti: number; counts: StatusCounts; scans: PendingScans }
 export type BoardFilter = "all" | "needs_review" | "in_progress" | "failed" | "graded";
-export interface BoardRow { submissionId: string; displayName: string; status: SubmissionStatus; statusNote: string | null;
+export interface BoardRow { submissionId: string; displayName: string;
+  /** The anonymous ID the grading AI saw instead of the name (names hidden by ChatGPT); null otherwise. */
+  anonId?: string | null; status: SubmissionStatus; statusNote: string | null;
   scoreEarnedCenti: number | null; scoreMaxCenti: number | null; percentTenths: number | null;
   flags: FlagCode[]; stale: boolean; earlier: Array<{ submissionId: string; createdAt: number; status: SubmissionStatus }>; pageCount: number; createdAt: number;
   /** Only while the board is filtered to the papers that missed an item: how this paper did on it and what it wrote. */

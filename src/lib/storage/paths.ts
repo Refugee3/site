@@ -2,7 +2,7 @@ import path from "node:path";
 import { getConfig } from "@/lib/config";
 
 // Stored paths are built only from server-generated UUIDs; anything else is refused before it reaches the filesystem.
-const DATA_FILE_PATH = /^files\/[0-9a-f-]{36}\/(key|submissions|scans|blank)\/[0-9a-f-]{36}\.pdf$/;
+const DATA_FILE_PATH = /^files\/[0-9a-f-]{36}\/(key|submissions|scans|blank)\/[0-9a-f-]{36}(\.names-hidden)?\.pdf$/;
 
 export function dataDir(): string {
   return getConfig().dataDir;
@@ -19,6 +19,11 @@ export function resolveDataPath(rel: string): string {
 
 export function submissionPdfRel(assignmentId: string, submissionId: string): string {
   return `files/${assignmentId}/submissions/${submissionId}.pdf`;
+}
+
+/** The copy of a paper with its names covered (read by the grading AI instead of the original). */
+export function namesHiddenPdfRel(assignmentId: string, submissionId: string): string {
+  return submissionPdfRel(assignmentId, submissionId).replace(/\.pdf$/, ".names-hidden.pdf");
 }
 
 export function keyPdfRel(assignmentId: string, fileId: string): string {

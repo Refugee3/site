@@ -75,6 +75,12 @@ export function ReviewPanel({ assignmentId, view, serverNow }: ReviewPanelProps)
           <div ref={pdfRef} className="scroll-mt-4 lg:sticky lg:top-4 lg:self-start">
             {/* Remounting makes every browser's PDF viewer open at the page; a changed #page alone often does nothing. */}
             <PdfFrame key={pdfView.jumps} src={view.pdfUrl} title="The student's paper" page={pdfView.page} />
+            {s.namesHiddenPdfPath && (
+              <p className="mt-2 text-sm text-muted">
+                The grading AI read a copy with the names covered by ChatGPT ({plural(s.namesHidden?.covered ?? 0, "place")}).{" "}
+                <a href={`${view.pdfUrl}?copy=hidden`} target="_blank" rel="noreferrer">See the copy the AI read</a>
+              </p>
+            )}
           </div>
 
           <div className="flex min-w-0 flex-col gap-4">
@@ -141,6 +147,7 @@ function ReviewHeader({ assignmentId, view }: Omit<ReviewPanelProps, "serverNow"
       </Link>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="text-xl font-semibold">{s.studentName ?? "No name"}</h2>
+        {s.anonId && <span className="font-mono text-sm text-muted" title="The grading AI saw this ID instead of the name">ID {s.anonId}</span>}
         <span className="text-muted">{section}</span>
         <StatusBadge status={s.status} />
         {view.stale && <Badge tone="warning">{view.projectMode ? "Reviewed with older instructions" : "Graded with an older key"}</Badge>}

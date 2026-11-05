@@ -16,7 +16,7 @@ import { useSyncedState } from "./use-synced-state";
 export interface IdentityFormProps {
   submission: Pick<
     Submission,
-    "id" | "studentName" | "sectionId" | "aiName" | "aiNameConfidence" | "aiSectionRaw" | "nameSource" | "sectionSource" | "gradedAt"
+    "id" | "studentName" | "sectionId" | "aiName" | "aiNameConfidence" | "aiSectionRaw" | "nameSource" | "sectionSource" | "gradedAt" | "anonId"
   >;
   sections: Section[];
 }
@@ -109,7 +109,7 @@ function AiReading({ submission: s }: { submission: IdentityFormProps["submissio
   if (s.gradedAt === null) return <>The AI hasn&apos;t read this paper yet.</>;
   return (
     <>
-      The AI read{" "}
+      {s.anonId ? "ChatGPT read" : "The AI read"}{" "}
       {s.aiName ? (
         <>
           the name <span className="font-medium text-ink">“{s.aiName}”</span>

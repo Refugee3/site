@@ -7,6 +7,7 @@ import { ApiKeyForm } from "@/components/teacher/api-key-form";
 import { CapacitySettings } from "@/components/teacher/capacity-settings";
 import { EmailSettings } from "@/components/teacher/email-settings";
 import { GraderCard } from "@/components/teacher/grader-card";
+import { NamesSettings } from "@/components/teacher/names-settings";
 import { PreferencesForm } from "@/components/teacher/preferences-form";
 import { Card } from "@/components/ui/card";
 import { testOllamaConnection } from "@/lib/ai/ollama/connection";
@@ -14,6 +15,7 @@ import { requireTeacher } from "@/lib/auth/dal";
 import { getNotifyByEmail } from "@/lib/db/repos/email";
 import { getEmailSettingsView } from "@/lib/email/settings";
 import { getCapacityView } from "@/lib/services/capacity";
+import { getNamesView } from "@/lib/services/names";
 import { getOllamaSpeedView, getTeacherSettingsView } from "@/lib/services/views";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -37,6 +39,9 @@ export default async function TeacherSettingsPage() {
   return (
     <div className="flex w-full max-w-3xl flex-col gap-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
+      <Card title="Student names">
+        <NamesSettings view={getNamesView()} />
+      </Card>
       <Card title="Anthropic API key">
         <ApiKeyForm
           apiKey={view.apiKey}

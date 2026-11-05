@@ -648,6 +648,23 @@ ALTER TABLE assignments ADD COLUMN project_mode TEXT CHECK (project_mode IS NULL
 ALTER TABLE submissions ADD COLUMN project_review_json TEXT;
 `,
   },
+  {
+    version: 21,
+    name: "names_via_chatgpt",
+    sql: `
+-- Student names never reach the grading AI: when names_via_chatgpt is on, ChatGPT (the school's OpenAI account) finds each
+-- paper's name, the app covers it with the paper's anonymous ID, and only that copy is graded. The key is encrypted.
+ALTER TABLE app_settings ADD COLUMN names_via_chatgpt INTEGER NOT NULL DEFAULT 0 CHECK (names_via_chatgpt IN (0,1));
+ALTER TABLE app_settings ADD COLUMN openai_api_key_ciphertext TEXT;
+ALTER TABLE app_settings ADD COLUMN openai_api_key_masked TEXT;
+ALTER TABLE app_settings ADD COLUMN openai_base_url TEXT;
+ALTER TABLE app_settings ADD COLUMN openai_model TEXT;
+-- Per paper: its anonymous ID, the copy with the names covered, and what ChatGPT read (name, section, where it covered).
+ALTER TABLE submissions ADD COLUMN anon_id TEXT;
+ALTER TABLE submissions ADD COLUMN names_hidden_pdf_path TEXT;
+ALTER TABLE submissions ADD COLUMN names_hidden_json TEXT;
+`,
+  },
 ];
 
 /** Applies every migration newer than `PRAGMA user_version`, all in one transaction. */

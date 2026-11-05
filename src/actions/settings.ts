@@ -13,6 +13,7 @@ import { formFields, parseInput } from "@/lib/http/validation";
 import type { OllamaConnectionResult } from "@/lib/ollama-settings";
 import { type ComputerCheck, saveOtherComputers, saveOverflowSettings, testOtherComputers } from "@/lib/services/capacity";
 import { removeEmailSettings, saveEmailSettings, sendTestEmail, setTeacherEmailNotifications } from "@/lib/services/email";
+import { removeNamesKey, saveNamesSettings, testChatGpt } from "@/lib/services/names";
 import {
   checkOllamaConnection, removeApiKey, saveApiKey, saveGradingPreferences, saveOllamaSettings, setAiModel, setGradingEngine,
   setUpHostedAgentAgain,
@@ -185,4 +186,37 @@ export async function saveOverflowSettingsAction(_prev: ActionResult | null, fd:
       ? `Saved. When more than ${s.afterPapers} papers wait, extra ones go to Claude, up to $${s.monthlyCapUsd} a month.`
       : "Saved. The overflow is off: everything is graded on your computers.",
   };
+}
+
+/** Settings → Student names: hide names with ChatGPT (fields enabled, apiKey, baseUrl, model); an empty key keeps the saved one. */
+export async function saveNamesSettingsAction(_prev: ActionResult | null, fd: FormData): Promise<ActionResult> {
+  await requireTeacher();
+  const fields = formFields(fd, ["apiKey", "baseUrl", "model"]);
+  const enabled = fd.get("enabled") === "on";
+  const result = await attempt(() => saveNamesSettings({
+    enabled, apiKey: fields.apiKey ?? "", baseUrl: fields.baseUrl ?? "", model: fields.model ?? "",
+  }));
+  if (!result.ok) return result;
+  refresh();
+  return {
+    ok: true,
+    message: enabled
+      ? "Saved. From now on ChatGPT hides each paper's names before the grading AI sees it. Press Test to check the key."
+      : "Saved. Names are not hidden: the grading AI reads the papers as uploaded.",
+  };
+}
+
+export async function removeNamesKeyAction(): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attempt(() => removeNamesKey());
+  if (!result.ok) return result;
+  refresh();
+  return { ok: true, message: "ChatGPT key removed and name hiding turned off." };
+}
+
+export async function testChatGptAction(): Promise<ActionResult> {
+  await requireTeacher();
+  const result = await attemptWithData(() => testChatGpt());
+  if (!result.ok) return result;
+  return { ok: true, message: result.data };
 }
